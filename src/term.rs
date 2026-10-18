@@ -55,9 +55,19 @@ impl Default for TermOptions {
     }
 }
 
+/// Caracteres que cortan una palabra en la selección por doble clic.
+const WORD_SEPARATORS: &str = ",;:\"'`()[]{}<>|&=│ \t";
+
 impl TermOptions {
     fn config(self) -> Config {
-        Config { kitty_keyboard: true, scrolling_history: self.history, default_cursor_style: self.cursor, ..Config::default() }
+        Config {
+            kitty_keyboard: true,
+            scrolling_history: self.history,
+            default_cursor_style: self.cursor,
+            // Rutas, IPs, correos y nombres con guiones cuentan como una sola palabra al hacer doble clic.
+            semantic_escape_chars: WORD_SEPARATORS.to_string(),
+            ..Config::default()
+        }
     }
 }
 

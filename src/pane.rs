@@ -105,11 +105,14 @@ pub struct Pane {
     search: Option<SearchState>,
     link: Option<LinkHit>,
     epoch: Instant,
+    /// Pulsaciones seguidas del botón izquierdo (1 simple, 2 palabra, 3 línea) y cuándo y dónde fue la última.
+    click_count: u8,
+    last_press: Option<(Instant, Pos2)>,
 }
 
 impl Pane {
     pub fn new(session: Session, debug_keys: bool, id: u64) -> Self {
-        Self { id, request: None, session, debug_keys, input_enabled: true, held: None, last_cell: None, hover_cell: (0, 0), window_focused: true, search: None, link: None, epoch: Instant::now() }
+        Self { id, request: None, session, debug_keys, input_enabled: true, held: None, last_cell: None, hover_cell: (0, 0), window_focused: true, search: None, link: None, epoch: Instant::now(), click_count: 0, last_press: None }
     }
 
     /// Escribe `text` como un pegado (con pegado entre corchetes si la aplicación lo pidió).
@@ -220,8 +223,24 @@ impl Pane {
         if !reporting {
             let mut term = self.session.term.lock().unwrap();
             let offset = term.grid().display_offset();
+            let press = ui.input(|i| i.pointer.primary_pressed()).then(|| ui.input(|i| i.pointer.interact_pos())).flatten().filter(|p| area.contains(*p) && response.hovered());
+            if let Some(pos) = press {
+                let repeated = self.last_press.is_some_and(|(at, from)| at.elapsed() < Duration::from_millis(450) && (pos - from).length() < 6.0);
+                self.click_count = if repeated { self.click_count % 3 + 1 } else { 1 };
+                self.last_press = Some((Instant::now(), pos));
+                let kind = match self.click_count {
+                    2 => Some(SelectionType::Semantic),
+                    3 => Some(SelectionType::Lines),
+                    _ => None,
+                };
+                if let Some(kind) = kind {
+                    let (point, side) = to_point(pos, offset);
+                    term.selection = Some(Selection::new(kind, point, side));
+                }
+            }
+            let multi_click = self.click_count >= 2;
             if let Some(pos) = response.interact_pointer_pos() {
-                if response.drag_started_by(egui::PointerButton::Primary) {
+                if response.drag_started_by(egui::PointerButton::Primary) && !multi_click {
                     let (point, side) = to_point(pos, offset);
                     term.selection = Some(Selection::new(SelectionType::Simple, point, side));
                 } else if response.dragged_by(egui::PointerButton::Primary) {
@@ -231,7 +250,7 @@ impl Pane {
                     }
                 }
             }
-            if response.clicked() {
+            if response.clicked() && !multi_click {
                 term.selection = None;
             }
         }
