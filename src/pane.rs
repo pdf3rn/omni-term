@@ -48,6 +48,23 @@ impl Pane {
         Self { session, debug_keys, input_enabled: true }
     }
 
+    /// Escribe `text` como un pegado (con pegado entre corchetes si la aplicación lo pidió).
+    /// Con `run`, añade Enter para ejecutarlo.
+    pub fn insert_text(&self, text: &str, run: bool) {
+        let mode = *self.session.term.lock().unwrap().mode();
+        let mut bytes = paste_bytes(text.trim_end_matches(['\n', '\r']), mode);
+        if run {
+            bytes.push(b'\r');
+        }
+        self.session.term.lock().unwrap().scroll_display(Scroll::Bottom);
+        self.session.write(&bytes);
+    }
+
+    /// Texto seleccionado con el ratón, si lo hay.
+    pub fn selection_text(&self) -> Option<String> {
+        self.session.term.lock().unwrap().selection_to_string().filter(|t| !t.is_empty())
+    }
+
     pub fn title(&self) -> String {
         self.session.title.lock().unwrap().clone()
     }

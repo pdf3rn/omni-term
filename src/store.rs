@@ -36,6 +36,12 @@ const MIGRATIONS: &[&str] = &[
         dest_host TEXT NOT NULL,
         dest_port INTEGER NOT NULL
     );",
+    "CREATE TABLE snippets (
+        id INTEGER PRIMARY KEY,
+        title TEXT NOT NULL,
+        tag TEXT NOT NULL DEFAULT '',
+        body TEXT NOT NULL
+    );",
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -74,6 +80,23 @@ pub struct Connection {
     pub auth: Auth,
     pub key_path: Option<String>,
     pub init_command: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Snippet {
+    pub id: Option<i64>,
+    pub title: String,
+    pub tag: String,
+    pub body: String,
+}
+
+impl Snippet {
+    /// ¿Coincide con la búsqueda (sin distinguir mayúsculas) en título, etiqueta o contenido?
+    pub fn matches(&self, query: &str) -> bool {
+        let query = query.trim().to_lowercase();
+        query.is_empty()
+            || [&self.title, &self.tag, &self.body].iter().any(|field| field.to_lowercase().contains(&query))
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -297,6 +320,39 @@ impl Store {
         Ok(())
     }
 
+    pub fn list_snippets(&self) -> anyhow::Result<Vec<Snippet>> {
+        let mut statement =
+            self.db.prepare("SELECT id, title, tag, body FROM snippets ORDER BY title COLLATE NOCASE, id")?;
+        let rows = statement.query_map([], |row| {
+            Ok(Snippet { id: Some(row.get(0)?), title: row.get(1)?, tag: row.get(2)?, body: row.get(3)? })
+        })?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    pub fn save_snippet(&self, snippet: &Snippet) -> anyhow::Result<i64> {
+        match snippet.id {
+            Some(id) => {
+                self.db.execute(
+                    "UPDATE snippets SET title=?1, tag=?2, body=?3 WHERE id=?4",
+                    params![snippet.title, snippet.tag, snippet.body, id],
+                )?;
+                Ok(id)
+            }
+            None => {
+                self.db.execute(
+                    "INSERT INTO snippets (title, tag, body) VALUES (?1, ?2, ?3)",
+                    params![snippet.title, snippet.tag, snippet.body],
+                )?;
+                Ok(self.db.last_insert_rowid())
+            }
+        }
+    }
+
+    pub fn delete_snippet(&self, id: i64) -> anyhow::Result<()> {
+        self.db.execute("DELETE FROM snippets WHERE id=?1", [id])?;
+        Ok(())
+    }
+
     pub fn save_layout(&mut self, tabs: &[TabKind], active: usize) -> anyhow::Result<()> {
         let tx = self.db.transaction()?;
         tx.execute("DELETE FROM layout_tabs", [])?;
@@ -455,6 +511,35 @@ mod tests {
         store.delete_connection(b).unwrap();
         assert!(store.all_forwards().unwrap().get(&b).is_none());
         assert_eq!(store.list_forwards(a).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn snippets_roundtrip_update_delete_and_search() {
+        let store = Store::open_in_memory().unwrap();
+        let id = store
+            .save_snippet(&Snippet { id: None, title: "Reiniciar nginx".into(), tag: "ops".into(), body: "sudo systemctl restart nginx".into() })
+            .unwrap();
+        store
+            .save_snippet(&Snippet { id: None, title: "Espacio en disco".into(), tag: String::new(), body: "df -h\ndu -sh *".into() })
+            .unwrap();
+
+        let all = store.list_snippets().unwrap();
+        assert_eq!(all.iter().map(|s| s.title.as_str()).collect::<Vec<_>>(), ["Espacio en disco", "Reiniciar nginx"]);
+
+        let mut edited = all.iter().find(|s| s.id == Some(id)).unwrap().clone();
+        edited.body = "sudo systemctl reload nginx".into();
+        store.save_snippet(&edited).unwrap();
+        let reloaded = store.list_snippets().unwrap();
+        assert!(reloaded.iter().any(|s| s.body.ends_with("reload nginx")));
+
+        assert!(edited.matches("NGINX"));
+        assert!(edited.matches("ops"));
+        assert!(edited.matches("reload"));
+        assert!(edited.matches("  "));
+        assert!(!edited.matches("postgres"));
+
+        store.delete_snippet(id).unwrap();
+        assert_eq!(store.list_snippets().unwrap().len(), 1);
     }
 
     #[test]

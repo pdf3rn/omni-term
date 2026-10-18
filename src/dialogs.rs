@@ -5,7 +5,7 @@ use zeroize::Zeroizing;
 
 use crate::secrets::SecretKind;
 use crate::ssh::HostKeyRequest;
-use crate::store::{Auth, Connection, Forward, ForwardKind};
+use crate::store::{Auth, Connection, Forward, ForwardKind, Snippet};
 use crate::theme;
 
 pub struct ForwardRow {
@@ -139,6 +139,41 @@ impl ConnForm {
     }
 }
 
+pub struct SnippetForm {
+    pub id: Option<i64>,
+    pub title: String,
+    pub tag: String,
+    pub body: String,
+    pub error: Option<String>,
+}
+
+impl SnippetForm {
+    pub fn new(body: String) -> Self {
+        Self { id: None, title: String::new(), tag: String::new(), body, error: None }
+    }
+
+    pub fn from_snippet(snippet: &Snippet) -> Self {
+        Self {
+            id: snippet.id,
+            title: snippet.title.clone(),
+            tag: snippet.tag.clone(),
+            body: snippet.body.clone(),
+            error: None,
+        }
+    }
+
+    pub fn to_snippet(&self) -> Result<Snippet, String> {
+        let title = self.title.trim();
+        if title.is_empty() {
+            return Err("El título es obligatorio".into());
+        }
+        if self.body.trim().is_empty() {
+            return Err("El contenido no puede estar vacío".into());
+        }
+        Ok(Snippet { id: self.id, title: title.into(), tag: self.tag.trim().into(), body: self.body.clone() })
+    }
+}
+
 pub struct SecretPrompt {
     pub connection: Connection,
     /// Pestaña a reemplazar al reconectar.
@@ -164,6 +199,8 @@ pub struct UnlockPrompt {
 
 pub enum Dialog {
     Edit(ConnForm),
+    Snippet(SnippetForm),
+    ConfirmDeleteSnippet { id: i64, title: String },
     Secret(SecretPrompt),
     Unlock(UnlockPrompt),
     HostKey(HostKeyRequest),
@@ -222,6 +259,17 @@ pub fn show(ctx: &egui::Context, dialog: &mut Dialog, master_forced: bool) -> Ou
         ui.spacing_mut().item_spacing.y = 8.0;
         match dialog {
             Dialog::Edit(form) => outcome = edit(ui, form),
+            Dialog::Snippet(form) => outcome = snippet(ui, form),
+            Dialog::ConfirmDeleteSnippet { title, .. } => {
+                ui.heading("Eliminar snippet");
+                ui.add_space(6.0);
+                ui.label(format!("¿Eliminar \"{title}\"?"));
+                match buttons(ui, "Eliminar") {
+                    Some(true) => outcome = Outcome::Delete,
+                    Some(false) => outcome = Outcome::Cancel,
+                    None => {}
+                }
+            }
             Dialog::Secret(prompt) => outcome = secret(ui, prompt),
             Dialog::Unlock(prompt) => outcome = unlock(ui, prompt, master_forced),
             Dialog::HostKey(request) => outcome = host_key(ui, request),
@@ -343,6 +391,32 @@ fn edit(ui: &mut egui::Ui, form: &mut ConnForm) -> Outcome {
         RichText::new("-L: este equipo escucha y reenvía al destino vía el servidor. -R: el servidor escucha y reenvía a un destino alcanzable desde aquí. Los cambios se aplican al reconectar.")
             .small()
             .color(theme::SUBTEXT),
+    );
+    error_label(ui, &form.error);
+    match buttons(ui, "Guardar") {
+        Some(true) => Outcome::Save,
+        Some(false) => Outcome::Cancel,
+        None => Outcome::None,
+    }
+}
+
+fn snippet(ui: &mut egui::Ui, form: &mut SnippetForm) -> Outcome {
+    ui.heading(if form.id.is_some() { "Editar snippet" } else { "Nuevo snippet" });
+    ui.add_space(8.0);
+    egui::Grid::new("snippet_form").num_columns(2).spacing([10.0, 8.0]).show(ui, |ui| {
+        ui.label("Título");
+        ui.add(TextEdit::singleline(&mut form.title).desired_width(f32::INFINITY));
+        ui.end_row();
+        ui.label("Etiqueta");
+        ui.add(TextEdit::singleline(&mut form.tag).hint_text("opcional").desired_width(200.0));
+        ui.end_row();
+    });
+    ui.label("Contenido");
+    ui.add(
+        TextEdit::multiline(&mut form.body)
+            .font(egui::TextStyle::Monospace)
+            .desired_rows(8)
+            .desired_width(f32::INFINITY),
     );
     error_label(ui, &form.error);
     match buttons(ui, "Guardar") {

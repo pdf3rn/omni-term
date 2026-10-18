@@ -8,11 +8,11 @@ use eframe::egui::{
 };
 use zeroize::Zeroizing;
 
-use crate::dialogs::{self, ConnForm, Dialog, Outcome, Pending, SecretPrompt, UnlockPrompt};
+use crate::dialogs::{self, ConnForm, Dialog, Outcome, Pending, SecretPrompt, SnippetForm, UnlockPrompt};
 use crate::pane::{self, bold_family, Pane, DEFAULT_FONT_SIZE, MAX_FONT_SIZE, MIN_FONT_SIZE, PADDING};
 use crate::secrets::{account_for, SecretError, SecretKind, SecretStore, Secrets};
 use crate::ssh::{self, Credentials, HostKeyRequest, TunnelState, Tunnels, UiEvent};
-use crate::store::{Auth, Connection, Forward, Store, TabKind};
+use crate::store::{Auth, Connection, Forward, Snippet, Store, TabKind};
 use crate::term::Session;
 use crate::theme;
 
@@ -21,6 +21,12 @@ const TAB_BAR_HEIGHT: f32 = 40.0;
 const TAB_HEIGHT: f32 = 34.0;
 const CONTROL_RADIUS: u8 = 6;
 const ROW_HEIGHT: f32 = 46.0;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SidebarView {
+    Connections,
+    Snippets,
+}
 
 struct Tab {
     id: u64,
@@ -44,6 +50,9 @@ pub struct App {
     secrets: Secrets,
     connections: Vec<Connection>,
     forwards: HashMap<i64, Vec<Forward>>,
+    snippets: Vec<Snippet>,
+    sidebar_view: SidebarView,
+    snippet_query: String,
     events_tx: Sender<UiEvent>,
     events_rx: Receiver<UiEvent>,
     host_keys: VecDeque<HostKeyRequest>,
@@ -70,6 +79,7 @@ impl App {
         let (layout, active) = store.load_layout().unwrap_or_default();
         let connections = store.list_connections().unwrap_or_default();
         let forwards = store.all_forwards().unwrap_or_default();
+        let snippets = store.list_snippets().unwrap_or_default();
         let store = Arc::new(Mutex::new(store));
         let secrets = Secrets::select(store.clone());
         let font_size = store
@@ -81,6 +91,10 @@ impl App {
             .and_then(|bytes| String::from_utf8(bytes).ok())
             .and_then(|text| text.parse::<f32>().ok())
             .map_or(DEFAULT_FONT_SIZE, |size| size.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE));
+        let sidebar_view = match store.lock().unwrap().meta("sidebar_view") {
+            Ok(Some(value)) if value == b"snippets" => SidebarView::Snippets,
+            _ => SidebarView::Connections,
+        };
         cc.egui_ctx.options_mut(|options| options.zoom_with_keyboard = false);
         let (events_tx, events_rx) = mpsc::channel();
 
@@ -105,6 +119,9 @@ impl App {
             secrets,
             connections,
             forwards,
+            snippets,
+            sidebar_view,
+            snippet_query: String::new(),
             events_tx,
             events_rx,
             host_keys: VecDeque::new(),
@@ -225,6 +242,14 @@ impl App {
         let store = self.store.lock().unwrap();
         self.connections = store.list_connections().unwrap_or_default();
         self.forwards = store.all_forwards().unwrap_or_default();
+        self.snippets = store.list_snippets().unwrap_or_default();
+    }
+
+    fn insert_into_active(&mut self, body: &str, run: bool) {
+        match self.tabs.get(self.active) {
+            Some(tab) if !tab.pane.session.is_disconnected() => tab.pane.insert_text(body, run),
+            _ => self.notice = Some("No hay un terminal activo donde insertar".into()),
+        }
     }
 
     fn reconnect(&mut self, index: usize) {
@@ -334,7 +359,7 @@ impl App {
 
         match (outcome, dialog) {
             (Outcome::None, dialog) => self.dialog = Some(dialog),
-            (Outcome::Cancel, Dialog::Secret(_) | Dialog::Unlock(_) | Dialog::Edit(_) | Dialog::ConfirmDelete { .. } | Dialog::ConfirmReset(_) | Dialog::Message(_)) => {}
+            (Outcome::Cancel, Dialog::Secret(_) | Dialog::Unlock(_) | Dialog::Edit(_) | Dialog::Snippet(_) | Dialog::ConfirmDelete { .. } | Dialog::ConfirmDeleteSnippet { .. } | Dialog::ConfirmReset(_) | Dialog::Message(_)) => {}
             (Outcome::Cancel, dialog) => self.dialog = Some(dialog),
             (Outcome::Trust(accepted), Dialog::HostKey(request)) => {
                 let _ = request.reply.send(accepted);
@@ -364,6 +389,26 @@ impl App {
                     }
                 }
             },
+            (Outcome::Save, Dialog::Snippet(mut form)) => match form.to_snippet() {
+                Err(message) => {
+                    form.error = Some(message);
+                    self.dialog = Some(Dialog::Snippet(form));
+                }
+                Ok(snippet) => {
+                    let saved = self.store.lock().unwrap().save_snippet(&snippet);
+                    match saved {
+                        Ok(_) => self.refresh_connections(),
+                        Err(error) => {
+                            form.error = Some(format!("{error:#}"));
+                            self.dialog = Some(Dialog::Snippet(form));
+                        }
+                    }
+                }
+            },
+            (Outcome::Delete, Dialog::ConfirmDeleteSnippet { id, .. }) => {
+                let _ = self.store.lock().unwrap().delete_snippet(id);
+                self.refresh_connections();
+            }
             (Outcome::Delete, Dialog::ConfirmDelete { id, .. }) => {
                 let _ = self.store.lock().unwrap().delete_connection(id);
                 let _ = self.secrets.delete(&account_for(id, SecretKind::Password));
@@ -422,6 +467,12 @@ impl App {
         let mut connect: Option<Connection> = None;
         let mut edit: Option<Connection> = None;
         let mut delete: Option<Connection> = None;
+        let mut new_snippet = false;
+        let mut snippet_from_selection = false;
+        let mut insert: Option<(String, bool)> = None;
+        let mut copy: Option<String> = None;
+        let mut edit_snippet: Option<Snippet> = None;
+        let mut delete_snippet: Option<Snippet> = None;
         let open_ids: Vec<i64> = self
             .tabs
             .iter()
@@ -445,7 +496,31 @@ impl App {
 
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("Conexiones").small().color(theme::SUBTEXT));
+                    for (view, label) in [(SidebarView::Connections, "Conexiones"), (SidebarView::Snippets, "Snippets")] {
+                        let selected = self.sidebar_view == view;
+                        let color = if selected { theme::TEXT } else { theme::SUBTEXT };
+                        let font = FontId::new(13.0, if selected { strong_family() } else { FontFamily::Proportional });
+                        let button = Button::new(RichText::new(label).font(font).color(color)).fill(Color32::TRANSPARENT);
+                        let response = ui.add(button);
+                        if selected {
+                            let y = response.rect.max.y + 1.0;
+                            ui.painter().line_segment(
+                                [Pos2::new(response.rect.min.x + 8.0, y), Pos2::new(response.rect.max.x - 8.0, y)],
+                                Stroke::new(2.0, theme::ACCENT),
+                            );
+                        }
+                        if response.clicked() && self.sidebar_view != view {
+                            self.sidebar_view = view;
+                            let value: &[u8] = if view == SidebarView::Snippets { b"snippets" } else { b"connections" };
+                            let _ = self.store.lock().unwrap().set_meta("sidebar_view", value);
+                        }
+                    }
+                });
+                ui.add_space(4.0);
+
+                if self.sidebar_view == SidebarView::Connections {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Guardadas").small().color(theme::SUBTEXT));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let add = Button::new(RichText::new("+").size(16.0)).fill(Color32::TRANSPARENT).min_size(Vec2::splat(26.0));
                         if ui.add(add).on_hover_text("Nueva conexión").clicked() {
@@ -466,14 +541,15 @@ impl App {
                         ui.painter().rect_filled(rect, CornerRadius::same(CONTROL_RADIUS), theme::SURFACE);
                     }
                     let left = rect.min.x + 10.0;
-                    ui.painter().text(
+                    let painter = ui.painter().with_clip_rect(rect.shrink2(Vec2::new(4.0, 0.0)));
+                    painter.text(
                         Pos2::new(left, rect.min.y + 9.0),
                         Align2::LEFT_TOP,
                         &connection.name,
                         FontId::new(14.0, strong_family()),
                         theme::TEXT,
                     );
-                    ui.painter().text(
+                    painter.text(
                         Pos2::new(left, rect.min.y + 27.0),
                         Align2::LEFT_TOP,
                         format!("{}@{}", connection.user, connection.host),
@@ -533,6 +609,87 @@ impl App {
                     ui.label(RichText::new(notice).small().color(theme::SUBTEXT));
                 }
 
+                } else {
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.snippet_query)
+                                .hint_text("Buscar snippets")
+                                .desired_width(150.0),
+                        );
+                        let add = Button::new(RichText::new("+").size(16.0)).fill(Color32::TRANSPARENT).min_size(Vec2::splat(26.0));
+                        if ui.add(add).on_hover_text("Nuevo snippet").clicked() {
+                            new_snippet = true;
+                        }
+                    });
+                    if ui
+                        .add(Button::new(RichText::new("Guardar selección").small().color(theme::SUBTEXT)).fill(Color32::TRANSPARENT).stroke(Stroke::new(1.0, theme::SURFACE)))
+                        .clicked()
+                    {
+                        snippet_from_selection = true;
+                    }
+                    ui.add_space(4.0);
+
+                    let query = self.snippet_query.clone();
+                    let visible: Vec<&Snippet> = self.snippets.iter().filter(|s| s.matches(&query)).collect();
+                    if self.snippets.is_empty() {
+                        ui.label(RichText::new("Aún no hay snippets. Crea uno con + o guarda la selección del terminal.").color(theme::SUBTEXT));
+                    } else if visible.is_empty() {
+                        ui.label(RichText::new("Ningún snippet coincide con la búsqueda.").color(theme::SUBTEXT));
+                    }
+                    ui.spacing_mut().item_spacing.y = 2.0;
+                    for snippet in visible {
+                        let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_HEIGHT), Sense::click());
+                        if response.hovered() {
+                            ui.painter().rect_filled(rect, CornerRadius::same(CONTROL_RADIUS), theme::SURFACE);
+                        }
+                        let left = rect.min.x + 10.0;
+                        let painter = ui.painter().with_clip_rect(rect.shrink2(Vec2::new(4.0, 0.0)));
+                        painter.text(
+                            Pos2::new(left, rect.min.y + 9.0),
+                            Align2::LEFT_TOP,
+                            &snippet.title,
+                            FontId::new(14.0, strong_family()),
+                            theme::TEXT,
+                        );
+                        let preview = snippet.body.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
+                        let preview: String = preview.chars().take(80).collect();
+                        let preview = if snippet.tag.is_empty() { preview } else { format!("{}  ·  {}", snippet.tag, preview) };
+                        painter.text(
+                            Pos2::new(left, rect.min.y + 27.0),
+                            Align2::LEFT_TOP,
+                            preview,
+                            FontId::new(12.0, FontFamily::Monospace),
+                            theme::SUBTEXT,
+                        );
+                        let response = response.on_hover_text("Clic para insertar en el terminal activo. Clic derecho: más opciones");
+                        if response.clicked() {
+                            insert = Some((snippet.body.clone(), false));
+                        }
+                        response.context_menu(|ui| {
+                            if ui.button("Insertar").clicked() {
+                                insert = Some((snippet.body.clone(), false));
+                                ui.close();
+                            }
+                            if ui.button("Insertar y ejecutar").clicked() {
+                                insert = Some((snippet.body.clone(), true));
+                                ui.close();
+                            }
+                            if ui.button("Copiar").clicked() {
+                                copy = Some(snippet.body.clone());
+                                ui.close();
+                            }
+                            if ui.button("Editar").clicked() {
+                                edit_snippet = Some(snippet.clone());
+                                ui.close();
+                            }
+                            if ui.button("Eliminar").clicked() {
+                                delete_snippet = Some(snippet.clone());
+                                ui.close();
+                            }
+                        });
+                    }
+                }
+
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
                     let mut forced = Secrets::is_master_forced(&self.store.lock().unwrap());
                     if ui.checkbox(&mut forced, RichText::new("Forzar clave maestra").small()).changed() {
@@ -546,6 +703,28 @@ impl App {
                 });
             });
 
+        if let Some((body, run)) = insert {
+            self.insert_into_active(&body, run);
+        }
+        if let Some(body) = copy {
+            self.ctx.copy_text(body);
+        }
+        if new_snippet {
+            self.dialog = Some(Dialog::Snippet(SnippetForm::new(String::new())));
+        }
+        if snippet_from_selection {
+            let selected = self.tabs.get(self.active).and_then(|t| t.pane.selection_text());
+            match selected {
+                Some(text) => self.dialog = Some(Dialog::Snippet(SnippetForm::new(text))),
+                None => self.notice = Some("Selecciona texto en el terminal para guardarlo como snippet".into()),
+            }
+        }
+        if let Some(snippet) = edit_snippet {
+            self.dialog = Some(Dialog::Snippet(SnippetForm::from_snippet(&snippet)));
+        }
+        if let Some(snippet) = delete_snippet {
+            self.dialog = snippet.id.map(|id| Dialog::ConfirmDeleteSnippet { id, title: snippet.title });
+        }
         if open_local {
             self.open_queue.push_back(TabKind::Local);
         }
