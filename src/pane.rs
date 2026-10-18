@@ -13,6 +13,7 @@ use eframe::egui::{
 };
 use alacritty_terminal::Term;
 
+use crate::cursor::HandExt;
 use crate::keys;
 use crate::mouse::{self, Button as MouseButton, Kind as MouseKind, Mods as MouseMods};
 use crate::search;
@@ -166,7 +167,10 @@ impl Pane {
                 EventFilter { tab: true, horizontal_arrows: true, vertical_arrows: true, escape: true },
             );
         });
-        ui.ctx().set_cursor_icon(egui::CursorIcon::Text);
+        // Cursor de texto solo sobre el terminal; fuera, cada elemento pone el suyo.
+        if response.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Text);
+        }
 
         let to_point = |pos: Pos2, display_offset: usize| {
             let rel = pos - area.min;
@@ -248,7 +252,7 @@ impl Pane {
         let thumb_top = track.min.y + travel * (1.0 - offset as f32 / history as f32);
 
         let hit = track.expand2(Vec2::new(4.0, 0.0));
-        let response = ui.interact(hit, ui.scope_id().with(("scrollbar", self.id)), Sense::click_and_drag());
+        let response = ui.interact(hit, ui.scope_id().with(("scrollbar", self.id)), Sense::click_and_drag()).grab();
         if let Some(pos) = response.interact_pointer_pos() {
             if response.dragged() || response.is_pointer_button_down_on() {
                 let ratio = ((pos.y - track.min.y - thumb_len / 2.0) / travel).clamp(0.0, 1.0);

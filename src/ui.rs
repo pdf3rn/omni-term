@@ -9,7 +9,8 @@ use eframe::egui::{
 };
 use zeroize::Zeroizing;
 
-use crate::dialogs::{self, ConnForm, Dialog, Outcome, PaneTarget, Pending, Purpose, SecretPrompt, SnippetForm, UnlockPrompt, VarsPrompt};
+use crate::cursor::HandExt;
+use crate::dialogs::{self, ConnForm, Dialog, ErrorInfo, Outcome, PaneTarget, Pending, Purpose, Retry, SecretPrompt, SnippetForm, TestState, UnlockPrompt, VarsPrompt};
 use crate::layout::{Dir, Tree};
 use crate::explorer::Explorer;
 use crate::pane::{self, bold_family, Pane, PaneRequest, PADDING};
@@ -25,6 +26,36 @@ const TAB_BAR_HEIGHT: f32 = 40.0;
 const TAB_HEIGHT: f32 = 34.0;
 const CONTROL_RADIUS: u8 = 6;
 const ROW_HEIGHT: f32 = 46.0;
+
+/// Cómo deshacer lo que mostró un aviso.
+enum Undo {
+    Connection { connection: Connection, forwards: Vec<Forward>, dependents: Vec<i64> },
+    Snippet(Snippet),
+}
+
+/// Limpieza que solo se hace si el aviso caduca sin deshacer.
+enum Cleanup {
+    Secrets(i64),
+}
+
+struct Toast {
+    id: u64,
+    text: String,
+    undo: Option<Undo>,
+    cleanup: Option<Cleanup>,
+    born: std::time::Instant,
+}
+
+const TOAST_LIFETIME: Duration = Duration::from_secs(8);
+const TOAST_FADE: Duration = Duration::from_millis(150);
+
+/// Estado de las sesiones de una conexión, para el punto de la barra lateral.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum LinkState {
+    Closed,
+    Open,
+    Lost,
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SidebarView {
@@ -115,8 +146,11 @@ pub struct App {
     open_queue: VecDeque<SavedTab>,
     restore_active: Option<usize>,
     dialog: Option<Dialog>,
+    /// Diálogo apartado mientras otro (huella, 2FA) pasa por delante.
+    suspended: Option<Dialog>,
     saved_layout: (Vec<SavedTab>, usize),
-    notice: Option<String>,
+    toasts: Vec<Toast>,
+    next_toast: u64,
 }
 
 impl App {
@@ -124,11 +158,11 @@ impl App {
         install_fonts(&cc.egui_ctx);
         install_visuals(&cc.egui_ctx);
 
-        let mut notice = None;
+        let mut startup_notice: Option<String> = None;
         let store = match Store::default_path().and_then(|path| Store::open(&path)) {
             Ok(store) => store,
             Err(error) => {
-                notice = Some(format!("Sin base de datos persistente: {error:#}"));
+                startup_notice = Some(format!("Sin base de datos persistente: {error:#}"));
                 Store::open_in_memory()?
             }
         };
@@ -160,7 +194,7 @@ impl App {
             open_queue.push_back(SavedTab::plain(TabKind::Local));
         }
 
-        Ok(Self {
+        let mut app = Self {
             tabs: Vec::new(),
             active: 0,
             debug_keys,
@@ -187,9 +221,38 @@ impl App {
             open_queue,
             restore_active: Some(active),
             dialog: None,
+            suspended: None,
             saved_layout: (Vec::new(), 0),
-            notice,
-        })
+            toasts: Vec::new(),
+            next_toast: 0,
+        };
+        if let Some(notice) = startup_notice {
+            app.notify(notice);
+        }
+        Ok(app)
+    }
+
+    /// Aviso breve, sin acción.
+    fn notify(&mut self, text: impl Into<String>) {
+        self.push_toast(text.into(), None, None);
+    }
+
+    fn push_toast(&mut self, text: String, undo: Option<Undo>, cleanup: Option<Cleanup>) {
+        self.next_toast += 1;
+        self.toasts.push(Toast { id: self.next_toast, text, undo, cleanup, born: std::time::Instant::now() });
+        // Como mucho tres a la vez: el más antiguo caduca ya.
+        while self.toasts.len() > 3 {
+            let old = self.toasts.remove(0);
+            self.finish_toast(old);
+        }
+    }
+
+    /// Aplica la limpieza pendiente de un aviso que se cierra sin deshacer.
+    fn finish_toast(&mut self, toast: Toast) {
+        if let Some(Cleanup::Secrets(id)) = &toast.cleanup {
+            let _ = self.secrets.delete(&account_for(*id, SecretKind::Password));
+            let _ = self.secrets.delete(&account_for(*id, SecretKind::Passphrase));
+        }
     }
 
     fn wake(&self) -> Arc<dyn Fn() + Send + Sync> {
@@ -293,7 +356,7 @@ impl App {
         match kind {
             TabKind::Local => match self.local_session() {
                 Ok(session) => self.place_pane(tab_id, PaneTarget::Split(dir), session),
-                Err(error) => self.dialog = Some(Dialog::Message(format!("No se pudo abrir el terminal: {error:#}"))),
+                Err(error) => self.dialog = Some(Dialog::failure("No se pudo abrir el terminal", format!("{error:#}"))),
             },
             TabKind::Connection(id) => {
                 if let Some(connection) = self.connections.iter().find(|c| c.id == Some(id)).cloned() {
@@ -352,10 +415,10 @@ impl App {
         let Some(kind) = kind else { return Ok(Credentials::default()) };
         let id = connection.id.unwrap_or_default();
         if let Some(secret) = self.session_secrets.get(&(id, kind)) {
-            return Ok(credentials(kind, secret.clone()));
+            return Ok(credentials_for(kind, secret.clone()));
         }
         match self.secrets.get(&account_for(id, kind)) {
-            Ok(Some(secret)) => Ok(credentials(kind, secret)),
+            Ok(Some(secret)) => Ok(credentials_for(kind, secret)),
             Ok(None) => Err(Step::Prompt { asking: connection.clone(), kind }),
             Err(SecretError::Locked) => Err(Step::Unlock),
             Err(error) => Err(Step::Failed(format!("Almacén de secretos: {error}"))),
@@ -378,6 +441,52 @@ impl App {
         Ok(credentials)
     }
 
+    /// Credenciales para «Probar conexión»: el secreto escrito en el formulario o el ya guardado.
+    /// Nunca pregunta: si falta algo, devuelve un mensaje que dice qué escribir.
+    fn test_credentials(&mut self, connection: &Connection, typed: &str) -> Result<Credentials, String> {
+        let needs = match connection.auth {
+            Auth::Password => Some(SecretKind::Password),
+            Auth::Key => match connection.key_path.as_deref().map(ssh::key_is_encrypted) {
+                Some(Ok(true)) => Some(SecretKind::Passphrase),
+                Some(Err(error)) => return Err(format!("{error:#}")),
+                _ => None,
+            },
+            Auth::Agent | Auth::Interactive => None,
+        };
+        let mut credentials = Credentials::default();
+        if let Some(kind) = needs {
+            let what = if kind == SecretKind::Password { "la contraseña" } else { "la passphrase" };
+            if !typed.is_empty() {
+                credentials = credentials_for(kind, Zeroizing::new(typed.to_string()));
+            } else if connection.id.is_some() {
+                credentials = match self.own_credentials(connection) {
+                    Ok(found) => found,
+                    Err(Step::Prompt { .. }) => return Err(format!("Escribe {what} en el formulario para poder probar.")),
+                    Err(Step::Unlock) => {
+                        return Err("El almacén de secretos está bloqueado: ábrelo antes con una conexión que use contraseña guardada.".into())
+                    }
+                    Err(Step::Failed(message)) => return Err(message),
+                };
+            } else {
+                return Err(format!("Escribe {what} en el formulario para poder probar."));
+            }
+        }
+        if let Some(jump_id) = connection.jump {
+            let Some(jump) = self.connections.iter().find(|c| c.id == Some(jump_id)).cloned() else {
+                return Err("El servidor de salto ya no existe.".into());
+            };
+            match self.gather_credentials(&jump, 1) {
+                Ok(found) => credentials.jump = Some(Box::new(JumpHost { connection: jump, credentials: found })),
+                Err(Step::Prompt { asking, .. }) => {
+                    return Err(format!("«{}» necesita su contraseña guardada para poder pasar por él.", asking.name))
+                }
+                Err(Step::Unlock) => return Err("El almacén de secretos está bloqueado.".into()),
+                Err(Step::Failed(message)) => return Err(message),
+            }
+        }
+        Ok(credentials)
+    }
+
     /// Reúne los secretos necesarios (pidiéndolos si hace falta) y abre la pestaña.
     fn begin_open(&mut self, connection: Connection, slot: Option<u64>, purpose: Purpose) {
         match self.gather_credentials(&connection, 0) {
@@ -391,21 +500,27 @@ impl App {
                     kind,
                     input: String::new(),
                     save: true,
+                    reveal: false,
                 }));
             }
             Err(Step::Unlock) => self.ask_unlock(Pending::Open(connection, slot, purpose)),
-            Err(Step::Failed(message)) => self.dialog = Some(Dialog::Message(message)),
+            Err(Step::Failed(message)) => self.dialog = Some(Dialog::failure("No se pudo preparar la conexión", message)),
         }
     }
 
     fn finish_open(&mut self, connection: Connection, credentials: Credentials, slot: Option<u64>, purpose: Purpose) {
+        let retry = Retry::Open(connection.clone(), slot, purpose.clone());
         let result = match purpose {
             Purpose::Terminal => self.open_ssh(connection, credentials, slot),
             Purpose::Explorer(local, remote) => self.open_explorer(connection, credentials, (local, remote)),
             Purpose::Pane { tab, target } => self.open_ssh_pane(connection, credentials, tab, target),
         };
         if let Err(error) = result {
-            self.dialog = Some(Dialog::Message(format!("No se pudo abrir la conexión: {error:#}")));
+            self.dialog = Some(Dialog::Error(ErrorInfo {
+                title: "No se pudo abrir la conexión".into(),
+                detail: format!("{error:#}"),
+                retry: Some(retry),
+            }));
         }
     }
 
@@ -413,6 +528,7 @@ impl App {
         let creating = self.secrets.master().is_some_and(|m| !m.is_initialized().unwrap_or(false));
         self.dialog = Some(Dialog::Unlock(UnlockPrompt {
             creating,
+            reveal: false,
             input: String::new(),
             confirm: String::new(),
             error: None,
@@ -424,7 +540,7 @@ impl App {
         match self.secrets.set(&account, &secret) {
             Ok(()) => {}
             Err(SecretError::Locked) => self.ask_unlock(Pending::Save { account, secret }),
-            Err(error) => self.dialog = Some(Dialog::Message(format!("No se pudo guardar el secreto: {error}"))),
+            Err(error) => self.dialog = Some(Dialog::failure("No se pudo guardar el secreto", error)),
         }
     }
 
@@ -451,7 +567,7 @@ impl App {
                     pane.insert_text(body, run);
                 }
             }
-            _ => self.notice = Some("No hay un terminal activo donde insertar".into()),
+            _ => self.notify("No hay un terminal activo donde insertar"),
         }
     }
 
@@ -466,6 +582,124 @@ impl App {
                 // Con paneles divididos solo se reconecta el panel caído.
                 Some(pane) => self.begin_open(connection, None, Purpose::Pane { tab: tab_id, target: PaneTarget::Replace(pane) }),
                 None => self.begin_open(connection, Some(tab_id), Purpose::Terminal),
+            }
+        }
+    }
+
+    /// Color de identidad de la conexión a la que pertenece una pestaña, si lo tiene.
+    fn identity_for(&self, kind: TabKind) -> Option<Color32> {
+        match kind {
+            TabKind::Connection(id) | TabKind::Explorer(id) => self
+                .connections
+                .iter()
+                .find(|c| c.id == Some(id))
+                .and_then(|c| c.color)
+                .map(theme::identity),
+            TabKind::Local => None,
+        }
+    }
+
+    fn environment_for(&self, kind: TabKind) -> Option<String> {
+        match kind {
+            TabKind::Connection(id) | TabKind::Explorer(id) => {
+                self.connections.iter().find(|c| c.id == Some(id)).and_then(|c| c.env.clone())
+            }
+            TabKind::Local => None,
+        }
+    }
+
+    fn delete_connection(&mut self, connection: Connection) {
+        let Some(id) = connection.id else { return };
+        let forwards = self.forwards.get(&id).cloned().unwrap_or_default();
+        let dependents: Vec<i64> = self.connections.iter().filter(|c| c.jump == Some(id)).filter_map(|c| c.id).collect();
+        if let Err(error) = self.store.lock().unwrap().delete_connection(id) {
+            self.dialog = Some(Dialog::failure("No se pudo eliminar la conexión", format!("{error:#}")));
+            return;
+        }
+        self.refresh_connections();
+        let text = format!("«{}» eliminada", connection.name);
+        self.push_toast(text, Some(Undo::Connection { connection, forwards, dependents }), Some(Cleanup::Secrets(id)));
+    }
+
+    fn delete_snippet(&mut self, snippet: Snippet) {
+        let Some(id) = snippet.id else { return };
+        if let Err(error) = self.store.lock().unwrap().delete_snippet(id) {
+            self.dialog = Some(Dialog::failure("No se pudo eliminar el snippet", format!("{error:#}")));
+            return;
+        }
+        self.refresh_connections();
+        let text = format!("«{}» eliminado", snippet.title);
+        self.push_toast(text, Some(Undo::Snippet(snippet)), None);
+    }
+
+    fn undo(&mut self, undo: Undo) {
+        let result = {
+            let mut store = self.store.lock().unwrap();
+            match &undo {
+                Undo::Connection { connection, forwards, dependents } => store
+                    .restore_connection(connection)
+                    .and_then(|_| store.replace_forwards(connection.id.unwrap_or_default(), forwards))
+                    .and_then(|_| dependents.iter().try_for_each(|id| store.set_jump(*id, connection.id))),
+                Undo::Snippet(snippet) => store.restore_snippet(snippet),
+            }
+        };
+        match result {
+            Ok(()) => self.refresh_connections(),
+            Err(error) => self.dialog = Some(Dialog::failure("No se pudo deshacer", format!("{error:#}"))),
+        }
+    }
+
+    /// Dibuja los avisos abajo a la derecha, con fundido de entrada y de salida, y procesa su caducidad.
+    fn toasts_ui(&mut self, ctx: &egui::Context) {
+        let mut undone: Option<usize> = None;
+        let mut dismissed: Option<usize> = None;
+        let mut expired = Vec::new();
+        for (index, toast) in self.toasts.iter().enumerate() {
+            if toast.born.elapsed() >= TOAST_LIFETIME + TOAST_FADE {
+                expired.push(index);
+            }
+        }
+        if !self.toasts.is_empty() {
+            ctx.request_repaint_after(Duration::from_millis(100));
+        }
+
+        egui::Area::new(egui::Id::NULL.with("toasts"))
+            .anchor(Align2::RIGHT_BOTTOM, [-16.0, -16.0])
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                ui.spacing_mut().item_spacing.y = 8.0;
+                for (index, toast) in self.toasts.iter().enumerate().rev() {
+                    let fading_out = toast.born.elapsed() >= TOAST_LIFETIME;
+                    let opacity = ctx.animate_value_with_time(egui::Id::NULL.with(("toast", toast.id)), if fading_out { 0.0 } else { 1.0 }, 0.15);
+                    ui.scope(|ui| {
+                        ui.set_opacity(opacity);
+                        Frame::popup(ui.style()).inner_margin(Margin::symmetric(14, 10)).show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(&toast.text);
+                                if toast.undo.is_some() && ui.add(Button::new(RichText::new("Deshacer").color(theme::accent())).fill(Color32::TRANSPARENT)).clicked() {
+                                    undone = Some(index);
+                                }
+                                if ui.add(Button::new("×").frame(false)).on_hover_text("Cerrar").clicked() {
+                                    dismissed = Some(index);
+                                }
+                            });
+                        });
+                    });
+                }
+            });
+
+        if let Some(index) = undone {
+            let toast = self.toasts.remove(index);
+            if let Some(undo) = toast.undo {
+                self.undo(undo);
+            }
+        } else if let Some(index) = dismissed {
+            let toast = self.toasts.remove(index);
+            self.finish_toast(toast);
+        } else {
+            for index in expired.into_iter().rev() {
+                let toast = self.toasts.remove(index);
+                self.finish_toast(toast);
             }
         }
     }
@@ -539,7 +773,7 @@ impl App {
         let text = match std::fs::read_to_string(&path) {
             Ok(text) => text,
             Err(error) => {
-                self.dialog = Some(Dialog::Message(format!("No se pudo leer {}: {error}", path.display())));
+                self.dialog = Some(Dialog::failure("No se pudo leer ~/.ssh/config", format!("{}: {error}", path.display())));
                 return;
             }
         };
@@ -571,7 +805,7 @@ impl App {
             }
         }
         self.refresh_connections();
-        self.notice = Some(format!("Importadas {imported} conexiones de ~/.ssh/config"));
+        self.notify(format!("Importadas {imported} conexiones de ~/.ssh/config"));
     }
 
     fn drive_pending(&mut self) {
@@ -603,21 +837,28 @@ impl App {
             self.close_tab(index);
         }
 
+        // El editor de conexión cede el paso a las preguntas del servidor (huella, 2FA) de «Probar conexión».
+        if !self.pending_ui.is_empty() && matches!(self.dialog, Some(Dialog::Edit(_))) {
+            self.suspended = self.dialog.take();
+        }
         if self.dialog.is_some() {
             return;
         }
         if let Some(event) = self.pending_ui.pop_front() {
             self.dialog = Some(match event {
                 UiEvent::HostKey(request) => Dialog::HostKey(request),
+                UiEvent::HostKeyChanged(change) => Dialog::HostKeyChanged(change),
                 UiEvent::Prompt(request) => Dialog::Prompt(request, Vec::new()),
             });
+        } else if let Some(dialog) = self.suspended.take() {
+            self.dialog = Some(dialog);
         } else if let Some((account, secret)) = self.save_queue.pop_front() {
             self.save_secret(account, secret);
         } else if let Some(saved) = self.open_queue.pop_front() {
             match saved.kind {
                 TabKind::Local => {
                     if let Err(error) = self.open_local() {
-                        self.dialog = Some(Dialog::Message(format!("No se pudo abrir el terminal local: {error:#}")));
+                        self.dialog = Some(Dialog::failure("No se pudo abrir el terminal local", format!("{error:#}")));
                     }
                 }
                 TabKind::Connection(id) => {
@@ -673,18 +914,21 @@ impl App {
         }
         if forced != forced_before {
             let result = Secrets::set_master_forced(&self.store.lock().unwrap(), forced);
-            self.notice = Some(match result {
-                Ok(()) => "Reinicia omni-term para aplicar el cambio de almacén de secretos".into(),
-                Err(error) => format!("No se pudo guardar el ajuste: {error:#}"),
-            });
+            match result {
+                Ok(()) => self.notify("Reinicia omni-term para aplicar el cambio de almacén de secretos"),
+                Err(error) => self.dialog = Some(Dialog::failure("No se pudo guardar el ajuste", format!("{error:#}"))),
+            }
         }
 
         match (outcome, dialog) {
             (Outcome::None, dialog) => self.dialog = Some(dialog),
+            (Outcome::Submit, Dialog::Error(ErrorInfo { retry: Some(Retry::Open(connection, slot, purpose)), .. })) => {
+                self.begin_open(connection, slot, purpose);
+            }
             (Outcome::Cancel, Dialog::Prompt(request, _)) => {
                 let _ = request.reply.send(None);
             }
-            (Outcome::Cancel, Dialog::Secret(_) | Dialog::Unlock(_) | Dialog::Edit(_) | Dialog::Settings | Dialog::Snippet(_) | Dialog::SnippetVars(_) | Dialog::ConfirmDelete { .. } | Dialog::ConfirmDeleteSnippet { .. } | Dialog::ConfirmReset(_) | Dialog::Message(_)) => {}
+            (Outcome::Cancel, Dialog::Secret(_) | Dialog::Unlock(_) | Dialog::Edit(_) | Dialog::Error(_) | Dialog::HostKeyChanged(_) | Dialog::Settings | Dialog::Snippet(_) | Dialog::SnippetVars(_) | Dialog::ConfirmReset(_)) => {}
             (Outcome::Cancel, dialog) => self.dialog = Some(dialog),
             (Outcome::Submit, Dialog::Prompt(request, answers)) => {
                 let _ = request.reply.send(Some(answers));
@@ -692,16 +936,13 @@ impl App {
             (Outcome::Trust(accepted), Dialog::HostKey(request)) => {
                 let _ = request.reply.send(accepted);
             }
-            (Outcome::Save, Dialog::Edit(mut form)) => match form.to_connection().and_then(|c| form.to_forwards().map(|f| (c, f))) {
-                Err(message) => {
-                    form.error = Some(message);
-                    self.dialog = Some(Dialog::Edit(form));
-                }
-                Ok((connection, forwards)) => {
+            (Outcome::Save, Dialog::Edit(mut form)) => match form.validate() {
+                None => self.dialog = Some(Dialog::Edit(form)),
+                Some((connection, forwards)) => {
                     let saved = self.store.lock().unwrap().save_connection(&connection);
                     match saved {
                         Err(error) => {
-                            form.error = Some(format!("{error:#}"));
+                            form.errors.general = Some(format!("No se pudo guardar: {error:#}"));
                             self.dialog = Some(Dialog::Edit(form));
                         }
                         Ok(id) => {
@@ -717,6 +958,32 @@ impl App {
                     }
                 }
             },
+            (Outcome::Test, Dialog::Edit(mut form)) => {
+                if let Some((connection, _)) = form.validate() {
+                    let state = match self.test_credentials(&connection, &form.secret) {
+                        Err(message) => TestState::Failed(message),
+                        Ok(credentials) => {
+                            let status = Arc::new(Mutex::new(TestState::Running));
+                            let task_status = status.clone();
+                            let (events, wake) = (self.events_tx.clone(), self.wake());
+                            self.runtime.spawn(async move {
+                                let result =
+                                    ssh::test_connection(&connection, &credentials, events, wake.clone(), ssh::default_known_hosts()).await;
+                                *task_status.lock().unwrap() = match result {
+                                    Ok(message) => TestState::Ok(message),
+                                    Err(error) => TestState::Failed(format!("{error:#}")),
+                                };
+                                wake();
+                            });
+                            form.test = Some(status);
+                            self.dialog = Some(Dialog::Edit(form));
+                            return;
+                        }
+                    };
+                    form.test = Some(Arc::new(Mutex::new(state)));
+                }
+                self.dialog = Some(Dialog::Edit(form));
+            }
             (Outcome::Save, Dialog::Snippet(mut form)) => match form.to_snippet() {
                 Err(message) => {
                     form.error = Some(message);
@@ -737,20 +1004,10 @@ impl App {
                 let text = prompt.rendered();
                 self.insert_into_active(&text, prompt.run);
             }
-            (Outcome::Delete, Dialog::ConfirmDeleteSnippet { id, .. }) => {
-                let _ = self.store.lock().unwrap().delete_snippet(id);
-                self.refresh_connections();
-            }
-            (Outcome::Delete, Dialog::ConfirmDelete { id, .. }) => {
-                let _ = self.store.lock().unwrap().delete_connection(id);
-                let _ = self.secrets.delete(&account_for(id, SecretKind::Password));
-                let _ = self.secrets.delete(&account_for(id, SecretKind::Passphrase));
-                self.refresh_connections();
-            }
             (Outcome::Delete, Dialog::ConfirmReset(then)) => {
                 if let Some(master) = self.secrets.master() {
                     if let Err(error) = master.reset() {
-                        self.dialog = Some(Dialog::Message(format!("No se pudo borrar: {error:#}")));
+                        self.dialog = Some(Dialog::failure("No se pudieron borrar los secretos", format!("{error:#}")));
                         return;
                     }
                 }
@@ -808,29 +1065,36 @@ impl App {
         let mut copy: Option<String> = None;
         let mut edit_snippet: Option<Snippet> = None;
         let mut delete_snippet: Option<Snippet> = None;
-        let open_ids: Vec<i64> = self
-            .tabs
-            .iter()
-            .filter_map(|t| match t.kind {
-                TabKind::Connection(id) => Some(id),
-                TabKind::Local | TabKind::Explorer(_) => None,
-            })
-            .collect();
-
         Panel::left("sidebar")
             .default_size(SIDEBAR_WIDTH)
             .min_size(180.0)
             .frame(Frame::NONE.fill(theme::mantle()).inner_margin(Margin::same(12)))
             .show(ui, |ui| {
-                let primary = Button::new(RichText::new("Terminal local").color(theme::base()).font(FontId::new(14.0, strong_family())))
-                    .fill(theme::accent())
-                    .min_size(Vec2::new(ui.available_width(), 34.0));
-                if ui.add(primary).clicked() {
+                ui.label(RichText::new("omni-term").font(FontId::new(15.0, strong_family())).color(theme::text()));
+                ui.add_space(6.0);
+
+                // El terminal local es un sitio más de la lista: misma fila, sin botón destacado.
+                let shell = std::env::var("SHELL")
+                    .ok()
+                    .and_then(|s| s.rsplit('/').next().map(str::to_string))
+                    .unwrap_or_else(|| "shell".into());
+                let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_HEIGHT), Sense::click());
+                if response.hovered() {
+                    ui.painter().rect_filled(rect.expand2(Vec2::new(8.0, 0.0)), CornerRadius::same(CONTROL_RADIUS), theme::surface());
+                }
+                {
+                    let painter = ui.painter().with_clip_rect(rect);
+                    painter.text(Pos2::new(rect.min.x, rect.min.y + 9.0), Align2::LEFT_TOP, "Terminal local", FontId::new(14.0, strong_family()), theme::text());
+                    painter.text(Pos2::new(rect.min.x, rect.min.y + 27.0), Align2::LEFT_TOP, format!("Este equipo · {shell}"), FontId::new(12.0, FontFamily::Proportional), theme::subtext());
+                }
+                if response.hand().on_hover_text("Abrir un terminal local en una pestaña nueva").clicked() {
                     open_local = true;
                 }
 
-                ui.add_space(12.0);
+                ui.add_space(10.0);
                 ui.horizontal(|ui| {
+                    ui.spacing_mut().button_padding.x = 0.0;
+                    ui.spacing_mut().item_spacing.x = 18.0;
                     for (view, label) in [(SidebarView::Connections, "Conexiones"), (SidebarView::Snippets, "Snippets")] {
                         let selected = self.sidebar_view == view;
                         let color = if selected { theme::text() } else { theme::subtext() };
@@ -840,7 +1104,7 @@ impl App {
                         if selected {
                             let y = response.rect.max.y + 1.0;
                             ui.painter().line_segment(
-                                [Pos2::new(response.rect.min.x + 8.0, y), Pos2::new(response.rect.max.x - 8.0, y)],
+                                [Pos2::new(response.rect.min.x, y), Pos2::new(response.rect.max.x, y)],
                                 Stroke::new(2.0, theme::accent()),
                             );
                         }
@@ -851,7 +1115,7 @@ impl App {
                         }
                     }
                 });
-                ui.add_space(4.0);
+                ui.add_space(6.0);
 
                 if self.sidebar_view == SidebarView::Connections {
                 ui.horizontal(|ui| {
@@ -870,31 +1134,62 @@ impl App {
                 }
                 ui.spacing_mut().item_spacing.y = 2.0;
                 for connection in &self.connections {
-                    let is_open = connection.id.is_some_and(|id| open_ids.contains(&id));
+                    let state = connection.id.map_or(LinkState::Closed, |id| {
+                        self.tabs
+                            .iter()
+                            .filter(|t| t.kind == TabKind::Connection(id))
+                            .fold(LinkState::Closed, |acc, t| {
+                                if t.pane().is_some_and(|p| p.session.is_disconnected()) {
+                                    acc.max(LinkState::Lost)
+                                } else {
+                                    acc.max(LinkState::Open)
+                                }
+                            })
+                    });
+                    let identity = connection.color.map(theme::identity);
                     let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_HEIGHT), Sense::click());
                     if response.hovered() {
-                        ui.painter().rect_filled(rect, CornerRadius::same(CONTROL_RADIUS), theme::surface());
+                        ui.painter().rect_filled(rect.expand2(Vec2::new(8.0, 0.0)), CornerRadius::same(CONTROL_RADIUS), theme::surface());
                     }
-                    let left = rect.min.x + 10.0;
-                    let painter = ui.painter().with_clip_rect(rect.shrink2(Vec2::new(4.0, 0.0)));
+                    if let Some(color) = identity {
+                        // Marca de identidad: informa de qué servidor es, no decora.
+                        let bar = Rect::from_min_size(Pos2::new(rect.min.x - 8.0, rect.min.y + 7.0), Vec2::new(3.0, ROW_HEIGHT - 14.0));
+                        ui.painter().rect_filled(bar, CornerRadius::same(2), color);
+                    }
+                    let painter = ui.painter().with_clip_rect(rect);
+                    let name_font = FontId::new(14.0, strong_family());
+                    let name_width = painter.layout_no_wrap(connection.name.clone(), name_font.clone(), Color32::PLACEHOLDER).size().x;
+                    painter.text(Pos2::new(rect.min.x, rect.min.y + 9.0), Align2::LEFT_TOP, &connection.name, name_font, theme::text());
+                    if let Some(env) = &connection.env {
+                        painter.text(
+                            Pos2::new(rect.min.x + name_width + 8.0, rect.min.y + 11.0),
+                            Align2::LEFT_TOP,
+                            env,
+                            FontId::new(12.0, strong_family()),
+                            identity.unwrap_or_else(theme::subtext),
+                        );
+                    }
                     painter.text(
-                        Pos2::new(left, rect.min.y + 9.0),
-                        Align2::LEFT_TOP,
-                        &connection.name,
-                        FontId::new(14.0, strong_family()),
-                        theme::text(),
-                    );
-                    painter.text(
-                        Pos2::new(left, rect.min.y + 27.0),
+                        Pos2::new(rect.min.x, rect.min.y + 27.0),
                         Align2::LEFT_TOP,
                         format!("{}@{}", connection.user, connection.host),
                         FontId::new(12.0, FontFamily::Proportional),
                         theme::subtext(),
                     );
-                    if is_open {
-                        ui.painter().circle_filled(Pos2::new(rect.max.x - 14.0, rect.center().y), 3.5, theme::accent());
+                    match state {
+                        LinkState::Open => {
+                            ui.painter().circle_filled(Pos2::new(rect.max.x - 6.0, rect.center().y), 3.5, theme::accent());
+                        }
+                        LinkState::Lost => {
+                            ui.painter().circle_filled(Pos2::new(rect.max.x - 6.0, rect.center().y), 3.5, theme::red());
+                        }
+                        LinkState::Closed => {}
                     }
-                    let response = response.on_hover_text(if is_open { "Sesión abierta. Doble clic para otra pestaña" } else { "Doble clic para conectar" });
+                    let response = response.hand().on_hover_text(match state {
+                        LinkState::Closed => "Doble clic para conectar",
+                        LinkState::Open => "Sesión abierta. Doble clic para otra pestaña",
+                        LinkState::Lost => "Sesión caída: usa Reconectar en su pestaña",
+                    });
                     if response.double_clicked() {
                         connect = Some(connection.clone());
                     }
@@ -935,6 +1230,7 @@ impl App {
                             }
                         }
                     }
+                    ui.add_space(4.0);
                 }
 
                 ui.add_space(8.0);
@@ -943,9 +1239,6 @@ impl App {
                     .stroke(Stroke::new(1.0, theme::surface()));
                 if ui.add(import_button).clicked() {
                     import = true;
-                }
-                if let Some(notice) = &self.notice {
-                    ui.label(RichText::new(notice).small().color(theme::subtext()));
                 }
 
                 } else {
@@ -1000,7 +1293,7 @@ impl App {
                             FontId::new(12.0, FontFamily::Monospace),
                             theme::subtext(),
                         );
-                        let response = response.on_hover_text("Clic para insertar en el terminal activo. Clic derecho: más opciones");
+                        let response = response.hand().on_hover_text("Clic para insertar en el terminal activo. Clic derecho: más opciones");
                         if response.clicked() {
                             insert = Some((snippet.clone(), false));
                         }
@@ -1053,14 +1346,14 @@ impl App {
             let selected = self.tabs.get(self.active).and_then(|t| t.pane()).and_then(|p| p.selection_text());
             match selected {
                 Some(text) => self.dialog = Some(Dialog::Snippet(SnippetForm::new(text))),
-                None => self.notice = Some("Selecciona texto en el terminal para guardarlo como snippet".into()),
+                None => self.notify("Selecciona texto en el terminal para guardarlo como snippet"),
             }
         }
         if let Some(snippet) = edit_snippet {
             self.dialog = Some(Dialog::Snippet(SnippetForm::from_snippet(&snippet)));
         }
         if let Some(snippet) = delete_snippet {
-            self.dialog = snippet.id.map(|id| Dialog::ConfirmDeleteSnippet { id, title: snippet.title });
+            self.delete_snippet(snippet);
         }
         if open_local {
             self.open_queue.push_back(SavedTab::plain(TabKind::Local));
@@ -1081,7 +1374,7 @@ impl App {
             self.dialog = Some(Dialog::Edit(ConnForm::from_connection(&connection, self.forwards.get(&connection.id.unwrap_or_default()).map_or(&[][..], |f| f.as_slice()))));
         }
         if let Some(connection) = delete {
-            self.dialog = connection.id.map(|id| Dialog::ConfirmDelete { id, name: connection.name });
+            self.delete_connection(connection);
         }
     }
 }
@@ -1122,7 +1415,7 @@ enum Step {
     Failed(String),
 }
 
-fn credentials(kind: SecretKind, secret: Zeroizing<String>) -> Credentials {
+fn credentials_for(kind: SecretKind, secret: Zeroizing<String>) -> Credentials {
     match kind {
         SecretKind::Password => Credentials { password: Some(secret), ..Default::default() },
         SecretKind::Passphrase => Credentials { key_passphrase: Some(secret), ..Default::default() },
@@ -1161,6 +1454,7 @@ fn install_visuals(ctx: &egui::Context) {
         (TextStyle::Monospace, FontId::new(14.0, FontFamily::Monospace)),
     ]
     .into();
+    style.animation_time = 0.12;
     style.spacing.item_spacing = Vec2::new(8.0, 8.0);
     style.spacing.button_padding = Vec2::new(12.0, 6.0);
     style.spacing.interact_size.y = 30.0;
@@ -1179,6 +1473,7 @@ fn install_visuals(ctx: &egui::Context) {
     v.selection.bg_fill = theme::accent().gamma_multiply(0.35);
     v.selection.stroke = Stroke::new(1.0, theme::accent());
 
+    v.interact_cursor = Some(egui::CursorIcon::PointingHand);
     v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, theme::surface());
     for (widget, fill) in [
         (&mut v.widgets.inactive, theme::surface()),
@@ -1195,7 +1490,7 @@ fn install_visuals(ctx: &egui::Context) {
 }
 
 /// Pestaña con trazo de acento arriba cuando está activa; el cierre aparece al pasar el ratón.
-fn tab(ui: &mut egui::Ui, label: &str, selected: bool, index: usize) -> (bool, bool) {
+fn tab(ui: &mut egui::Ui, label: &str, selected: bool, index: usize, identity: Option<Color32>) -> (bool, bool) {
     let shown = if label.chars().count() > 24 {
         format!("{}…", label.chars().take(23).collect::<String>())
     } else {
@@ -1205,6 +1500,7 @@ fn tab(ui: &mut egui::Ui, label: &str, selected: bool, index: usize) -> (bool, b
     let galley = ui.painter().layout_no_wrap(shown, font, Color32::PLACEHOLDER);
     let size = Vec2::new(galley.size().x + 12.0 + 8.0 + 20.0 + 8.0, TAB_HEIGHT);
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    let response = response.hand();
 
     let hovered = response.hovered();
     let fill = if selected {
@@ -1216,9 +1512,16 @@ fn tab(ui: &mut egui::Ui, label: &str, selected: bool, index: usize) -> (bool, b
     };
     let corner = CornerRadius { nw: 8, ne: 8, sw: 0, se: 0 };
     ui.painter().rect_filled(rect, corner, fill);
-    if selected {
+    // La línea superior marca la pestaña activa; con identidad, usa el color del servidor y se ve siempre.
+    let line_color = match (selected, identity) {
+        (true, Some(color)) => Some(color),
+        (true, None) => Some(theme::accent()),
+        (false, Some(color)) => Some(color.gamma_multiply(0.55)),
+        (false, None) => None,
+    };
+    if let Some(color) = line_color {
         let line = Rect::from_min_size(rect.min, Vec2::new(rect.width(), 2.0));
-        ui.painter().rect_filled(line, CornerRadius { nw: 8, ne: 8, sw: 0, se: 0 }, theme::accent());
+        ui.painter().rect_filled(line, CornerRadius { nw: 8, ne: 8, sw: 0, se: 0 }, color);
     }
 
     let color = if selected { theme::text() } else { theme::subtext() };
@@ -1227,7 +1530,7 @@ fn tab(ui: &mut egui::Ui, label: &str, selected: bool, index: usize) -> (bool, b
     let close_rect = Rect::from_center_size(Pos2::new(rect.max.x - 18.0, rect.center().y + 1.0), Vec2::splat(20.0));
     let mut close_clicked = false;
     if selected || hovered {
-        let close = ui.interact(close_rect, ui.auto_id_with(("tab-close", index)), Sense::click());
+        let close = ui.interact(close_rect, ui.auto_id_with(("tab-close", index)), Sense::click()).hand();
         if close.hovered() {
             ui.painter().rect_filled(close_rect, CornerRadius::same(4), theme::selection());
         }
@@ -1259,7 +1562,8 @@ impl eframe::App for App {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 2.0;
                     for (i, t) in self.tabs.iter().enumerate() {
-                        let (clicked, closed) = tab(ui, &t.title(), i == self.active, i);
+                        let identity = self.identity_for(t.kind);
+                        let (clicked, closed) = tab(ui, &t.title(), i == self.active, i, identity);
                         if clicked {
                             activate = Some(i);
                         }
@@ -1272,30 +1576,36 @@ impl eframe::App for App {
                     if plus.on_hover_text("Nueva pestaña").clicked() {
                         new_local = true;
                     }
-                    if self.tabs.get(self.active).is_some_and(|t| matches!(t.body, Body::Terminal { .. })) {
-                        ui.add_space(8.0);
-                        ui.menu_button(RichText::new("Dividir").small(), |ui| {
-                            if ui.button("A la derecha  (Ctrl+Shift+D)").clicked() {
-                                split = Some(Dir::Horizontal);
-                                ui.close();
-                            }
-                            if ui.button("Hacia abajo  (Ctrl+Shift+E)").clicked() {
-                                split = Some(Dir::Vertical);
-                                ui.close();
-                            }
-                            if ui.button("Cerrar panel  (Ctrl+Shift+W)").clicked() {
-                                close_pane = true;
-                                ui.close();
-                            }
-                        });
-                    }
-                    if let Some(TabKind::Connection(id)) = self.tabs.get(self.active).map(|t| t.kind) {
-                        ui.add_space(8.0);
-                        let files = Button::new(RichText::new("Archivos").small()).fill(Color32::TRANSPARENT);
-                        if ui.add(files).on_hover_text("Abrir el explorador de archivos de esta conexión").clicked() {
-                            files_tab = Some(id);
+
+                    // Acciones de la pestaña activa, juntas y a la derecha, con el mismo estilo.
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.spacing_mut().item_spacing.x = 4.0;
+                        if self.tabs.get(self.active).is_some_and(|t| matches!(t.body, Body::Terminal { .. })) {
+                            ui.scope(|ui| {
+                                ui.visuals_mut().widgets.inactive.weak_bg_fill = Color32::TRANSPARENT;
+                                ui.menu_button(RichText::new("Dividir").small(), |ui| {
+                                    if ui.button("A la derecha  (Ctrl+Shift+D)").clicked() {
+                                        split = Some(Dir::Horizontal);
+                                        ui.close();
+                                    }
+                                    if ui.button("Hacia abajo  (Ctrl+Shift+E)").clicked() {
+                                        split = Some(Dir::Vertical);
+                                        ui.close();
+                                    }
+                                    if ui.button("Cerrar panel  (Ctrl+Shift+W)").clicked() {
+                                        close_pane = true;
+                                        ui.close();
+                                    }
+                                });
+                            });
                         }
-                    }
+                        if let Some(TabKind::Connection(id)) = self.tabs.get(self.active).map(|t| t.kind) {
+                            let files = Button::new(RichText::new("Archivos").small()).fill(Color32::TRANSPARENT);
+                            if ui.add(files).on_hover_text("Abrir el explorador de archivos de esta conexión").clicked() {
+                                files_tab = Some(id);
+                            }
+                        }
+                    });
                 });
             });
 
@@ -1323,6 +1633,12 @@ impl eframe::App for App {
         let area = ui.available_rect_before_wrap();
         ui.painter().rect_filled(area, CornerRadius::ZERO, theme::base());
         let text_area = area.shrink(PADDING);
+        let active_kind = self.tabs.get(self.active).map(|t| t.kind);
+        let identity = active_kind.and_then(|kind| self.identity_for(kind));
+        if let Some(color) = identity {
+            // Banda de identidad bajo las pestañas: recuerda en qué servidor estás escribiendo.
+            ui.painter().rect_filled(Rect::from_min_size(area.min, Vec2::new(area.width(), 3.0)), CornerRadius::ZERO, color);
+        }
 
         // Zoom del terminal: Ctrl+= / Ctrl+- / Ctrl+0, reservados y no enviados a la aplicación.
         let zoom = ctx.input_mut(|i| {
@@ -1413,7 +1729,7 @@ impl eframe::App for App {
                             ui.painter().rect_stroke(
                                 rect.expand(4.0),
                                 CornerRadius::same(4),
-                                egui::Stroke::new(1.5, theme::accent().gamma_multiply(0.6)),
+                                egui::Stroke::new(1.5, identity.unwrap_or_else(theme::accent).gamma_multiply(0.7)),
                                 egui::StrokeKind::Outside,
                             );
                         }
@@ -1432,8 +1748,11 @@ impl eframe::App for App {
                 None => {}
             }
 
-            let title = self.tabs[active].title();
-            let title = if title.is_empty() { "omni-term".to_string() } else { title };
+            let mut title = self.tabs[active].title();
+            if let Some(env) = self.environment_for(self.tabs[active].kind) {
+                title = format!("{title} · {env}");
+            }
+            let title = if title.is_empty() { "omni-term".to_string() } else { format!("{title} — omni-term") };
             if title != self.window_title {
                 ctx.send_viewport_cmd(ViewportCommand::Title(title.clone()));
                 self.window_title = title;
@@ -1464,6 +1783,7 @@ impl eframe::App for App {
         }
 
         self.handle_dialog(&ctx);
+        self.toasts_ui(&ctx);
         self.persist_layout();
     }
 }

@@ -36,8 +36,31 @@ pub struct PromptRequest {
     pub reply: oneshot::Sender<Option<Vec<String>>>,
 }
 
+/// La huella que presenta el servidor no coincide con la guardada en `known_hosts`.
+pub struct HostKeyChange {
+    pub host: String,
+    pub port: u16,
+    pub algorithm: String,
+    pub received: String,
+    pub stored: Option<String>,
+    /// Línea de `known_hosts` con la huella antigua.
+    pub line: usize,
+}
+
+impl HostKeyChange {
+    /// Comando que borra la huella antigua de `known_hosts`.
+    pub fn forget_command(&self) -> String {
+        if self.port == 22 {
+            format!("ssh-keygen -R {}", self.host)
+        } else {
+            format!("ssh-keygen -R \"[{}]:{}\"", self.host, self.port)
+        }
+    }
+}
+
 pub enum UiEvent {
     HostKey(HostKeyRequest),
+    HostKeyChanged(HostKeyChange),
     Prompt(PromptRequest),
 }
 
@@ -171,10 +194,23 @@ impl Handler for Client {
         match check_known_hosts_path(&self.host, self.port, key, &self.known_hosts) {
             Ok(true) => return Ok(true),
             Err(russh::keys::Error::KeyChanged { line }) => {
-                *self.rejection.lock().unwrap() = Some(format!(
-                    "¡LA HUELLA DEL SERVIDOR HA CAMBIADO! (línea {line} de ~/.ssh/known_hosts). \
-                     Podría ser un ataque de intermediario. Conexión cancelada."
-                ));
+                let stored = russh::keys::known_hosts::known_host_keys_path(&self.host, self.port, &self.known_hosts)
+                    .ok()
+                    .and_then(|keys| keys.into_iter().find(|(l, _)| *l == line))
+                    .map(|(_, key)| key.fingerprint(HashAlg::Sha256).to_string());
+                let change = HostKeyChange {
+                    host: self.host.clone(),
+                    port: self.port,
+                    algorithm: key.algorithm().to_string(),
+                    received: key.fingerprint(HashAlg::Sha256).to_string(),
+                    stored,
+                    line,
+                };
+                if self.events.send(UiEvent::HostKeyChanged(change)).is_ok() {
+                    (self.wake)();
+                }
+                *self.rejection.lock().unwrap() =
+                    Some(format!("La huella del servidor ha cambiado (línea {line} de ~/.ssh/known_hosts). Conexión cancelada."));
                 return Ok(false);
             }
             Ok(false) | Err(_) => {}
@@ -236,6 +272,28 @@ impl Handler for Client {
         });
         Ok(())
     }
+}
+
+/// Conecta y autentica sin abrir sesión, para «Probar conexión».
+pub async fn test_connection(
+    connection: &Connection,
+    credentials: &Credentials,
+    events: std_mpsc::Sender<UiEvent>,
+    wake: Arc<dyn Fn() + Send + Sync>,
+    known_hosts: std::path::PathBuf,
+) -> anyhow::Result<String> {
+    let session = establish(
+        connection,
+        credentials,
+        events,
+        wake,
+        known_hosts,
+        Arc::new(Mutex::new(Vec::new())),
+        new_tunnels(&[]),
+    )
+    .await?;
+    let _ = session.disconnect(russh::Disconnect::ByApplication, "", "es").await;
+    Ok(format!("Conexión correcta: {}@{}:{}", connection.user, connection.host, connection.port))
 }
 
 /// `true` si la llave privada necesita passphrase.
@@ -699,6 +757,8 @@ mod tests {
             key_path: Some(sshd.key_path.clone()),
             init_command: None,
             jump: None,
+            color: None,
+            env: None,
         };
         let again = connection.clone();
 
@@ -844,6 +904,88 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// Una huella distinta a la de `known_hosts` rechaza la conexión y avisa con los datos para el diálogo.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_changed_host_key_is_rejected_and_reported() {
+        let Some(sshd) = crate::testutil::PrivateSshd::start() else { return };
+        let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+
+        // `known_hosts` con otra clave (la pública del cliente) para este mismo servidor y puerto.
+        let other = std::fs::read_to_string(sshd.dir.join("client_key.pub")).unwrap();
+        let hosts = sshd.dir.join("known_hosts");
+        std::fs::write(&hosts, format!("[127.0.0.1]:{} {}\n", sshd.port, other.trim())).unwrap();
+
+        let (events, requests) = std_mpsc::channel();
+        let connection = Connection {
+            id: None,
+            name: "cambio".into(),
+            host: "127.0.0.1".into(),
+            port: sshd.port,
+            user: sshd.user.clone(),
+            auth: Auth::Key,
+            key_path: Some(sshd.key_path.clone()),
+            init_command: None,
+            jump: None,
+            color: None,
+            env: None,
+        };
+        let result = runtime.block_on(test_connection(&connection, &Credentials::default(), events, Arc::new(|| {}), hosts));
+        let message = result.unwrap_err().to_string();
+        assert!(message.contains("huella"), "{message}");
+
+        let Ok(UiEvent::HostKeyChanged(change)) = requests.recv_timeout(Duration::from_secs(5)) else {
+            panic!("no llegó el aviso de huella cambiada");
+        };
+        assert_eq!(change.line, 1);
+        assert!(change.received.starts_with("SHA256:"));
+        assert!(change.stored.as_deref().is_some_and(|s| s.starts_with("SHA256:") && s != change.received));
+        assert_eq!(change.forget_command(), format!("ssh-keygen -R \"[127.0.0.1]:{}\"", sshd.port));
+    }
+
+    #[test]
+    fn forget_command_omits_brackets_on_the_default_port() {
+        let change = |port| HostKeyChange { host: "srv.test".into(), port, algorithm: "ssh-ed25519".into(), received: String::new(), stored: None, line: 3 };
+        assert_eq!(change(22).forget_command(), "ssh-keygen -R srv.test");
+        assert_eq!(change(2222).forget_command(), "ssh-keygen -R \"[srv.test]:2222\"");
+    }
+
+    /// «Probar conexión»: éxito con una llave válida y error claro con una inexistente.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_connection_reports_success_and_failure() {
+        let Some(sshd) = crate::testutil::PrivateSshd::start() else { return };
+        let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+        let (events, requests) = std_mpsc::channel();
+        std::thread::spawn(move || {
+            while let Ok(event) = requests.recv() {
+                if let UiEvent::HostKey(request) = event {
+                    let _ = request.reply.send(true);
+                }
+            }
+        });
+        let mut connection = Connection {
+            id: None,
+            name: "prueba".into(),
+            host: "127.0.0.1".into(),
+            port: sshd.port,
+            user: sshd.user.clone(),
+            auth: Auth::Key,
+            key_path: Some(sshd.key_path.clone()),
+            init_command: None,
+            jump: None,
+            color: None,
+            env: None,
+        };
+        let hosts = sshd.dir.join("known_hosts");
+        let ok = runtime.block_on(test_connection(&connection, &Credentials::default(), events.clone(), Arc::new(|| {}), hosts.clone()));
+        assert!(ok.unwrap().starts_with("Conexión correcta"));
+
+        connection.key_path = Some("/no/existe/llave".into());
+        let failed = runtime.block_on(test_connection(&connection, &Credentials::default(), events, Arc::new(|| {}), hosts));
+        assert!(failed.unwrap_err().to_string().contains("no se pudo leer la llave"));
+    }
+
     /// Autenticación en dos pasos (keyboard-interactive) contra un servidor mínimo con un código fijo.
     #[test]
     fn keyboard_interactive_asks_the_user_and_checks_the_code() {
@@ -860,6 +1002,7 @@ mod tests {
                         UiEvent::HostKey(request) => {
                             let _ = request.reply.send(true);
                         }
+                        UiEvent::HostKeyChanged(_) => panic!("huella cambiada inesperada"),
                         UiEvent::Prompt(request) => {
                             assert_eq!(request.prompts, vec![("Verification code: ".to_string(), false)]);
                             let _ = request.reply.send(answer.map(|a| vec![a.to_string()]));
@@ -877,6 +1020,8 @@ mod tests {
                 key_path: None,
                 init_command: None,
                 jump: None,
+                color: None,
+                env: None,
             };
             let credentials = Credentials::default();
             runtime.block_on(async {

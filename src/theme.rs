@@ -47,7 +47,7 @@ static LIGHT: Palette = Palette {
     base: rgb(0xeff1f5),
     mantle: rgb(0xe6e9ef),
     text: rgb(0x4c4f69),
-    subtext: rgb(0x6c6f85),
+    subtext: rgb(0x555870),
     surface: rgb(0xccd0da),
     selection: rgb(0xacb0be),
     cursor: rgb(0xdc8a78),
@@ -103,6 +103,18 @@ pub fn accent() -> Color32 {
     palette().accent
 }
 
+/// Colores con los que se marca una conexión (rojo, naranja, amarillo, verde, azul, violeta).
+pub const IDENTITY_NAMES: [&str; 6] = ["Rojo", "Naranja", "Amarillo", "Verde", "Azul", "Violeta"];
+
+/// Color de identidad `index` (0..6), tomado de la paleta activa para que se lea en ambos temas.
+pub fn identity(index: u8) -> Color32 {
+    // En el tema claro los tonos pastel no alcanzan 3:1 sobre el fondo; se usan versiones más oscuras.
+    const LIGHT_SET: [u32; 6] = [0xd20f39, 0xc2500a, 0xa66a00, 0x2d7a1c, 0x1e66f5, 0x8839ef];
+    const DARK_SET: [u32; 6] = [0xf38ba8, 0xfab387, 0xf9e2af, 0xa6e3a1, 0x89b4fa, 0xcba6f7];
+    let set = if is_light() { &LIGHT_SET } else { &DARK_SET };
+    rgb(set[(index as usize).min(5)])
+}
+
 fn ansi(index: usize) -> Color32 {
     let (r, g, b) = palette().ansi[index];
     Color32::from_rgb(r, g, b)
@@ -140,5 +152,44 @@ pub fn resolve(color: Color) -> Color32 {
             i @ 259..=266 => dim(ansi(i - 259)),
             _ => dim(text()),
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn luminance(color: Color32) -> f32 {
+        let channel = |c: u8| {
+            let v = c as f32 / 255.0;
+            if v <= 0.03928 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+        };
+        0.2126 * channel(color.r()) + 0.7152 * channel(color.g()) + 0.0722 * channel(color.b())
+    }
+
+    fn contrast(a: Color32, b: Color32) -> f32 {
+        let (la, lb) = (luminance(a), luminance(b));
+        (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
+    }
+
+    #[test]
+    fn text_is_readable_on_every_surface_in_both_themes() {
+        for palette in [&DARK, &LIGHT] {
+            for background in [palette.base, palette.mantle, palette.surface] {
+                assert!(contrast(palette.text, background) >= 4.5, "texto principal");
+                assert!(contrast(palette.subtext, background) >= 4.5, "texto secundario");
+            }
+        }
+    }
+
+    #[test]
+    fn identity_colours_stand_out_from_the_backgrounds() {
+        for light in [false, true] {
+            set_light(light);
+            for index in 0..6 {
+                assert!(contrast(identity(index), mantle()) >= 3.0, "identidad {index} (claro: {light})");
+            }
+        }
+        set_light(false);
     }
 }

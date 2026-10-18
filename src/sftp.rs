@@ -47,6 +47,25 @@ pub fn sort_entries(entries: &mut [Entry]) {
     entries.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())));
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SortKey {
+    Name,
+    Size,
+    Modified,
+}
+
+/// Ordena por la columna elegida; las carpetas siempre van antes que los archivos.
+pub fn sort_by(entries: &mut [Entry], key: SortKey, ascending: bool) {
+    entries.sort_by(|a, b| {
+        let by_key = match key {
+            SortKey::Name => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+            SortKey::Size => a.size.cmp(&b.size).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())),
+            SortKey::Modified => a.modified.cmp(&b.modified).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())),
+        };
+        b.is_dir.cmp(&a.is_dir).then(if ascending { by_key } else { by_key.reverse() })
+    });
+}
+
 /// Un cliente SFTP conectado. Mantener el `Handle` vivo mantiene abierta la sesión.
 pub struct Sftp {
     pub session: Arc<SftpSession>,
@@ -193,6 +212,22 @@ mod tests {
     }
 
     #[test]
+    fn columns_sort_in_both_directions_keeping_folders_first() {
+        let file = |name: &str, size, modified| Entry { name: name.into(), is_dir: false, size, modified: Some(modified), permissions: None };
+        let folder = |name: &str| Entry { name: name.into(), is_dir: true, size: 0, modified: Some(1), permissions: None };
+        let mut entries = vec![file("b.txt", 300, 20), folder("zeta"), file("a.txt", 100, 30), file("C.txt", 200, 10), folder("alfa")];
+
+        sort_by(&mut entries, SortKey::Size, false);
+        assert_eq!(entries.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(), ["zeta", "alfa", "b.txt", "C.txt", "a.txt"]);
+
+        sort_by(&mut entries, SortKey::Modified, true);
+        assert_eq!(entries.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(), ["alfa", "zeta", "C.txt", "b.txt", "a.txt"]);
+
+        sort_by(&mut entries, SortKey::Name, true);
+        assert_eq!(entries.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(), ["alfa", "zeta", "a.txt", "b.txt", "C.txt"]);
+    }
+
+    #[test]
     fn modes_are_formatted_like_ls() {
         assert_eq!(format_mode(0o755), "rwxr-xr-x");
         assert_eq!(format_mode(0o644), "rw-r--r--");
@@ -240,6 +275,8 @@ mod tests {
             key_path: Some(sshd.key_path.clone()),
             init_command: None,
             jump: None,
+            color: None,
+            env: None,
         };
         let known_hosts = sshd.dir.join("known_hosts");
         let client = runtime
@@ -357,6 +394,8 @@ mod tests {
             key_path: Some(sshd.key_path.clone()),
             init_command: None,
             jump: None,
+            color: None,
+            env: None,
         };
         let credentials = Credentials {
             jump: Some(Box::new(JumpHost { connection: connection(&jump, "salto"), credentials: Credentials::default() })),

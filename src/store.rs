@@ -47,6 +47,8 @@ const MIGRATIONS: &[&str] = &[
      ALTER TABLE layout_tabs ADD COLUMN local_path TEXT;
      ALTER TABLE layout_tabs ADD COLUMN remote_path TEXT;",
     "ALTER TABLE connections ADD COLUMN jump_id INTEGER REFERENCES connections(id) ON DELETE SET NULL;",
+    "ALTER TABLE connections ADD COLUMN color INTEGER;
+     ALTER TABLE connections ADD COLUMN env TEXT;",
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -91,6 +93,10 @@ pub struct Connection {
     pub init_command: Option<String>,
     /// Conexión guardada por la que se salta para llegar a esta (ProxyJump).
     pub jump: Option<i64>,
+    /// Color de identidad (0..6, ver `theme::identity`) para reconocer el servidor de un vistazo.
+    pub color: Option<u8>,
+    /// Entorno en texto libre, por ejemplo «producción».
+    pub env: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -227,7 +233,7 @@ impl Store {
 
     pub fn list_connections(&self) -> anyhow::Result<Vec<Connection>> {
         let mut statement = self.db.prepare(
-            "SELECT id, name, host, port, user, auth, key_path, init_command, jump_id
+            "SELECT id, name, host, port, user, auth, key_path, init_command, jump_id, color, env
              FROM connections ORDER BY name COLLATE NOCASE",
         )?;
         let rows = statement.query_map([], |row| {
@@ -241,11 +247,25 @@ impl Store {
                 row.get::<_, Option<String>>(6)?,
                 row.get::<_, Option<String>>(7)?,
                 row.get::<_, Option<i64>>(8)?,
+                row.get::<_, Option<u8>>(9)?,
+                row.get::<_, Option<String>>(10)?,
             ))
         })?;
         rows.map(|row| {
-            let (id, name, host, port, user, auth, key_path, init_command, jump) = row?;
-            Ok(Connection { id: Some(id), name, host, port, user, auth: Auth::parse(&auth)?, key_path, init_command, jump })
+            let (id, name, host, port, user, auth, key_path, init_command, jump, color, env) = row?;
+            Ok(Connection {
+                id: Some(id),
+                name,
+                host,
+                port,
+                user,
+                auth: Auth::parse(&auth)?,
+                key_path,
+                init_command,
+                jump,
+                color,
+                env,
+            })
         })
         .collect()
     }
@@ -255,8 +275,8 @@ impl Store {
         match connection.id {
             Some(id) => {
                 self.db.execute(
-                    "UPDATE connections SET name=?1, host=?2, port=?3, user=?4, auth=?5, key_path=?6, init_command=?7, jump_id=?8
-                     WHERE id=?9",
+                    "UPDATE connections SET name=?1, host=?2, port=?3, user=?4, auth=?5, key_path=?6, init_command=?7, jump_id=?8,
+                     color=?9, env=?10 WHERE id=?11",
                     params![
                         connection.name,
                         connection.host,
@@ -266,6 +286,8 @@ impl Store {
                         connection.key_path,
                         connection.init_command,
                         connection.jump,
+                        connection.color,
+                        connection.env,
                         id
                     ],
                 )?;
@@ -273,8 +295,8 @@ impl Store {
             }
             None => {
                 self.db.execute(
-                    "INSERT INTO connections (name, host, port, user, auth, key_path, init_command, jump_id)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                    "INSERT INTO connections (name, host, port, user, auth, key_path, init_command, jump_id, color, env)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                     params![
                         connection.name,
                         connection.host,
@@ -283,12 +305,52 @@ impl Store {
                         connection.auth.as_str(),
                         connection.key_path,
                         connection.init_command,
-                        connection.jump
+                        connection.jump,
+                        connection.color,
+                        connection.env.clone()
                     ],
                 )?;
                 Ok(self.db.last_insert_rowid())
             }
         }
+    }
+
+    /// Vuelve a insertar una conexión borrada, con su mismo id (para «Deshacer»).
+    pub fn restore_connection(&self, connection: &Connection) -> anyhow::Result<()> {
+        let id = connection.id.context("la conexión no tiene id")?;
+        self.db.execute(
+            "INSERT INTO connections (id, name, host, port, user, auth, key_path, init_command, jump_id, color, env)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                id,
+                connection.name,
+                connection.host,
+                connection.port,
+                connection.user,
+                connection.auth.as_str(),
+                connection.key_path,
+                connection.init_command,
+                connection.jump,
+                connection.color,
+                connection.env
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Reasigna el salto de una conexión (para restaurar las que dependían de una borrada).
+    pub fn set_jump(&self, id: i64, jump: Option<i64>) -> anyhow::Result<()> {
+        self.db.execute("UPDATE connections SET jump_id=?1 WHERE id=?2", params![jump, id])?;
+        Ok(())
+    }
+
+    pub fn restore_snippet(&self, snippet: &Snippet) -> anyhow::Result<()> {
+        let id = snippet.id.context("el snippet no tiene id")?;
+        self.db.execute(
+            "INSERT INTO snippets (id, title, tag, body) VALUES (?1, ?2, ?3, ?4)",
+            params![id, snippet.title, snippet.tag, snippet.body],
+        )?;
+        Ok(())
     }
 
     pub fn delete_connection(&self, id: i64) -> anyhow::Result<()> {
@@ -507,6 +569,8 @@ mod tests {
             key_path: Some("/home/u/.ssh/id_ed25519".into()),
             init_command: None,
             jump: None,
+            color: None,
+            env: None,
         }
     }
 
@@ -525,6 +589,55 @@ mod tests {
         assert_eq!(all.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["Alpha", "beta"]);
         assert_eq!(all[1].host, "other.test");
         assert_eq!(all[1].port, 2222);
+    }
+
+    #[test]
+    fn a_deleted_connection_and_snippet_can_be_restored_with_the_same_id() {
+        let mut store = Store::open_in_memory().unwrap();
+        let bastion = store.save_connection(&sample("bastion")).unwrap();
+        let mut inner = sample("interno");
+        inner.jump = Some(bastion);
+        inner.color = Some(2);
+        let inner_id = store.save_connection(&inner).unwrap();
+        let web = Forward { kind: ForwardKind::Local, bind_host: "127.0.0.1".into(), bind_port: 8080, dest_host: "web".into(), dest_port: 80 };
+        store.replace_forwards(bastion, &[web.clone()]).unwrap();
+        let snippet_id = store.save_snippet(&Snippet { id: None, title: "uno".into(), tag: String::new(), body: "ls".into() }).unwrap();
+
+        let saved = store.list_connections().unwrap().into_iter().find(|c| c.id == Some(bastion)).unwrap();
+        let saved_snippet = store.list_snippets().unwrap().remove(0);
+        store.delete_connection(bastion).unwrap();
+        store.delete_snippet(snippet_id).unwrap();
+        assert!(store.list_snippets().unwrap().is_empty());
+        assert_eq!(store.list_connections().unwrap().len(), 1);
+
+        store.restore_connection(&saved).unwrap();
+        store.replace_forwards(bastion, &[web.clone()]).unwrap();
+        store.set_jump(inner_id, Some(bastion)).unwrap();
+        store.restore_snippet(&saved_snippet).unwrap();
+
+        let restored = store.list_connections().unwrap();
+        assert_eq!(restored.iter().find(|c| c.id == Some(bastion)), Some(&saved));
+        assert_eq!(restored.iter().find(|c| c.id == Some(inner_id)).unwrap().jump, Some(bastion));
+        assert_eq!(store.list_forwards(bastion).unwrap(), vec![web]);
+        assert_eq!(store.list_snippets().unwrap(), vec![saved_snippet]);
+    }
+
+    #[test]
+    fn identity_color_and_environment_round_trip() {
+        let store = Store::open_in_memory().unwrap();
+        let mut production = sample("prod-db");
+        production.color = Some(0);
+        production.env = Some("producción".into());
+        let id = store.save_connection(&production).unwrap();
+        let loaded = store.list_connections().unwrap().into_iter().find(|c| c.id == Some(id)).unwrap();
+        assert_eq!((loaded.color, loaded.env.as_deref()), (Some(0), Some("producción")));
+
+        let mut cleared = loaded;
+        cleared.color = None;
+        cleared.env = None;
+        store.save_connection(&cleared).unwrap();
+        let again = store.list_connections().unwrap().into_iter().find(|c| c.id == Some(id)).unwrap();
+        assert_eq!((again.color, again.env), (None, None));
     }
 
     #[test]

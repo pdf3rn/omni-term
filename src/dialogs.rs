@@ -1,11 +1,12 @@
 //! Diálogos modales: edición de conexión, contraseñas, clave maestra y confianza de host.
 
-use eframe::egui::{self, ComboBox, Id, Modal, RichText, TextEdit};
+use eframe::egui::{self, Color32, ComboBox, FontId, Id, Modal, RichText, TextEdit};
 use zeroize::Zeroizing;
 
+use crate::cursor::HandExt;
 use crate::secrets::SecretKind;
 use crate::settings::{CursorChoice, Settings, ThemeChoice, MAX_FONT_SIZE, MAX_SCROLLBACK, MIN_FONT_SIZE, MIN_SCROLLBACK};
-use crate::ssh::{HostKeyRequest, PromptRequest};
+use crate::ssh::{HostKeyChange, HostKeyRequest, PromptRequest};
 use crate::store::{Auth, Connection, Forward, ForwardKind, Snippet};
 use crate::theme;
 
@@ -72,7 +73,58 @@ impl ForwardRow {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum EditTab {
+    General,
+    Acceso,
+    Avanzado,
+}
+
+/// Resultado de «Probar conexión», actualizado desde una tarea en segundo plano.
+pub enum TestState {
+    Running,
+    Ok(String),
+    Failed(String),
+}
+
+pub type TestHandle = std::sync::Arc<std::sync::Mutex<TestState>>;
+
+/// Errores de validación, pegados al campo que los causa.
+#[derive(Default)]
+pub struct FormErrors {
+    pub name: Option<String>,
+    pub host: Option<String>,
+    pub port: Option<String>,
+    pub user: Option<String>,
+    pub key_path: Option<String>,
+    pub forwards: Vec<Option<String>>,
+    /// Error al guardar que no pertenece a ningún campo.
+    pub general: Option<String>,
+}
+
+impl Dialog {
+    /// Error sin reintento: `title` dice qué falló y `detail` el porqué.
+    pub fn failure(title: &str, detail: impl std::fmt::Display) -> Self {
+        Dialog::Error(ErrorInfo { title: title.into(), detail: detail.to_string(), retry: None })
+    }
+}
+
+impl FormErrors {
+    fn in_tab(&self, tab: EditTab) -> bool {
+        match tab {
+            EditTab::General => self.name.is_some() || self.host.is_some() || self.port.is_some() || self.user.is_some(),
+            EditTab::Acceso => self.key_path.is_some(),
+            EditTab::Avanzado => self.forwards.iter().any(Option::is_some),
+        }
+    }
+}
+
 pub struct ConnForm {
+    pub tab: EditTab,
+    pub errors: FormErrors,
+    pub test: Option<TestHandle>,
+    pub color: Option<u8>,
+    pub env: String,
     pub jump: Option<i64>,
     pub forwards: Vec<ForwardRow>,
     pub id: Option<i64>,
@@ -84,7 +136,6 @@ pub struct ConnForm {
     pub key_path: String,
     pub init_command: String,
     pub secret: String,
-    pub error: Option<String>,
 }
 
 impl ConnForm {
@@ -99,15 +150,21 @@ impl ConnForm {
             key_path: "~/.ssh/id_ed25519".into(),
             init_command: String::new(),
             secret: String::new(),
-            error: None,
+            tab: EditTab::General,
+            errors: FormErrors::default(),
+            test: None,
             forwards: Vec::new(),
             jump: None,
+            color: None,
+            env: String::new(),
         }
     }
 
     pub fn from_connection(connection: &Connection, forwards: &[Forward]) -> Self {
         Self {
             jump: connection.jump,
+            color: connection.color,
+            env: connection.env.clone().unwrap_or_default(),
             forwards: forwards.iter().map(ForwardRow::from_forward).collect(),
             id: connection.id,
             name: connection.name.clone(),
@@ -118,41 +175,71 @@ impl ConnForm {
             key_path: connection.key_path.clone().unwrap_or_default(),
             init_command: connection.init_command.clone().unwrap_or_default(),
             secret: String::new(),
-            error: None,
+            tab: EditTab::General,
+            errors: FormErrors::default(),
+            test: None,
         }
     }
 
-    pub fn to_forwards(&self) -> Result<Vec<Forward>, String> {
-        self.forwards.iter().map(ForwardRow::to_forward).collect()
-    }
-
-    /// Valida el formulario y construye la conexión.
-    pub fn to_connection(&self) -> Result<Connection, String> {
-        let name = self.name.trim();
-        let host = self.host.trim();
-        let user = self.user.trim();
-        if name.is_empty() || host.is_empty() || user.is_empty() {
-            return Err("Nombre, host y usuario son obligatorios".into());
+    /// Valida el formulario. Si hay errores los deja junto a cada campo, cambia a la pestaña
+    /// del primero y devuelve `None`; si no, devuelve la conexión y sus túneles.
+    pub fn validate(&mut self) -> Option<(Connection, Vec<Forward>)> {
+        let mut errors = FormErrors::default();
+        let name = self.name.trim().to_string();
+        let host = self.host.trim().to_string();
+        let user = self.user.trim().to_string();
+        if name.is_empty() {
+            errors.name = Some("Pon un nombre para reconocerla".into());
         }
-        let port: u16 = self.port.trim().parse().map_err(|_| "El puerto debe ser un número entre 1 y 65535".to_string())?;
-        if port == 0 {
-            return Err("El puerto debe ser un número entre 1 y 65535".into());
+        if host.is_empty() {
+            errors.host = Some("Indica el servidor".into());
         }
-        let key_path = self.key_path.trim();
+        if user.is_empty() {
+            errors.user = Some("Indica el usuario".into());
+        }
+        let port = match self.port.trim().parse::<u16>() {
+            Ok(port) if port > 0 => port,
+            _ => {
+                errors.port = Some("Un número entre 1 y 65535".into());
+                0
+            }
+        };
+        let key_path = self.key_path.trim().to_string();
         if self.auth == Auth::Key && key_path.is_empty() {
-            return Err("Indica la ruta de la llave privada".into());
+            errors.key_path = Some("Indica la ruta de la llave privada".into());
         }
-        Ok(Connection {
+        let mut forwards = Vec::new();
+        for row in &self.forwards {
+            match row.to_forward() {
+                Ok(forward) => {
+                    forwards.push(forward);
+                    errors.forwards.push(None);
+                }
+                Err(message) => errors.forwards.push(Some(message)),
+            }
+        }
+
+        let first_tab = [EditTab::General, EditTab::Acceso, EditTab::Avanzado].into_iter().find(|tab| errors.in_tab(*tab));
+        if let Some(tab) = first_tab {
+            self.tab = tab;
+            self.errors = errors;
+            return None;
+        }
+        self.errors = FormErrors::default();
+        let connection = Connection {
             id: self.id,
-            name: name.into(),
-            host: host.into(),
+            name,
+            host,
             port,
-            user: user.into(),
+            user,
             auth: self.auth,
-            key_path: (self.auth == Auth::Key).then(|| key_path.to_string()),
+            key_path: (self.auth == Auth::Key).then_some(key_path),
             init_command: Some(self.init_command.trim().to_string()).filter(|c| !c.is_empty()),
             jump: self.jump,
-        })
+            color: self.color,
+            env: Some(self.env.trim().to_string()).filter(|e| !e.is_empty()),
+        };
+        Some((connection, forwards))
     }
 }
 
@@ -241,6 +328,7 @@ pub struct SecretPrompt {
     pub kind: SecretKind,
     pub input: String,
     pub save: bool,
+    pub reveal: bool,
 }
 
 /// Qué hacer cuando el almacén de secretos queda desbloqueado.
@@ -251,25 +339,66 @@ pub enum Pending {
 
 pub struct UnlockPrompt {
     pub creating: bool,
+    pub reveal: bool,
     pub input: String,
     pub confirm: String,
     pub error: Option<String>,
     pub then: Pending,
 }
 
+/// Qué repetir cuando el usuario pulsa «Reintentar» en un error.
+#[derive(Clone)]
+pub enum Retry {
+    Open(Connection, Option<u64>, Purpose),
+}
+
+/// Un fallo: qué no se pudo hacer, el detalle técnico y, si cabe, cómo reintentarlo.
+pub struct ErrorInfo {
+    pub title: String,
+    pub detail: String,
+    pub retry: Option<Retry>,
+}
+
+pub enum ErrorAction {
+    None,
+    Close,
+    Retry,
+}
+
+/// Diálogo de error común a toda la app: detalle seleccionable, «Copiar detalle» y «Reintentar».
+pub fn error_dialog(ctx: &egui::Context, info: &ErrorInfo) -> ErrorAction {
+    let mut spec = Spec::new(info.title.clone()).width(440.0).cancel("Cerrar").extra("Copiar detalle");
+    if info.retry.is_some() {
+        spec = spec.accept("Reintentar");
+    }
+    match shell(ctx, spec, |ui| {
+        egui::ScrollArea::vertical().max_height(140.0).auto_shrink([false, true]).show(ui, |ui| {
+            ui.label(RichText::new(info.detail.as_str()).monospace().color(theme::subtext()));
+        });
+        false
+    }) {
+        Action::Accept => ErrorAction::Retry,
+        Action::Cancel => ErrorAction::Close,
+        Action::Extra(_) => {
+            ctx.copy_text(info.detail.clone());
+            ErrorAction::None
+        }
+        Action::None => ErrorAction::None,
+    }
+}
+
 pub enum Dialog {
+    Error(ErrorInfo),
+    HostKeyChanged(HostKeyChange),
     Settings,
     Edit(ConnForm),
     Snippet(SnippetForm),
     SnippetVars(VarsPrompt),
-    ConfirmDeleteSnippet { id: i64, title: String },
     Secret(SecretPrompt),
     Unlock(UnlockPrompt),
     HostKey(HostKeyRequest),
     Prompt(PromptRequest, Vec<String>),
-    ConfirmDelete { id: i64, name: String },
     ConfirmReset(Pending),
-    Message(String),
 }
 
 pub enum Outcome {
@@ -280,28 +409,186 @@ pub enum Outcome {
     Submit,
     Trust(bool),
     ResetMasterKey,
+    /// «Probar conexión» en el editor de conexión.
+    Test,
 }
 
 fn id() -> Id {
     Id::NULL.with("dialog")
 }
 
-fn buttons(ui: &mut egui::Ui, accept: &str) -> Option<bool> {
-    let destructive = matches!(accept, "Eliminar" | "Borrar todo");
-    let (fill, text) = if destructive { (theme::red(), theme::base()) } else { (theme::accent(), theme::base()) };
-    let mut result = None;
-    ui.add_space(12.0);
-    ui.horizontal(|ui| {
-        let primary = egui::Button::new(RichText::new(accept).color(text)).fill(fill);
-        if ui.add(primary).clicked() {
-            result = Some(true);
+/// Aspecto de la acción principal.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Tone {
+    Normal,
+    /// Acción destructiva: botón rojo y sin confirmar con Enter.
+    Danger,
+}
+
+/// Lo que cada diálogo declara de sí mismo; el marco común dibuja el resto.
+pub struct Spec {
+    title: String,
+    context: Option<String>,
+    width: f32,
+    accept: Option<String>,
+    accept_enabled: bool,
+    tone: Tone,
+    cancel: String,
+    extras: Vec<String>,
+    enter_submits: bool,
+    backdrop_cancels: bool,
+}
+
+impl Spec {
+    pub fn new(title: impl Into<String>) -> Self {
+        Self {
+            title: title.into(),
+            context: None,
+            width: 520.0,
+            accept: None,
+            accept_enabled: true,
+            tone: Tone::Normal,
+            cancel: "Cancelar".into(),
+            extras: Vec::new(),
+            enter_submits: true,
+            backdrop_cancels: false,
         }
-        let ghost = egui::Button::new("Cancelar").fill(egui::Color32::TRANSPARENT);
-        if ui.add(ghost).clicked() {
-            result = Some(false);
+    }
+
+    pub fn context(mut self, text: impl Into<String>) -> Self {
+        self.context = Some(text.into());
+        self
+    }
+
+    /// 380 px para preguntas y confirmaciones, 520 para formularios, 640 para el editor de conexión.
+    pub fn width(mut self, width: f32) -> Self {
+        self.width = width;
+        self
+    }
+
+    pub fn accept(mut self, label: impl Into<String>) -> Self {
+        self.accept = Some(label.into());
+        self
+    }
+
+    pub fn accept_enabled(mut self, enabled: bool) -> Self {
+        self.accept_enabled = enabled;
+        self
+    }
+
+    pub fn danger(mut self) -> Self {
+        self.tone = Tone::Danger;
+        self.enter_submits = false;
+        self.backdrop_cancels = true;
+        self
+    }
+
+    pub fn cancel(mut self, label: impl Into<String>) -> Self {
+        self.cancel = label.into();
+        self
+    }
+
+    pub fn extra(mut self, label: impl Into<String>) -> Self {
+        self.extras.push(label.into());
+        self
+    }
+
+    /// Enter dentro de un campo no confirma (formularios con texto multilínea, confianza de huellas).
+    pub fn no_enter(mut self) -> Self {
+        self.enter_submits = false;
+        self
+    }
+
+    /// Un clic fuera cierra el diálogo; solo para los que no tienen nada que perder.
+    pub fn backdrop_closes(mut self) -> Self {
+        self.backdrop_cancels = true;
+        self
+    }
+}
+
+pub enum Action {
+    None,
+    Accept,
+    Cancel,
+    Extra(usize),
+}
+
+/// Marco común: título, contexto, cuerpo y pie con los botones a la derecha.
+/// `Esc` cancela; `Enter` confirma cuando el cuerpo lo pide (devolviendo `true`).
+pub fn shell(ctx: &egui::Context, spec: Spec, body: impl FnOnce(&mut egui::Ui) -> bool) -> Action {
+    let mut action = Action::None;
+    let response = Modal::new(id()).show(ctx, |ui| {
+        ui.set_width(spec.width);
+        ui.spacing_mut().item_spacing.y = 8.0;
+        ui.label(RichText::new(&spec.title).font(FontId::new(18.0, crate::ui::strong_family())));
+        if let Some(context) = &spec.context {
+            ui.label(RichText::new(context).small().color(theme::subtext()));
+        }
+        ui.add_space(6.0);
+
+        let enter = body(ui);
+
+        ui.add_space(10.0);
+        ui.horizontal(|ui| {
+            for (index, label) in spec.extras.iter().enumerate() {
+                if ui.add(egui::Button::new(label.as_str()).fill(Color32::TRANSPARENT)).clicked() {
+                    action = Action::Extra(index);
+                }
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let fill = if spec.tone == Tone::Danger { theme::red() } else { theme::accent() };
+                let primary = |label: &str| egui::Button::new(RichText::new(label).color(theme::base())).fill(fill);
+                match &spec.accept {
+                    Some(label) => {
+                        if ui.add_enabled(spec.accept_enabled, primary(label)).clicked() {
+                            action = Action::Accept;
+                        }
+                        if ui.add(egui::Button::new(spec.cancel.as_str()).fill(Color32::TRANSPARENT)).clicked() {
+                            action = Action::Cancel;
+                        }
+                    }
+                    None => {
+                        if ui.add(primary(&spec.cancel)).clicked() {
+                            action = Action::Cancel;
+                        }
+                    }
+                }
+            });
+        });
+        if enter && spec.enter_submits && spec.accept.is_some() && spec.accept_enabled && matches!(action, Action::None) {
+            action = Action::Accept;
         }
     });
-    result
+    if matches!(action, Action::None) {
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            action = Action::Cancel;
+        } else if spec.backdrop_cancels && response.backdrop_response.clicked() {
+            action = Action::Cancel;
+        }
+    }
+    action
+}
+
+/// Mínimo de caracteres de la clave maestra.
+pub const MIN_MASTER_KEY: usize = 8;
+
+/// Campo de contraseña con botón para mostrar u ocultar lo escrito.
+fn secret_field(ui: &mut egui::Ui, value: &mut String, reveal: &mut bool, hint: &str) -> egui::Response {
+    ui.horizontal(|ui| {
+        let width = (ui.available_width() - 76.0).max(80.0);
+        let field = ui.add(TextEdit::singleline(value).password(!*reveal).hint_text(hint).desired_width(width));
+        let label = if *reveal { "Ocultar" } else { "Mostrar" };
+        if ui.add(egui::Button::new(RichText::new(label).small()).fill(Color32::TRANSPARENT)).clicked() {
+            *reveal = !*reveal;
+        }
+        field
+    })
+    .inner
+}
+
+/// ¿Se pulsó Enter dentro de este campo?
+fn entered(ui: &egui::Ui, field: &egui::Response) -> bool {
+    field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))
 }
 
 fn error_label(ui: &mut egui::Ui, error: &Option<String>) {
@@ -311,8 +598,12 @@ fn error_label(ui: &mut egui::Ui, error: &Option<String>) {
     }
 }
 
-fn enter_pressed(ui: &egui::Ui) -> bool {
-    ui.input(|i| i.key_pressed(egui::Key::Enter))
+fn plain(action: Action, accepted: Outcome) -> Outcome {
+    match action {
+        Action::Accept => accepted,
+        Action::Cancel => Outcome::Cancel,
+        Action::Extra(_) | Action::None => Outcome::None,
+    }
 }
 
 pub fn show(
@@ -322,179 +613,318 @@ pub fn show(
     connections: &[Connection],
     settings: &mut Settings,
 ) -> Outcome {
-    let mut outcome = Outcome::None;
-    let response = Modal::new(id()).show(ctx, |ui| {
-        ui.set_width(520.0);
-        ui.spacing_mut().item_spacing.y = 8.0;
-        match dialog {
-            Dialog::Settings => outcome = settings_dialog(ui, settings, master_forced),
-            Dialog::Edit(form) => outcome = edit(ui, form, connections),
-            Dialog::Prompt(request, answers) => outcome = prompt(ui, request, answers),
-            Dialog::Snippet(form) => outcome = snippet(ui, form),
-            Dialog::SnippetVars(prompt) => outcome = vars(ui, prompt),
-            Dialog::ConfirmDeleteSnippet { title, .. } => {
-                ui.heading("Eliminar snippet");
-                ui.add_space(6.0);
-                ui.label(format!("¿Eliminar \"{title}\"?"));
-                match buttons(ui, "Eliminar") {
-                    Some(true) => outcome = Outcome::Delete,
-                    Some(false) => outcome = Outcome::Cancel,
-                    None => {}
-                }
+    match dialog {
+        Dialog::Settings => {
+            let action = shell(ctx, Spec::new("Ajustes").cancel("Cerrar"), |ui| settings_body(ui, settings, master_forced));
+            plain(action, Outcome::None)
+        }
+        Dialog::Edit(form) => {
+            let title = if form.id.is_some() { "Editar conexión" } else { "Nueva conexión" };
+            let spec = Spec::new(title).width(640.0).accept("Guardar").no_enter().extra("Probar conexión");
+            match shell(ctx, spec, |ui| edit_body(ui, form, connections)) {
+                Action::Accept => Outcome::Save,
+                Action::Cancel => Outcome::Cancel,
+                Action::Extra(_) => Outcome::Test,
+                Action::None => Outcome::None,
             }
-            Dialog::Secret(prompt) => outcome = secret(ui, prompt),
-            Dialog::Unlock(prompt) => outcome = unlock(ui, prompt),
-            Dialog::HostKey(request) => outcome = host_key(ui, request),
-            Dialog::ConfirmDelete { name, .. } => {
-                ui.heading("Eliminar conexión");
-                ui.add_space(6.0);
-                ui.label(format!("¿Eliminar \"{name}\"? Su contraseña guardada se conserva en el almacén."));
-                match buttons(ui, "Eliminar") {
-                    Some(true) => outcome = Outcome::Delete,
-                    Some(false) => outcome = Outcome::Cancel,
-                    None => {}
-                }
-            }
-            Dialog::ConfirmReset(_) => {
-                ui.heading("Borrar secretos");
-                ui.add_space(6.0);
+        }
+        Dialog::Snippet(form) => {
+            let title = if form.id.is_some() { "Editar snippet" } else { "Nuevo snippet" };
+            let action = shell(ctx, Spec::new(title).accept("Guardar").no_enter(), |ui| snippet_body(ui, form));
+            plain(action, Outcome::Save)
+        }
+        Dialog::SnippetVars(prompt) => {
+            let accept = if prompt.run { "Insertar y ejecutar" } else { "Insertar" };
+            let action = shell(ctx, Spec::new(prompt.title.clone()).accept(accept), |ui| vars_body(ui, prompt));
+            plain(action, Outcome::Submit)
+        }
+        Dialog::ConfirmReset(_) => {
+            let spec = Spec::new("Borrar secretos").width(380.0).accept("Borrar todo").danger();
+            let action = shell(ctx, spec, |ui| {
                 ui.label("Se borrarán todas las contraseñas guardadas con la clave maestra y la clave misma. No se puede deshacer.");
-                match buttons(ui, "Borrar todo") {
-                    Some(true) => outcome = Outcome::Delete,
-                    Some(false) => outcome = Outcome::Cancel,
-                    None => {}
-                }
-            }
-            Dialog::Message(text) => {
-                ui.label(text.as_str());
-                ui.add_space(8.0);
-                if ui.button("Aceptar").clicked() {
-                    outcome = Outcome::Cancel;
-                }
-            }
-        }
-    });
-    if matches!(outcome, Outcome::None) && response.should_close() && !matches!(dialog, Dialog::HostKey(_)) {
-        outcome = Outcome::Cancel;
-    }
-    outcome
-}
-
-fn edit(ui: &mut egui::Ui, form: &mut ConnForm, connections: &[Connection]) -> Outcome {
-    ui.heading(if form.id.is_some() { "Editar conexión" } else { "Nueva conexión" });
-    ui.add_space(8.0);
-    egui::Grid::new("conn_form").num_columns(2).spacing([10.0, 8.0]).show(ui, |ui| {
-        ui.label("Nombre");
-        ui.add(TextEdit::singleline(&mut form.name).desired_width(240.0));
-        ui.end_row();
-        ui.label("Host");
-        ui.add(TextEdit::singleline(&mut form.host).desired_width(240.0));
-        ui.end_row();
-        ui.label("Puerto");
-        ui.add(TextEdit::singleline(&mut form.port).desired_width(80.0));
-        ui.end_row();
-        ui.label("Usuario");
-        ui.add(TextEdit::singleline(&mut form.user).desired_width(240.0));
-        ui.end_row();
-        ui.label("Autenticación");
-        ComboBox::from_id_salt("auth")
-            .selected_text(match form.auth {
-                Auth::Password => "Contraseña",
-                Auth::Key => "Llave privada",
-                Auth::Agent => "ssh-agent",
-                Auth::Interactive => "Interactivo (2FA)",
-            })
-            .show_ui(ui, |ui| {
-                ui.selectable_value(&mut form.auth, Auth::Agent, "ssh-agent");
-                ui.selectable_value(&mut form.auth, Auth::Key, "Llave privada");
-                ui.selectable_value(&mut form.auth, Auth::Password, "Contraseña");
-                ui.selectable_value(&mut form.auth, Auth::Interactive, "Interactivo (2FA)");
+                false
             });
-        ui.end_row();
-        ui.label("Saltar mediante");
-        let current = form
-            .jump
-            .and_then(|id| connections.iter().find(|c| c.id == Some(id)))
-            .map_or("Directo".to_string(), |c| c.name.clone());
-        ComboBox::from_id_salt("jump").selected_text(current).show_ui(ui, |ui| {
-            ui.selectable_value(&mut form.jump, None, "Directo");
-            for other in connections.iter().filter(|c| c.id != form.id) {
-                ui.selectable_value(&mut form.jump, other.id, other.name.as_str());
-            }
-        });
-        ui.end_row();
-        if form.auth == Auth::Key {
-            ui.label("Llave");
-            ui.add(TextEdit::singleline(&mut form.key_path).desired_width(240.0));
-            ui.end_row();
+            plain(action, Outcome::Delete)
         }
-        if matches!(form.auth, Auth::Password | Auth::Key) {
-            ui.label(if form.auth == Auth::Password { "Contraseña" } else { "Passphrase" });
-            ui.add(
-                TextEdit::singleline(&mut form.secret)
-                    .password(true)
-                    .hint_text("opcional: se guarda en el almacén")
-                    .desired_width(240.0),
-            );
-            ui.end_row();
+        Dialog::Secret(prompt) => {
+            let (title, label) = match prompt.kind {
+                SecretKind::Password => ("Contraseña", "Contraseña"),
+                SecretKind::Passphrase => ("Llave protegida", "Passphrase"),
+            };
+            let context = format!("{label} para {}@{} ({})", prompt.asking.user, prompt.asking.host, prompt.asking.name);
+            let spec = Spec::new(title).width(380.0).context(context).accept("Conectar");
+            let action = shell(ctx, spec, |ui| secret_body(ui, prompt));
+            plain(action, Outcome::Submit)
         }
-        ui.label("Comando inicial");
-        ui.add(TextEdit::singleline(&mut form.init_command).hint_text("opcional").desired_width(240.0));
-        ui.end_row();
-    });
-    ui.add_space(4.0);
-    ui.label(RichText::new("Túneles (se activan al conectar)").small().color(theme::subtext()));
-    let mut remove = None;
-    for (index, row) in form.forwards.iter_mut().enumerate() {
-        ui.horizontal(|ui| {
-            ComboBox::from_id_salt(("fwd-kind", index))
-                .width(96.0)
-                .selected_text(match row.kind {
-                    ForwardKind::Local => "Local -L",
-                    ForwardKind::Remote => "Remoto -R",
-                    ForwardKind::Dynamic => "SOCKS -D",
-                })
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut row.kind, ForwardKind::Local, "Local -L");
-                    ui.selectable_value(&mut row.kind, ForwardKind::Remote, "Remoto -R");
-                    ui.selectable_value(&mut row.kind, ForwardKind::Dynamic, "SOCKS -D");
-                });
-            ui.add(TextEdit::singleline(&mut row.bind_host).desired_width(84.0).hint_text("escucha"));
-            ui.add(TextEdit::singleline(&mut row.bind_port).desired_width(48.0).hint_text("puerto"));
-            if row.kind == ForwardKind::Dynamic {
-                ui.label(RichText::new("proxy SOCKS5").small().color(theme::subtext()));
-            } else {
-                ui.label("→");
-                ui.add(TextEdit::singleline(&mut row.dest_host).desired_width(84.0).hint_text("destino"));
-                ui.add(TextEdit::singleline(&mut row.dest_port).desired_width(48.0).hint_text("puerto"));
+        Dialog::Unlock(prompt) => {
+            let title = if prompt.creating { "Crear clave maestra" } else { "Desbloquear secretos" };
+            let valid = !prompt.creating
+                || (prompt.input.chars().count() >= MIN_MASTER_KEY && prompt.input == prompt.confirm);
+            let mut spec = Spec::new(title)
+                .width(440.0)
+                .accept(if prompt.creating { "Crear" } else { "Desbloquear" })
+                .accept_enabled(valid);
+            if !prompt.creating {
+                spec = spec.extra("Olvidé la clave…");
             }
-            if ui.add(egui::Button::new("×").frame(false)).on_hover_text("Quitar túnel").clicked() {
-                remove = Some(index);
+            match shell(ctx, spec, |ui| unlock_body(ui, prompt)) {
+                Action::Accept => Outcome::Submit,
+                Action::Cancel => Outcome::Cancel,
+                Action::Extra(_) => Outcome::ResetMasterKey,
+                Action::None => Outcome::None,
             }
-        });
-    }
-    if let Some(index) = remove {
-        form.forwards.remove(index);
-    }
-    if ui.add(egui::Button::new("+ Añadir túnel").fill(egui::Color32::TRANSPARENT)).clicked() {
-        form.forwards.push(ForwardRow::new());
-    }
-    ui.label(
-        RichText::new("-L: este equipo escucha y reenvía al destino vía el servidor. -R: el servidor escucha y reenvía a un destino alcanzable desde aquí. -D: proxy SOCKS5 local que sale por el servidor. Los cambios se aplican al reconectar.")
-            .small()
-            .color(theme::subtext()),
-    );
-    error_label(ui, &form.error);
-    match buttons(ui, "Guardar") {
-        Some(true) => Outcome::Save,
-        Some(false) => Outcome::Cancel,
-        None => Outcome::None,
+        }
+        Dialog::Prompt(request, answers) => {
+            let title = if request.title.trim().is_empty() { "Verificación en dos pasos" } else { request.title.trim() };
+            let mut spec = Spec::new(title).width(380.0).accept("Continuar");
+            if !request.instructions.trim().is_empty() {
+                spec = spec.context(request.instructions.trim());
+            }
+            let action = shell(ctx, spec, |ui| prompt_body(ui, request, answers));
+            plain(action, Outcome::Submit)
+        }
+        Dialog::HostKey(request) => {
+            let spec = Spec::new("Servidor desconocido").accept("Confiar y conectar").no_enter();
+            match shell(ctx, spec, |ui| host_key_body(ui, request)) {
+                Action::Accept => Outcome::Trust(true),
+                Action::Cancel => Outcome::Trust(false),
+                _ => Outcome::None,
+            }
+        }
+        Dialog::HostKeyChanged(change) => {
+            let spec = Spec::new("La huella del servidor ha cambiado").cancel("Cerrar").extra("Copiar comando");
+            match shell(ctx, spec, |ui| host_key_changed_body(ui, change)) {
+                Action::Cancel => Outcome::Cancel,
+                Action::Extra(_) => {
+                    ctx.copy_text(change.forget_command());
+                    Outcome::None
+                }
+                _ => Outcome::None,
+            }
+        }
+        Dialog::Error(info) => match error_dialog(ctx, info) {
+            ErrorAction::Close => Outcome::Cancel,
+            ErrorAction::Retry => Outcome::Submit,
+            ErrorAction::None => Outcome::None,
+        },
     }
 }
 
-fn settings_dialog(ui: &mut egui::Ui, settings: &mut Settings, master_forced: &mut bool) -> Outcome {
-    ui.heading("Ajustes");
+/// Campo de texto con su error debajo y el borde en rojo mientras lo tiene.
+fn field(ui: &mut egui::Ui, value: &mut String, width: f32, hint: &str, error: &mut Option<String>) -> egui::Response {
+    ui.vertical(|ui| {
+        let has_error = error.is_some();
+        let response = ui
+            .scope(|ui| {
+                if has_error {
+                    let stroke = egui::Stroke::new(1.5, theme::red());
+                    let widgets = &mut ui.visuals_mut().widgets;
+                    widgets.inactive.bg_stroke = stroke;
+                    widgets.hovered.bg_stroke = stroke;
+                }
+                ui.add(TextEdit::singleline(value).hint_text(hint).desired_width(width))
+            })
+            .inner;
+        if response.changed() {
+            *error = None;
+        }
+        if let Some(message) = error {
+            ui.label(RichText::new(message.as_str()).small().color(theme::red()));
+        }
+        response
+    })
+    .inner
+}
+
+fn edit_body(ui: &mut egui::Ui, form: &mut ConnForm, connections: &[Connection]) -> bool {
+    ui.horizontal(|ui| {
+        for (tab, label) in [(EditTab::General, "General"), (EditTab::Acceso, "Acceso"), (EditTab::Avanzado, "Avanzado")] {
+            let text = if form.errors.in_tab(tab) { format!("{label} ●") } else { label.to_string() };
+            let color = if form.errors.in_tab(tab) { theme::red() } else if form.tab == tab { theme::text() } else { theme::subtext() };
+            if ui.selectable_label(form.tab == tab, RichText::new(text).color(color)).clicked() {
+                form.tab = tab;
+            }
+        }
+    });
     ui.add_space(4.0);
+
+    match form.tab {
+        EditTab::General => {
+            egui::Grid::new("conn_general").num_columns(2).spacing([14.0, 10.0]).show(ui, |ui| {
+                ui.label("Nombre");
+                field(ui, &mut form.name, 280.0, "api-staging", &mut form.errors.name);
+                ui.end_row();
+                ui.label("Servidor");
+                field(ui, &mut form.host, 280.0, "host o IP", &mut form.errors.host);
+                ui.end_row();
+                ui.label("Puerto");
+                field(ui, &mut form.port, 80.0, "22", &mut form.errors.port);
+                ui.end_row();
+                ui.label("Usuario");
+                field(ui, &mut form.user, 280.0, "", &mut form.errors.user);
+                ui.end_row();
+                ui.label("Entorno");
+                ui.add(TextEdit::singleline(&mut form.env).hint_text("producción, staging…").desired_width(280.0));
+                ui.end_row();
+                ui.label("Color");
+                ui.horizontal(|ui| {
+                    // Sin color, más los seis de identidad: sirven para reconocer el servidor de un vistazo.
+                    for choice in std::iter::once(None).chain((0..6).map(Some)) {
+                        let (rect, response) = ui.allocate_exact_size(egui::vec2(24.0, 24.0), egui::Sense::click());
+                        let response = response.hand();
+                        match choice.map(theme::identity) {
+                            Some(color) => ui.painter().circle_filled(rect.center(), 8.0, color),
+                            None => ui.painter().circle_stroke(rect.center(), 8.0, egui::Stroke::new(1.5, theme::subtext())),
+                        };
+                        if form.color == choice {
+                            ui.painter().circle_stroke(rect.center(), 11.0, egui::Stroke::new(2.0, theme::text()));
+                        }
+                        let name = choice.map_or("Sin color", |i| theme::IDENTITY_NAMES[i as usize]);
+                        if response.on_hover_text(name).clicked() {
+                            form.color = choice;
+                        }
+                    }
+                });
+                ui.end_row();
+            });
+        }
+        EditTab::Acceso => {
+            egui::Grid::new("conn_access").num_columns(2).spacing([14.0, 10.0]).show(ui, |ui| {
+                ui.label("Autenticación");
+                ComboBox::from_id_salt("auth")
+                    .selected_text(match form.auth {
+                        Auth::Password => "Contraseña",
+                        Auth::Key => "Llave privada",
+                        Auth::Agent => "ssh-agent",
+                        Auth::Interactive => "Interactivo (2FA)",
+                    })
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut form.auth, Auth::Agent, "ssh-agent");
+                        ui.selectable_value(&mut form.auth, Auth::Key, "Llave privada");
+                        ui.selectable_value(&mut form.auth, Auth::Password, "Contraseña");
+                        ui.selectable_value(&mut form.auth, Auth::Interactive, "Interactivo (2FA)");
+                    })
+                    .response
+                    .hand();
+                ui.end_row();
+                if form.auth == Auth::Key {
+                    ui.label("Llave privada");
+                    field(ui, &mut form.key_path, 280.0, "~/.ssh/id_ed25519", &mut form.errors.key_path);
+                    ui.end_row();
+                }
+                if matches!(form.auth, Auth::Password | Auth::Key) {
+                    ui.label(if form.auth == Auth::Password { "Contraseña" } else { "Passphrase" });
+                    ui.add(
+                        TextEdit::singleline(&mut form.secret)
+                            .password(true)
+                            .hint_text("opcional: se guarda en el almacén")
+                            .desired_width(280.0),
+                    );
+                    ui.end_row();
+                }
+                ui.label("Saltar mediante");
+                let current = form
+                    .jump
+                    .and_then(|id| connections.iter().find(|c| c.id == Some(id)))
+                    .map_or("Directo".to_string(), |c| c.name.clone());
+                ComboBox::from_id_salt("jump")
+                    .selected_text(current)
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut form.jump, None, "Directo");
+                        for other in connections.iter().filter(|c| c.id != form.id) {
+                            ui.selectable_value(&mut form.jump, other.id, other.name.as_str());
+                        }
+                    })
+                    .response
+                    .hand();
+                ui.end_row();
+            });
+        }
+        EditTab::Avanzado => {
+            ui.label("Comando inicial");
+            ui.add(TextEdit::singleline(&mut form.init_command).hint_text("opcional, se ejecuta al abrir la sesión").desired_width(f32::INFINITY));
+            ui.add_space(8.0);
+            ui.label(RichText::new("Túneles (se activan al conectar)").small().color(theme::subtext()));
+            let mut remove = None;
+            form.errors.forwards.resize(form.forwards.len(), None);
+            for (index, row) in form.forwards.iter_mut().enumerate() {
+                ui.horizontal(|ui| {
+                    ComboBox::from_id_salt(("fwd-kind", index))
+                        .width(96.0)
+                        .selected_text(match row.kind {
+                            ForwardKind::Local => "Local -L",
+                            ForwardKind::Remote => "Remoto -R",
+                            ForwardKind::Dynamic => "SOCKS -D",
+                        })
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut row.kind, ForwardKind::Local, "Local -L");
+                            ui.selectable_value(&mut row.kind, ForwardKind::Remote, "Remoto -R");
+                            ui.selectable_value(&mut row.kind, ForwardKind::Dynamic, "SOCKS -D");
+                        })
+                        .response
+                        .hand();
+                    let broken = form.errors.forwards[index].is_some();
+                    ui.scope(|ui| {
+                        if broken {
+                            let stroke = egui::Stroke::new(1.5, theme::red());
+                            let widgets = &mut ui.visuals_mut().widgets;
+                            widgets.inactive.bg_stroke = stroke;
+                            widgets.hovered.bg_stroke = stroke;
+                        }
+                        ui.add(TextEdit::singleline(&mut row.bind_host).desired_width(96.0).hint_text("escucha"));
+                        ui.add(TextEdit::singleline(&mut row.bind_port).desired_width(56.0).hint_text("puerto"));
+                        if row.kind == ForwardKind::Dynamic {
+                            ui.label(RichText::new("proxy SOCKS5").small().color(theme::subtext()));
+                        } else {
+                            ui.label("→");
+                            ui.add(TextEdit::singleline(&mut row.dest_host).desired_width(96.0).hint_text("destino"));
+                            ui.add(TextEdit::singleline(&mut row.dest_port).desired_width(56.0).hint_text("puerto"));
+                        }
+                    });
+                    if ui.add(egui::Button::new("×").frame(false)).on_hover_text("Quitar túnel").clicked() {
+                        remove = Some(index);
+                    }
+                });
+                if let Some(message) = &form.errors.forwards[index] {
+                    ui.label(RichText::new(message.as_str()).small().color(theme::red()));
+                }
+            }
+            if let Some(index) = remove {
+                form.forwards.remove(index);
+                form.errors.forwards.remove(index);
+            }
+            if ui.add(egui::Button::new("+ Añadir túnel").fill(Color32::TRANSPARENT)).clicked() {
+                form.forwards.push(ForwardRow::new());
+                form.errors.forwards.push(None);
+            }
+            ui.label(
+                RichText::new("-L: este equipo escucha y reenvía al destino vía el servidor. -R: el servidor escucha y reenvía a un destino alcanzable desde aquí. -D: proxy SOCKS5 local que sale por el servidor. Los cambios se aplican al reconectar.")
+                    .small()
+                    .color(theme::subtext()),
+            );
+        }
+    }
+
+    // Resultado de «Probar conexión» y error al guardar, siempre visibles.
+    if let Some(test) = &form.test {
+        ui.add_space(6.0);
+        match &*test.lock().unwrap() {
+            TestState::Running => {
+                ui.label(RichText::new("Probando la conexión…").color(theme::subtext()));
+            }
+            TestState::Ok(message) => {
+                ui.label(RichText::new(message.as_str()).color(theme::identity(3)));
+            }
+            TestState::Failed(message) => {
+                ui.label(RichText::new(message.as_str()).color(theme::red()));
+            }
+        }
+    }
+    error_label(ui, &form.errors.general);
+    false
+}
+
+fn settings_body(ui: &mut egui::Ui, settings: &mut Settings, master_forced: &mut bool) -> bool {
     let section = |ui: &mut egui::Ui, text: &str| {
         ui.add_space(6.0);
         ui.label(RichText::new(text).small().color(theme::subtext()));
@@ -519,7 +949,7 @@ fn settings_dialog(ui: &mut egui::Ui, settings: &mut Settings, master_forced: &m
         ui.selectable_value(&mut settings.cursor, CursorChoice::Beam, "Barra");
         ui.selectable_value(&mut settings.cursor, CursorChoice::Underline, "Subrayado");
     });
-    ui.checkbox(&mut settings.blink, "Cursor parpadeante");
+    ui.checkbox(&mut settings.blink, "Cursor parpadeante").hand();
     ui.horizontal(|ui| {
         ui.label("Historial");
         ui.add(egui::DragValue::new(&mut settings.scrollback).range(MIN_SCROLLBACK..=MAX_SCROLLBACK).speed(100.0).suffix(" líneas"));
@@ -527,19 +957,12 @@ fn settings_dialog(ui: &mut egui::Ui, settings: &mut Settings, master_forced: &m
     ui.label(RichText::new("El historial se aplica a las sesiones nuevas.").small().color(theme::subtext()));
 
     section(ui, "Secretos");
-    ui.checkbox(master_forced, "Usar siempre la clave maestra, aunque haya keyring");
+    ui.checkbox(master_forced, "Usar siempre la clave maestra, aunque haya keyring").hand();
     ui.label(RichText::new("Este cambio se aplica al reiniciar.").small().color(theme::subtext()));
-
-    ui.add_space(10.0);
-    if ui.add(egui::Button::new(RichText::new("Cerrar").color(theme::base())).fill(theme::accent())).clicked() {
-        return Outcome::Cancel;
-    }
-    Outcome::None
+    false
 }
 
-fn snippet(ui: &mut egui::Ui, form: &mut SnippetForm) -> Outcome {
-    ui.heading(if form.id.is_some() { "Editar snippet" } else { "Nuevo snippet" });
-    ui.add_space(8.0);
+fn snippet_body(ui: &mut egui::Ui, form: &mut SnippetForm) -> bool {
     egui::Grid::new("snippet_form").num_columns(2).spacing([10.0, 8.0]).show(ui, |ui| {
         ui.label("Título");
         ui.add(TextEdit::singleline(&mut form.title).desired_width(f32::INFINITY));
@@ -557,16 +980,10 @@ fn snippet(ui: &mut egui::Ui, form: &mut SnippetForm) -> Outcome {
             .desired_width(f32::INFINITY),
     );
     error_label(ui, &form.error);
-    match buttons(ui, "Guardar") {
-        Some(true) => Outcome::Save,
-        Some(false) => Outcome::Cancel,
-        None => Outcome::None,
-    }
+    false
 }
 
-fn vars(ui: &mut egui::Ui, prompt: &mut VarsPrompt) -> Outcome {
-    ui.heading(prompt.title.clone());
-    ui.add_space(6.0);
+fn vars_body(ui: &mut egui::Ui, prompt: &mut VarsPrompt) -> bool {
     let mut submitted = false;
     egui::Grid::new("snippet_vars").num_columns(2).spacing([10.0, 8.0]).show(ui, |ui| {
         for (index, (name, value)) in prompt.fields.iter_mut().enumerate() {
@@ -575,9 +992,7 @@ fn vars(ui: &mut egui::Ui, prompt: &mut VarsPrompt) -> Outcome {
             if index == 0 {
                 field.request_focus();
             }
-            if field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                submitted = true;
-            }
+            submitted |= entered(ui, &field);
             ui.end_row();
         }
     });
@@ -586,78 +1001,48 @@ fn vars(ui: &mut egui::Ui, prompt: &mut VarsPrompt) -> Outcome {
     egui::ScrollArea::vertical().max_height(120.0).show(ui, |ui| {
         ui.label(RichText::new(prompt.rendered()).monospace().color(theme::subtext()));
     });
-    let accept = if prompt.run { "Insertar y ejecutar" } else { "Insertar" };
-    match buttons(ui, accept) {
-        Some(true) => Outcome::Submit,
-        Some(false) => Outcome::Cancel,
-        None if submitted => Outcome::Submit,
-        None => Outcome::None,
-    }
+    submitted
 }
 
-fn secret(ui: &mut egui::Ui, prompt: &mut SecretPrompt) -> Outcome {
-    let (title, label) = match prompt.kind {
-        SecretKind::Password => ("Contraseña", "Contraseña"),
-        SecretKind::Passphrase => ("Llave protegida", "Passphrase"),
-    };
-    ui.heading(title);
-    ui.add_space(6.0);
-    ui.label(format!("{label} para {}@{} ({})", prompt.asking.user, prompt.asking.host, prompt.asking.name));
-    let field = ui.add(TextEdit::singleline(&mut prompt.input).password(true).desired_width(f32::INFINITY));
+fn secret_body(ui: &mut egui::Ui, prompt: &mut SecretPrompt) -> bool {
+    let field = secret_field(ui, &mut prompt.input, &mut prompt.reveal, "");
     field.request_focus();
-    ui.checkbox(&mut prompt.save, "Guardar en el almacén de secretos");
+    ui.checkbox(&mut prompt.save, "Guardar en el almacén de secretos").hand();
     ui.label(RichText::new("Si no la guardas, se recuerda hasta cerrar omni-term.").small().color(theme::subtext()));
-    let submitted = field.lost_focus() && enter_pressed(ui);
-    match buttons(ui, "Conectar") {
-        Some(true) => Outcome::Submit,
-        Some(false) => Outcome::Cancel,
-        None if submitted => Outcome::Submit,
-        None => Outcome::None,
-    }
+    entered(ui, &field)
 }
 
-fn unlock(ui: &mut egui::Ui, prompt: &mut UnlockPrompt) -> Outcome {
-    ui.heading(if prompt.creating { "Crear clave maestra" } else { "Desbloquear secretos" });
-    ui.add_space(6.0);
+fn unlock_body(ui: &mut egui::Ui, prompt: &mut UnlockPrompt) -> bool {
     if prompt.creating {
         ui.label("No hay keyring del sistema disponible. Elige una clave maestra para cifrar tus contraseñas.");
         ui.label(RichText::new("Si la olvidas no se puede recuperar: tendrás que borrar los secretos y volver a introducirlos.").color(theme::subtext()));
     } else {
         ui.label("Introduce tu clave maestra.");
     }
-    let field = ui.add(TextEdit::singleline(&mut prompt.input).password(true).hint_text("clave maestra").desired_width(f32::INFINITY));
+    let field = secret_field(ui, &mut prompt.input, &mut prompt.reveal, "clave maestra");
     field.request_focus();
-    let mut submitted = field.lost_focus() && enter_pressed(ui);
+    let mut submitted = entered(ui, &field);
     if prompt.creating {
-        ui.add(TextEdit::singleline(&mut prompt.confirm).password(true).hint_text("repite la clave").desired_width(f32::INFINITY));
+        let confirm = ui.add(
+            TextEdit::singleline(&mut prompt.confirm)
+                .password(!prompt.reveal)
+                .hint_text("repite la clave")
+                .desired_width(f32::INFINITY),
+        );
+        submitted |= entered(ui, &confirm);
+        let length = prompt.input.chars().count();
+        if length > 0 && length < MIN_MASTER_KEY {
+            ui.label(RichText::new(format!("Usa al menos {MIN_MASTER_KEY} caracteres ({length} ahora).")).small().color(theme::red()));
+        } else if !prompt.confirm.is_empty() && prompt.input != prompt.confirm {
+            ui.label(RichText::new("Las dos claves no coinciden.").small().color(theme::red()));
+        }
     }
     error_label(ui, &prompt.error);
-
-    let mut outcome = Outcome::None;
-    ui.add_space(8.0);
-    ui.horizontal(|ui| {
-        if ui.button(if prompt.creating { "Crear" } else { "Desbloquear" }).clicked() {
-            submitted = true;
-        }
-        if ui.button("Cancelar").clicked() {
-            outcome = Outcome::Cancel;
-        }
-        if !prompt.creating && ui.button("Olvidé la clave…").clicked() {
-            outcome = Outcome::ResetMasterKey;
-        }
-    });
-    if submitted && matches!(outcome, Outcome::None) {
-        outcome = Outcome::Submit;
-    }
-    outcome
+    submitted
 }
 
-fn prompt(ui: &mut egui::Ui, request: &PromptRequest, answers: &mut Vec<String>) -> Outcome {
+fn prompt_body(ui: &mut egui::Ui, request: &PromptRequest, answers: &mut Vec<String>) -> bool {
     answers.resize(request.prompts.len(), String::new());
-    ui.heading(if request.title.trim().is_empty() { "Verificación en dos pasos" } else { request.title.trim() });
-    if !request.instructions.trim().is_empty() {
-        ui.label(RichText::new(request.instructions.trim()).color(theme::subtext()));
-    }
     let mut submitted = false;
     for (index, ((question, echo), answer)) in request.prompts.iter().zip(answers.iter_mut()).enumerate() {
         ui.label(question.trim());
@@ -665,29 +1050,39 @@ fn prompt(ui: &mut egui::Ui, request: &PromptRequest, answers: &mut Vec<String>)
         if index == 0 {
             field.request_focus();
         }
-        if field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-            submitted = true;
-        }
+        submitted |= entered(ui, &field);
     }
-    match buttons(ui, "Continuar") {
-        Some(true) => Outcome::Submit,
-        Some(false) => Outcome::Cancel,
-        None if submitted => Outcome::Submit,
-        None => Outcome::None,
-    }
+    submitted
 }
 
-fn host_key(ui: &mut egui::Ui, request: &HostKeyRequest) -> Outcome {
-    ui.heading("Servidor desconocido");
-    ui.add_space(6.0);
+fn host_key_body(ui: &mut egui::Ui, request: &HostKeyRequest) -> bool {
     ui.label(format!("No se puede verificar la autenticidad de {}:{}.", request.host, request.port));
     ui.add_space(4.0);
     ui.label(RichText::new(format!("{} {}", request.algorithm, request.fingerprint)).monospace());
     ui.add_space(4.0);
     ui.label("Si confías en él, se añadirá a ~/.ssh/known_hosts.");
-    match buttons(ui, "Confiar y conectar") {
-        Some(true) => Outcome::Trust(true),
-        Some(false) => Outcome::Trust(false),
-        None => Outcome::None,
-    }
+    false
+}
+
+fn host_key_changed_body(ui: &mut egui::Ui, change: &HostKeyChange) -> bool {
+    ui.label(
+        RichText::new("omni-term no se ha conectado. Puede que alguien se esté haciendo pasar por el servidor, o que el servidor se haya reinstalado.")
+            .color(theme::red()),
+    );
+    ui.add_space(4.0);
+    egui::Grid::new("host_key_changed").num_columns(2).spacing([14.0, 6.0]).show(ui, |ui| {
+        ui.label("Servidor");
+        ui.label(RichText::new(format!("{}:{}", change.host, change.port)).monospace());
+        ui.end_row();
+        ui.label(format!("Guardada (línea {})", change.line));
+        ui.label(RichText::new(change.stored.as_deref().unwrap_or("desconocida")).monospace().color(theme::subtext()));
+        ui.end_row();
+        ui.label("Recibida");
+        ui.label(RichText::new(format!("{} ({})", change.received, change.algorithm)).monospace());
+        ui.end_row();
+    });
+    ui.add_space(4.0);
+    ui.label("Si sabes que el servidor cambió de verdad, borra la huella antigua y vuelve a conectar:");
+    ui.label(RichText::new(change.forget_command()).monospace().color(theme::subtext()));
+    false
 }

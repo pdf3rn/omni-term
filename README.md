@@ -5,6 +5,7 @@ Terminal multiplataforma en Rust nativo con una interfaz pensada como un IDE: te
 ## Qué incluye
 
 - **Terminal local y SSH nativo** en pestañas, con la sesión restaurada al reabrir. Autenticación con contraseña, llave (con passphrase), `ssh-agent` e interactiva (2FA). Saltos entre servidores (`ProxyJump`) y verificación de huellas en `~/.ssh/known_hosts`.
+- **Identidad por conexión**: cada conexión puede llevar un color y un entorno («producción», «staging»). Se ve en la barra lateral, en la pestaña, en una banda bajo las pestañas y en el título de la ventana, para no escribir en el servidor equivocado.
 - **Secretos protegidos**: keyring del sistema, o una clave maestra propia (Argon2id + XChaCha20-Poly1305) si no hay keyring.
 - **Túneles** guardados por conexión: `-L`, `-R` y `-D` (proxy SOCKS5), con su estado en la barra lateral.
 - **Explorador SFTP** de dos paneles (local y remoto): arrastrar y soltar, transferencias recursivas en segundo plano con cancelación, resolución de conflictos, permisos y papelera local.

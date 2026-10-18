@@ -7,12 +7,14 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use eframe::egui::{
-    self, Align2, Button, Color32, CornerRadius, FontFamily, FontId, Id, Modal, Pos2, ProgressBar, Rect,
+    self, Align2, Button, Color32, CornerRadius, FontFamily, FontId, Id, Pos2, ProgressBar, Rect,
     RichText, ScrollArea, Sense, TextEdit, UiBuilder, Vec2,
 };
 use russh_sftp::client::SftpSession;
 
-use crate::sftp::{self, Entry, Sftp};
+use crate::cursor::HandExt;
+use crate::dialogs::{error_dialog, shell, Action, ErrorAction, ErrorInfo, Spec};
+use crate::sftp::{self, Entry, Sftp, SortKey};
 use crate::ssh::{Credentials, UiEvent};
 use crate::store::Connection;
 use crate::theme;
@@ -49,6 +51,7 @@ struct PaneState {
     error: Option<String>,
     loading: bool,
     show_hidden: bool,
+    sort: Option<(SortKey, bool)>,
 }
 
 impl PaneState {
@@ -61,6 +64,11 @@ impl PaneState {
         self.path = path;
         self.selected.clear();
         self.anchor = None;
+    }
+
+    fn resort(&mut self) {
+        let (key, ascending) = self.sort.unwrap_or((SortKey::Name, true));
+        sftp::sort_by(&mut self.entries, key, ascending);
     }
 
     fn selected_entries(&self) -> Vec<&Entry> {
@@ -78,6 +86,8 @@ enum PaneAction {
     Delete,
     Permissions,
     PickFolder,
+    Sort(SortKey),
+    CopyAcross,
 }
 
 enum Dialog {
@@ -87,6 +97,7 @@ enum Dialog {
     Permissions { name: String, mode: u32 },
     Conflict { conflict: Conflict, apply_all: bool },
     Message(String),
+    Error(ErrorInfo),
 }
 
 pub struct Explorer {
@@ -189,6 +200,7 @@ impl Explorer {
         match list_local(Path::new(&self.local.path)) {
             Ok(entries) => {
                 self.local.entries = entries;
+                self.local.resort();
                 self.local.error = None;
             }
             Err(error) => {
@@ -253,6 +265,7 @@ impl Explorer {
                         match result {
                             Ok(entries) => {
                                 self.remote.entries = entries;
+                                self.remote.resort();
                                 self.remote.error = None;
                                 let names: BTreeSet<_> = self.remote.entries.iter().map(|e| e.name.clone()).collect();
                                 self.remote.selected.retain(|n| names.contains(n));
@@ -266,7 +279,7 @@ impl Explorer {
                 }
                 Message::Done { result } => {
                     if let Err(error) = result {
-                        self.dialog = Some(Dialog::Message(error));
+                        self.dialog = Some(Dialog::Error(ErrorInfo { title: "No se pudo completar la operación".into(), detail: error, retry: None }));
                     }
                     self.refresh_remote();
                 }
@@ -450,7 +463,7 @@ impl Explorer {
             let mut middle = ui.new_child(UiBuilder::new().max_rect(middle_rect.shrink(6.0)));
             middle.add_space((middle_rect.height() / 2.0 - 56.0).max(40.0));
             let width = middle.available_width();
-            let upload = Button::new(RichText::new("Subir →").color(theme::base())).fill(theme::accent()).min_size(Vec2::new(width, 32.0));
+            let upload = Button::new("Subir →").min_size(Vec2::new(width, 32.0));
             if middle.add(upload).on_hover_text("Copia la selección local al directorio remoto actual").clicked() {
                 self.copy_from(Side::Local);
             }
@@ -533,6 +546,18 @@ impl Explorer {
                         Some(Dialog::Permissions { name: entry.name.clone(), mode: entry.permissions.unwrap_or(0o644) });
                 }
             }
+            PaneAction::Sort(key) => {
+                let pane = match side {
+                    Side::Local => &mut self.local,
+                    Side::Remote => &mut self.remote,
+                };
+                pane.sort = match pane.sort {
+                    Some((current, ascending)) if current == key => Some((key, !ascending)),
+                    _ => Some((key, true)),
+                };
+                pane.resort();
+            }
+            PaneAction::CopyAcross => self.copy_from(side),
             PaneAction::PickFolder => {
                 let picks = self.folder_picks.clone();
                 let (wake, start) = (self.wake.clone(), self.local.path.clone());
@@ -585,55 +610,41 @@ impl Explorer {
             Cancel,
             Resolve(Resolution, bool),
         }
-        let mut outcome = Outcome::None;
-        Modal::new(Id::NULL.with("explorer-dialog")).show(ctx, |ui| {
-            ui.set_width(380.0);
-            ui.spacing_mut().item_spacing.y = 8.0;
-            let buttons = |ui: &mut egui::Ui, accept: &str, outcome: &mut Outcome| {
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    let fill = if accept == "Eliminar" { theme::red() } else { theme::accent() };
-                    if ui.add(Button::new(RichText::new(accept).color(theme::base())).fill(fill)).clicked() {
-                        *outcome = Outcome::Accept;
-                    }
-                    if ui.add(Button::new("Cancelar").fill(Color32::TRANSPARENT)).clicked() {
-                        *outcome = Outcome::Cancel;
-                    }
-                });
-            };
-            match &mut dialog {
-                Dialog::NewFolder { name, .. } => {
-                    ui.heading("Nueva carpeta");
-                    let field = ui.add(TextEdit::singleline(name).desired_width(f32::INFINITY).hint_text("nombre"));
-                    field.request_focus();
-                    if field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                        outcome = Outcome::Accept;
-                    }
-                    buttons(ui, "Crear", &mut outcome);
-                }
-                Dialog::Rename { new, .. } => {
-                    ui.heading("Renombrar");
-                    let field = ui.add(TextEdit::singleline(new).desired_width(f32::INFINITY));
-                    field.request_focus();
-                    if field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                        outcome = Outcome::Accept;
-                    }
-                    buttons(ui, "Renombrar", &mut outcome);
-                }
-                Dialog::ConfirmDelete { side, names } => {
-                    let local = *side == Side::Local;
-                    ui.heading(if local { "Mover a la papelera" } else { "Eliminar en el servidor" });
-                    let what = if names.len() == 1 { format!("\"{}\"", names[0]) } else { format!("{} elementos", names.len()) };
+        let accept_or_cancel = |action: Action| match action {
+            Action::Accept => Outcome::Accept,
+            Action::Cancel => Outcome::Cancel,
+            _ => Outcome::None,
+        };
+        let outcome = match &mut dialog {
+            Dialog::NewFolder { name, .. } => accept_or_cancel(shell(ctx, Spec::new("Nueva carpeta").width(380.0).accept("Crear"), |ui| {
+                let field = ui.add(TextEdit::singleline(name).desired_width(f32::INFINITY).hint_text("nombre"));
+                field.request_focus();
+                field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))
+            })),
+            Dialog::Rename { new, .. } => accept_or_cancel(shell(ctx, Spec::new("Renombrar").width(380.0).accept("Renombrar"), |ui| {
+                let field = ui.add(TextEdit::singleline(new).desired_width(f32::INFINITY));
+                field.request_focus();
+                field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))
+            })),
+            Dialog::ConfirmDelete { side, names } => {
+                let local = *side == Side::Local;
+                let what = if names.len() == 1 { format!("\"{}\"", names[0]) } else { format!("{} elementos", names.len()) };
+                let spec = Spec::new(if local { "Mover a la papelera" } else { "Eliminar en el servidor" })
+                    .width(380.0)
+                    .accept(if local { "Mover" } else { "Eliminar" });
+                let spec = if local { spec } else { spec.danger() };
+                accept_or_cancel(shell(ctx, spec, |ui| {
                     ui.label(if local {
                         format!("¿Mover {what} a la papelera?")
                     } else {
                         format!("¿Eliminar {what}? Las carpetas se borran con todo su contenido y no se puede deshacer.")
                     });
-                    buttons(ui, if local { "Mover" } else { "Eliminar" }, &mut outcome);
-                }
-                Dialog::Permissions { name, mode } => {
-                    ui.heading("Permisos");
-                    ui.label(RichText::new(name.as_str()).color(theme::subtext()));
+                    false
+                }))
+            }
+            Dialog::Permissions { name, mode } => {
+                let spec = Spec::new("Permisos").width(380.0).context(name.as_str()).accept("Aplicar");
+                accept_or_cancel(shell(ctx, spec, |ui| {
                     egui::Grid::new("permission-grid").num_columns(4).spacing([18.0, 6.0]).show(ui, |ui| {
                         ui.label("");
                         for header in ["Propietario", "Grupo", "Otros"] {
@@ -645,7 +656,7 @@ impl Explorer {
                             for shift in [6, 3, 0] {
                                 let mask = bit << shift;
                                 let mut on = *mode & mask != 0;
-                                if ui.checkbox(&mut on, "").changed() {
+                                if ui.checkbox(&mut on, "").hand().changed() {
                                     *mode = if on { *mode | mask } else { *mode & !mask };
                                 }
                             }
@@ -657,31 +668,43 @@ impl Explorer {
                             .monospace()
                             .color(theme::subtext()),
                     );
-                    buttons(ui, "Aplicar", &mut outcome);
-                }
-                Dialog::Conflict { conflict, apply_all } => {
-                    ui.heading("El destino ya existe");
-                    ui.label(format!("\"{}\" ya existe. ¿Qué hacemos?", conflict.name));
-                    ui.checkbox(apply_all, "Aplicar a todos los conflictos de esta transferencia");
-                    ui.add_space(8.0);
-                    ui.horizontal(|ui| {
-                        for (label, resolution) in
-                            [("Reemplazar", Resolution::Replace), ("Omitir", Resolution::Skip), ("Renombrar", Resolution::Rename)]
-                        {
-                            if ui.button(label).clicked() {
-                                outcome = Outcome::Resolve(resolution, *apply_all);
-                            }
-                        }
-                    });
-                }
-                Dialog::Message(text) => {
-                    ui.label(text.as_str());
-                    if ui.button("Aceptar").clicked() {
-                        outcome = Outcome::Cancel;
-                    }
+                    false
+                }))
+            }
+            Dialog::Conflict { conflict, apply_all } => {
+                // Reemplazar es la acción destructiva: botón rojo y nunca con Enter.
+                let spec = Spec::new("El destino ya existe")
+                    .width(380.0)
+                    .accept("Reemplazar")
+                    .danger()
+                    .extra("Omitir")
+                    .extra("Renombrar");
+                let name = conflict.name.clone();
+                match shell(ctx, spec, |ui| {
+                    ui.label(format!("\"{name}\" ya existe. ¿Qué hacemos?"));
+                    ui.checkbox(apply_all, "Aplicar a todos los conflictos de esta transferencia").hand();
+                    false
+                }) {
+                    Action::Accept => Outcome::Resolve(Resolution::Replace, *apply_all),
+                    Action::Extra(0) => Outcome::Resolve(Resolution::Skip, *apply_all),
+                    Action::Extra(_) => Outcome::Resolve(Resolution::Rename, *apply_all),
+                    Action::Cancel => Outcome::Cancel,
+                    Action::None => Outcome::None,
                 }
             }
-        });
+            Dialog::Error(info) => match error_dialog(ctx, info) {
+                ErrorAction::Close => Outcome::Cancel,
+                _ => Outcome::None,
+            },
+            Dialog::Message(text) => accept_or_cancel(shell(
+                ctx,
+                Spec::new("Aviso").width(380.0).cancel("Aceptar").backdrop_closes(),
+                |ui| {
+                    ui.label(text.as_str());
+                    false
+                },
+            )),
+        };
 
         match (outcome, dialog) {
             (Outcome::None, dialog) => self.dialog = Some(dialog),
@@ -696,7 +719,7 @@ impl Explorer {
                 Some(name) => match side {
                     Side::Local => {
                         if let Err(error) = std::fs::create_dir(Path::new(&self.local.path).join(&name)) {
-                            self.dialog = Some(Dialog::Message(format!("No se pudo crear la carpeta: {error}")));
+                            self.dialog = Some(Dialog::Error(ErrorInfo { title: "No se pudo crear la carpeta".into(), detail: error.to_string(), retry: None }));
                         }
                         self.refresh_local();
                     }
@@ -713,7 +736,7 @@ impl Explorer {
                     Side::Local => {
                         let base = PathBuf::from(&self.local.path);
                         if let Err(error) = std::fs::rename(base.join(&old), base.join(&new)) {
-                            self.dialog = Some(Dialog::Message(format!("No se pudo renombrar: {error}")));
+                            self.dialog = Some(Dialog::Error(ErrorInfo { title: "No se pudo renombrar".into(), detail: error.to_string(), retry: None }));
                         }
                         self.refresh_local();
                     }
@@ -736,7 +759,7 @@ impl Explorer {
                 let base = PathBuf::from(&self.local.path);
                 let paths: Vec<PathBuf> = names.iter().map(|n| base.join(n)).collect();
                 if let Err(error) = trash::delete_all(paths) {
-                    self.dialog = Some(Dialog::Message(format!("No se pudo mover a la papelera: {error}")));
+                    self.dialog = Some(Dialog::Error(ErrorInfo { title: "No se pudo mover a la papelera".into(), detail: error.to_string(), retry: None }));
                 }
                 self.refresh_local();
             }
@@ -824,11 +847,35 @@ fn pane_ui(
         actions.push(PaneAction::Go(state.path_edit.clone()));
     }
     ui.horizontal(|ui| {
-        ui.checkbox(&mut state.show_hidden, RichText::new("Ver ocultos").small());
+        ui.checkbox(&mut state.show_hidden, RichText::new("Ver ocultos").small()).hand();
         if side == Side::Local && ui.add(Button::new(RichText::new("Elegir carpeta…").small()).fill(Color32::TRANSPARENT)).clicked() {
             actions.push(PaneAction::PickFolder);
         }
     });
+
+    // Cabecera de columnas: un clic ordena, otro invierte el orden.
+    let (head, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 22.0), Sense::hover());
+    let columns = [
+        (SortKey::Name, "Nombre", Rect::from_min_max(head.min, Pos2::new(head.max.x - 200.0, head.max.y)), Align2::LEFT_CENTER, head.min.x + 8.0),
+        (SortKey::Size, "Tamaño", Rect::from_min_max(Pos2::new(head.max.x - 200.0, head.min.y), Pos2::new(head.max.x - 110.0, head.max.y)), Align2::RIGHT_CENTER, head.max.x - 150.0),
+        (SortKey::Modified, "Modificado", Rect::from_min_max(Pos2::new(head.max.x - 110.0, head.min.y), head.max), Align2::RIGHT_CENTER, head.max.x - 8.0),
+    ];
+    let current_sort = state.sort.unwrap_or((SortKey::Name, true));
+    for (key, label, zone, align, x) in columns {
+        let id = ui.scope_id().with(("sort-column", side == Side::Remote, key as u8));
+        let response = ui.interact(zone, id, Sense::click()).hand();
+        let active = current_sort.0 == key;
+        let arrow = match (active, current_sort.1) {
+            (true, true) => " ↑",
+            (true, false) => " ↓",
+            _ => "",
+        };
+        let color = if active || response.hovered() { theme::text() } else { theme::subtext() };
+        ui.painter().text(Pos2::new(x, head.center().y), align, format!("{label}{arrow}"), FontId::new(12.0, FontFamily::Proportional), color);
+        if response.on_hover_text("Ordenar por esta columna").clicked() {
+            actions.push(PaneAction::Sort(key));
+        }
+    }
 
     let list_height = (ui.available_height() - 74.0).max(60.0);
     let (list_rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), list_height), Sense::hover());
@@ -906,9 +953,42 @@ fn pane_ui(
                         state.anchor = Some(index);
                     }
                 }
+                if response.secondary_clicked() && !state.selected.contains(&entry.name) {
+                    state.selected.clear();
+                    state.selected.insert(entry.name.clone());
+                    state.anchor = Some(index);
+                }
                 if response.double_clicked() && entry.is_dir {
                     actions.push(PaneAction::Open(entry.name.clone()));
                 }
+                response.context_menu(|ui| {
+                    if entry.is_dir && ui.button("Abrir").clicked() {
+                        actions.push(PaneAction::Open(entry.name.clone()));
+                        ui.close();
+                    }
+                    let (label, hint) = match side {
+                        Side::Local => ("Subir al servidor", "→"),
+                        Side::Remote => ("Bajar a este equipo", "←"),
+                    };
+                    if ui.button(format!("{label}  {hint}")).clicked() {
+                        actions.push(PaneAction::CopyAcross);
+                        ui.close();
+                    }
+                    ui.separator();
+                    if ui.add_enabled(state.selected.len() == 1, Button::new("Renombrar")).clicked() {
+                        actions.push(PaneAction::Rename);
+                        ui.close();
+                    }
+                    if side == Side::Remote && ui.add_enabled(state.selected.len() == 1, Button::new("Permisos")).clicked() {
+                        actions.push(PaneAction::Permissions);
+                        ui.close();
+                    }
+                    let delete = if can_delete { "Eliminar" } else { "Mover a la papelera" };
+                    if ui.button(delete).clicked() {
+                        actions.push(PaneAction::Delete);
+                        ui.close();
+                    }
+                });
                 if response.drag_started() {
                     if !state.selected.contains(&entry.name) {
                         state.selected.clear();
