@@ -8,11 +8,12 @@ use eframe::egui::{
 };
 use zeroize::Zeroizing;
 
-use crate::dialogs::{self, ConnForm, Dialog, Outcome, Pending, SecretPrompt, SnippetForm, UnlockPrompt, VarsPrompt};
+use crate::dialogs::{self, ConnForm, Dialog, Outcome, Pending, Purpose, SecretPrompt, SnippetForm, UnlockPrompt, VarsPrompt};
+use crate::explorer::Explorer;
 use crate::pane::{self, bold_family, Pane, DEFAULT_FONT_SIZE, MAX_FONT_SIZE, MIN_FONT_SIZE, PADDING};
 use crate::secrets::{account_for, SecretError, SecretKind, SecretStore, Secrets};
 use crate::ssh::{self, Credentials, HostKeyRequest, TunnelState, Tunnels, UiEvent};
-use crate::store::{Auth, Connection, Forward, Snippet, Store, TabKind};
+use crate::store::{Auth, Connection, Forward, SavedTab, Snippet, Store, TabKind};
 use crate::term::Session;
 use crate::theme;
 
@@ -28,12 +29,43 @@ enum SidebarView {
     Snippets,
 }
 
+enum Body {
+    Terminal { pane: Pane, tunnels: Option<Tunnels> },
+    Explorer(Box<Explorer>),
+}
+
 struct Tab {
     id: u64,
     kind: TabKind,
     label: String,
-    pane: Pane,
-    tunnels: Option<Tunnels>,
+    body: Body,
+}
+
+impl Tab {
+    fn pane(&self) -> Option<&Pane> {
+        match &self.body {
+            Body::Terminal { pane, .. } => Some(pane),
+            Body::Explorer(_) => None,
+        }
+    }
+
+    fn tunnels(&self) -> Option<Tunnels> {
+        match &self.body {
+            Body::Terminal { tunnels, .. } => tunnels.clone(),
+            Body::Explorer(_) => None,
+        }
+    }
+
+    /// Título mostrado: el del terminal si lo ha fijado, y si no la etiqueta de la pestaña.
+    fn title(&self) -> String {
+        match &self.body {
+            Body::Terminal { pane, .. } => {
+                let title = pane.title();
+                if title.is_empty() { self.label.clone() } else { title }
+            }
+            Body::Explorer(explorer) => explorer.label(),
+        }
+    }
 }
 
 pub struct App {
@@ -56,10 +88,10 @@ pub struct App {
     events_tx: Sender<UiEvent>,
     events_rx: Receiver<UiEvent>,
     host_keys: VecDeque<HostKeyRequest>,
-    open_queue: VecDeque<TabKind>,
+    open_queue: VecDeque<SavedTab>,
     restore_active: Option<usize>,
     dialog: Option<Dialog>,
-    saved_layout: (Vec<TabKind>, usize),
+    saved_layout: (Vec<SavedTab>, usize),
     notice: Option<String>,
 }
 
@@ -100,9 +132,9 @@ impl App {
 
         let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build()?;
 
-        let mut open_queue: VecDeque<TabKind> = layout.into();
+        let mut open_queue: VecDeque<SavedTab> = layout.into();
         if open_queue.is_empty() {
-            open_queue.push_back(TabKind::Local);
+            open_queue.push_back(SavedTab::plain(TabKind::Local));
         }
 
         Ok(Self {
@@ -143,7 +175,8 @@ impl App {
         let (cols, rows) = self.grid;
         let session = Session::start(cols, rows, move || wake(), move |feed| crate::local::spawn(cols, rows, feed))?;
         let id = self.take_tab_id();
-        self.tabs.push(Tab { id, kind: TabKind::Local, label: "Terminal local".into(), pane: Pane::new(session, self.debug_keys), tunnels: None });
+        let body = Body::Terminal { pane: Pane::new(session, self.debug_keys), tunnels: None };
+        self.tabs.push(Tab { id, kind: TabKind::Local, label: "Terminal local".into(), body });
         self.active = self.tabs.len() - 1;
         Ok(())
     }
@@ -169,7 +202,8 @@ impl App {
             Ok(ssh::spawn(&handle, connection, credentials, (cols, rows), feed, events, wake_for_ssh, ssh::default_known_hosts(), tunnels_for_spawn))
         })?;
         let tab_id = slot.unwrap_or_else(|| self.take_tab_id());
-        let tab = Tab { id: tab_id, kind: TabKind::Connection(id), label, pane: Pane::new(session, self.debug_keys), tunnels: Some(tunnels) };
+        let body = Body::Terminal { pane: Pane::new(session, self.debug_keys), tunnels: Some(tunnels) };
+        let tab = Tab { id: tab_id, kind: TabKind::Connection(id), label, body };
         match slot.and_then(|slot| self.tabs.iter().position(|t| t.id == slot)) {
             Some(index) => {
                 self.tabs[index] = tab;
@@ -183,8 +217,27 @@ impl App {
         Ok(())
     }
 
+    /// Abre un explorador de archivos con su propia sesión SSH.
+    fn open_explorer(&mut self, connection: Connection, credentials: Credentials, paths: (Option<String>, Option<String>)) -> anyhow::Result<()> {
+        let Some(id) = connection.id else { anyhow::bail!("la conexión no está guardada") };
+        let label = format!("Archivos · {}", connection.name);
+        let explorer = Explorer::new(
+            connection,
+            credentials,
+            self.runtime.handle().clone(),
+            self.wake(),
+            self.events_tx.clone(),
+            ssh::default_known_hosts(),
+            paths,
+        );
+        let tab_id = self.take_tab_id();
+        self.tabs.push(Tab { id: tab_id, kind: TabKind::Explorer(id), label, body: Body::Explorer(Box::new(explorer)) });
+        self.active = self.tabs.len() - 1;
+        Ok(())
+    }
+
     /// Reúne los secretos necesarios (pidiéndolos si hace falta) y abre la pestaña SSH.
-    fn begin_open(&mut self, connection: Connection, slot: Option<u64>) {
+    fn begin_open(&mut self, connection: Connection, slot: Option<u64>, purpose: Purpose) {
         let kind = match connection.auth {
             Auth::Password => Some(SecretKind::Password),
             Auth::Key => match connection.key_path.as_deref().map(ssh::key_is_encrypted) {
@@ -198,23 +251,27 @@ impl App {
             Auth::Agent => None,
         };
         let Some(kind) = kind else {
-            self.finish_open(connection, Credentials::default(), slot);
+            self.finish_open(connection, Credentials::default(), slot, purpose);
             return;
         };
 
         let account = account_for(connection.id.unwrap_or_default(), kind);
         match self.secrets.get(&account) {
-            Ok(Some(secret)) => self.finish_open(connection, credentials(kind, secret), slot),
+            Ok(Some(secret)) => self.finish_open(connection, credentials(kind, secret), slot, purpose),
             Ok(None) => {
-                self.dialog = Some(Dialog::Secret(SecretPrompt { connection, slot, kind, input: String::new(), save: true }));
+                self.dialog = Some(Dialog::Secret(SecretPrompt { purpose, connection, slot, kind, input: String::new(), save: true }));
             }
-            Err(SecretError::Locked) => self.ask_unlock(Pending::Open(connection, slot)),
+            Err(SecretError::Locked) => self.ask_unlock(Pending::Open(connection, slot, purpose)),
             Err(error) => self.dialog = Some(Dialog::Message(format!("Almacén de secretos: {error}"))),
         }
     }
 
-    fn finish_open(&mut self, connection: Connection, credentials: Credentials, slot: Option<u64>) {
-        if let Err(error) = self.open_ssh(connection, credentials, slot) {
+    fn finish_open(&mut self, connection: Connection, credentials: Credentials, slot: Option<u64>, purpose: Purpose) {
+        let result = match purpose {
+            Purpose::Terminal => self.open_ssh(connection, credentials, slot),
+            Purpose::Explorer(local, remote) => self.open_explorer(connection, credentials, (local, remote)),
+        };
+        if let Err(error) = result {
             self.dialog = Some(Dialog::Message(format!("No se pudo abrir la conexión: {error:#}")));
         }
     }
@@ -256,7 +313,7 @@ impl App {
 
     fn insert_into_active(&mut self, body: &str, run: bool) {
         match self.tabs.get(self.active) {
-            Some(tab) if !tab.pane.session.is_disconnected() => tab.pane.insert_text(body, run),
+            Some(Tab { body: Body::Terminal { pane, .. }, .. }) if !pane.session.is_disconnected() => pane.insert_text(body, run),
             _ => self.notice = Some("No hay un terminal activo donde insertar".into()),
         }
     }
@@ -264,7 +321,7 @@ impl App {
     fn reconnect(&mut self, index: usize) {
         let (TabKind::Connection(id), tab_id) = (self.tabs[index].kind, self.tabs[index].id) else { return };
         if let Some(connection) = self.connections.iter().find(|c| c.id == Some(id)).cloned() {
-            self.begin_open(connection, Some(tab_id));
+            self.begin_open(connection, Some(tab_id), Purpose::Terminal);
         }
     }
 
@@ -317,7 +374,10 @@ impl App {
         }
 
         let exited: Vec<usize> =
-            (0..self.tabs.len()).rev().filter(|&i| self.tabs[i].pane.session.has_exited()).collect();
+            (0..self.tabs.len())
+                .rev()
+                .filter(|&i| self.tabs[i].pane().is_some_and(|p| p.session.has_exited()))
+                .collect();
         for index in exited {
             self.close_tab(index);
         }
@@ -327,8 +387,8 @@ impl App {
         }
         if let Some(request) = self.host_keys.pop_front() {
             self.dialog = Some(Dialog::HostKey(request));
-        } else if let Some(kind) = self.open_queue.pop_front() {
-            match kind {
+        } else if let Some(saved) = self.open_queue.pop_front() {
+            match saved.kind {
                 TabKind::Local => {
                     if let Err(error) = self.open_local() {
                         self.dialog = Some(Dialog::Message(format!("No se pudo abrir el terminal local: {error:#}")));
@@ -336,7 +396,12 @@ impl App {
                 }
                 TabKind::Connection(id) => {
                     if let Some(connection) = self.connections.iter().find(|c| c.id == Some(id)).cloned() {
-                        self.begin_open(connection, None);
+                        self.begin_open(connection, None, Purpose::Terminal);
+                    }
+                }
+                TabKind::Explorer(id) => {
+                    if let Some(connection) = self.connections.iter().find(|c| c.id == Some(id)).cloned() {
+                        self.begin_open(connection, None, Purpose::Explorer(saved.local_path, saved.remote_path));
                     }
                 }
             }
@@ -352,7 +417,18 @@ impl App {
         if self.restore_active.is_some() {
             return;
         }
-        let layout = (self.tabs.iter().map(|t| t.kind).collect::<Vec<_>>(), self.active);
+        let tabs: Vec<SavedTab> = self
+            .tabs
+            .iter()
+            .map(|t| match &t.body {
+                Body::Explorer(explorer) => {
+                    let (local, remote) = explorer.paths();
+                    SavedTab { kind: t.kind, local_path: Some(local), remote_path: Some(remote).filter(|r| !r.is_empty()) }
+                }
+                Body::Terminal { .. } => SavedTab::plain(t.kind),
+            })
+            .collect();
+        let layout = (tabs, self.active);
         if layout != self.saved_layout {
             if let Err(error) = self.store.lock().unwrap().save_layout(&layout.0, layout.1) {
                 eprintln!("no se pudo guardar la sesión: {error:#}");
@@ -441,7 +517,7 @@ impl App {
             (Outcome::Submit, Dialog::Secret(prompt)) => {
                 let secret = Zeroizing::new(prompt.input);
                 let account = account_for(prompt.connection.id.unwrap_or_default(), prompt.kind);
-                self.finish_open(prompt.connection, credentials(prompt.kind, secret.clone()), prompt.slot);
+                self.finish_open(prompt.connection, credentials(prompt.kind, secret.clone()), prompt.slot, prompt.purpose);
                 if prompt.save && !secret.is_empty() {
                     self.save_secret(account, secret);
                 }
@@ -456,7 +532,7 @@ impl App {
                     match master.unlock(&prompt.input) {
                         Ok(()) => {
                             match prompt.then {
-                                Pending::Open(connection, slot) => self.begin_open(connection, slot),
+                                Pending::Open(connection, slot, purpose) => self.begin_open(connection, slot, purpose),
                                 Pending::Save { account, secret } => self.save_secret(account, secret),
                             }
                             return;
@@ -480,6 +556,7 @@ impl App {
         let mut connect: Option<Connection> = None;
         let mut edit: Option<Connection> = None;
         let mut delete: Option<Connection> = None;
+        let mut files: Option<Connection> = None;
         let mut new_snippet = false;
         let mut snippet_from_selection = false;
         let mut insert: Option<(Snippet, bool)> = None;
@@ -491,7 +568,7 @@ impl App {
             .iter()
             .filter_map(|t| match t.kind {
                 TabKind::Connection(id) => Some(id),
-                TabKind::Local => None,
+                TabKind::Local | TabKind::Explorer(_) => None,
             })
             .collect();
 
@@ -581,6 +658,10 @@ impl App {
                             connect = Some(connection.clone());
                             ui.close();
                         }
+                        if ui.button("Explorador de archivos").clicked() {
+                            files = Some(connection.clone());
+                            ui.close();
+                        }
                         if ui.button("Editar").clicked() {
                             edit = Some(connection.clone());
                             ui.close();
@@ -594,7 +675,7 @@ impl App {
                     let live = connection
                         .id
                         .and_then(|id| self.tabs.iter().find(|t| t.kind == TabKind::Connection(id)))
-                        .and_then(|t| t.tunnels.clone());
+                        .and_then(|t| t.tunnels());
                     match live {
                         Some(tunnels) => {
                             for status in tunnels.lock().unwrap().iter() {
@@ -726,7 +807,7 @@ impl App {
             self.dialog = Some(Dialog::Snippet(SnippetForm::new(String::new())));
         }
         if snippet_from_selection {
-            let selected = self.tabs.get(self.active).and_then(|t| t.pane.selection_text());
+            let selected = self.tabs.get(self.active).and_then(|t| t.pane()).and_then(|p| p.selection_text());
             match selected {
                 Some(text) => self.dialog = Some(Dialog::Snippet(SnippetForm::new(text))),
                 None => self.notice = Some("Selecciona texto en el terminal para guardarlo como snippet".into()),
@@ -739,7 +820,7 @@ impl App {
             self.dialog = snippet.id.map(|id| Dialog::ConfirmDeleteSnippet { id, title: snippet.title });
         }
         if open_local {
-            self.open_queue.push_back(TabKind::Local);
+            self.open_queue.push_back(SavedTab::plain(TabKind::Local));
         }
         if new_connection {
             self.dialog = Some(Dialog::Edit(ConnForm::new()));
@@ -748,7 +829,10 @@ impl App {
             self.import_ssh_config();
         }
         if let Some(connection) = connect {
-            self.begin_open(connection, None);
+            self.begin_open(connection, None, Purpose::Terminal);
+        }
+        if let Some(connection) = files {
+            self.begin_open(connection, None, Purpose::Explorer(None, None));
         }
         if let Some(connection) = edit {
             self.dialog = Some(Dialog::Edit(ConnForm::from_connection(&connection, self.forwards.get(&connection.id.unwrap_or_default()).map_or(&[][..], |f| f.as_slice()))));
@@ -912,6 +996,7 @@ impl eframe::App for App {
         let mut activate = None;
         let mut close = None;
         let mut new_local = false;
+        let mut files_tab: Option<i64> = None;
         Panel::top("tabs")
             .exact_size(TAB_BAR_HEIGHT)
             .show_separator_line(false)
@@ -920,9 +1005,7 @@ impl eframe::App for App {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 2.0;
                     for (i, t) in self.tabs.iter().enumerate() {
-                        let title = t.pane.title();
-                        let label = if title.is_empty() { t.label.clone() } else { title };
-                        let (clicked, closed) = tab(ui, &label, i == self.active, i);
+                        let (clicked, closed) = tab(ui, &t.title(), i == self.active, i);
                         if clicked {
                             activate = Some(i);
                         }
@@ -935,14 +1018,26 @@ impl eframe::App for App {
                     if plus.on_hover_text("Nueva pestaña").clicked() {
                         new_local = true;
                     }
+                    if let Some(TabKind::Connection(id)) = self.tabs.get(self.active).map(|t| t.kind) {
+                        ui.add_space(8.0);
+                        let files = Button::new(RichText::new("Archivos").small()).fill(Color32::TRANSPARENT);
+                        if ui.add(files).on_hover_text("Abrir el explorador de archivos de esta conexión").clicked() {
+                            files_tab = Some(id);
+                        }
+                    }
                 });
             });
 
         if let Some(i) = activate {
             self.active = i;
         }
+        if let Some(id) = files_tab {
+            if let Some(connection) = self.connections.iter().find(|c| c.id == Some(id)).cloned() {
+                self.begin_open(connection, None, Purpose::Explorer(None, None));
+            }
+        }
         if new_local {
-            self.open_queue.push_back(TabKind::Local);
+            self.open_queue.push_back(SavedTab::plain(TabKind::Local));
         }
         if let Some(i) = close {
             self.close_tab(i);
@@ -989,16 +1084,24 @@ impl eframe::App for App {
         if !self.tabs.is_empty() {
             let active = self.active.min(self.tabs.len() - 1);
             let input_enabled = self.dialog.is_none() && self.host_keys.is_empty();
-            self.tabs[active].pane.show(ui, text_area, input_enabled, self.font_size);
+            let font_size = self.font_size;
+            let mut disconnected = false;
+            match &mut self.tabs[active].body {
+                Body::Terminal { pane, .. } => {
+                    pane.show(ui, text_area, input_enabled, font_size);
+                    disconnected = pane.session.is_disconnected();
+                }
+                Body::Explorer(explorer) => explorer.show(ui, area.shrink2(Vec2::new(8.0, 8.0))),
+            }
 
-            let title = self.tabs[active].pane.title();
+            let title = self.tabs[active].title();
             let title = if title.is_empty() { "omni-term".to_string() } else { title };
             if title != self.window_title {
                 ctx.send_viewport_cmd(ViewportCommand::Title(title.clone()));
                 self.window_title = title;
             }
 
-            if self.tabs[active].pane.session.is_disconnected() {
+            if disconnected {
                 let mut clicked = false;
                 egui::Area::new(egui::Id::NULL.with("reconnect"))
                     .pivot(Align2::CENTER_BOTTOM)

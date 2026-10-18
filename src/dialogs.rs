@@ -194,7 +194,16 @@ impl VarsPrompt {
     }
 }
 
+/// Para qué se está abriendo una conexión.
+#[derive(Clone)]
+pub enum Purpose {
+    Terminal,
+    /// Explorador de archivos, con las rutas (local, remota) a restaurar.
+    Explorer(Option<String>, Option<String>),
+}
+
 pub struct SecretPrompt {
+    pub purpose: Purpose,
     pub connection: Connection,
     /// Pestaña a reemplazar al reconectar.
     pub slot: Option<u64>,
@@ -205,7 +214,7 @@ pub struct SecretPrompt {
 
 /// Qué hacer cuando el almacén de secretos queda desbloqueado.
 pub enum Pending {
-    Open(Connection, Option<u64>),
+    Open(Connection, Option<u64>, Purpose),
     Save { account: String, secret: Zeroizing<String> },
 }
 

@@ -30,7 +30,7 @@ pub enum UiEvent {
     HostKey(HostKeyRequest),
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct Credentials {
     pub password: Option<Zeroizing<String>>,
     pub key_passphrase: Option<Zeroizing<String>>,
@@ -85,7 +85,7 @@ fn stop_all(tunnels: &Tunnels) {
 }
 
 /// Destino de un reenvío remoto (`-R`) registrado en el servidor.
-struct RemoteTarget {
+pub(crate) struct RemoteTarget {
     bind_port: u32,
     dest_host: String,
     dest_port: u16,
@@ -126,7 +126,7 @@ impl Drop for SshBackend {
     }
 }
 
-struct Client {
+pub(crate) struct Client {
     known_hosts: std::path::PathBuf,
     host: String,
     port: u16,
@@ -261,6 +261,46 @@ pub fn spawn(
     Arc::new(SshBackend { commands })
 }
 
+/// Conecta, verifica la huella del servidor y autentica. Lo comparten el terminal y el explorador SFTP.
+pub(crate) async fn establish(
+    connection: &Connection,
+    credentials: &Credentials,
+    events: std_mpsc::Sender<UiEvent>,
+    wake: Arc<dyn Fn() + Send + Sync>,
+    known_hosts: std::path::PathBuf,
+    remote: Arc<Mutex<Vec<RemoteTarget>>>,
+    tunnels: Tunnels,
+) -> anyhow::Result<Handle<Client>> {
+    let config = Arc::new(client::Config {
+        keepalive_interval: Some(Duration::from_secs(30)),
+        ..Default::default()
+    });
+    let rejection = Arc::new(Mutex::new(None));
+    let handler = Client {
+        known_hosts,
+        host: connection.host.clone(),
+        port: connection.port,
+        events,
+        wake,
+        rejection: rejection.clone(),
+        remote,
+        tunnels,
+    };
+
+    let mut session = match client::connect(config, (connection.host.as_str(), connection.port), handler).await {
+        Ok(session) => session,
+        Err(error) => {
+            let reason = rejection.lock().unwrap().take();
+            return Err(match reason {
+                Some(reason) => anyhow!(reason),
+                None => anyhow!("no se pudo conectar: {error}"),
+            });
+        }
+    };
+    authenticate(&mut session, connection, credentials).await?;
+    Ok(session)
+}
+
 async fn run(
     connection: &Connection,
     credentials: Credentials,
@@ -276,35 +316,8 @@ async fn run(
         format!("Conectando a {}@{}:{}...\r\n", connection.user, connection.host, connection.port).as_bytes(),
     );
 
-    let config = Arc::new(client::Config {
-        keepalive_interval: Some(Duration::from_secs(30)),
-        ..Default::default()
-    });
-    let rejection = Arc::new(Mutex::new(None));
     let remote = Arc::new(Mutex::new(Vec::new()));
-    let handler = Client {
-        known_hosts,
-        host: connection.host.clone(),
-        port: connection.port,
-        events,
-        wake,
-        rejection: rejection.clone(),
-        remote: remote.clone(),
-        tunnels: tunnels.clone(),
-    };
-
-    let mut session = match client::connect(config, (connection.host.as_str(), connection.port), handler).await {
-        Ok(session) => session,
-        Err(error) => {
-            let reason = rejection.lock().unwrap().take();
-            return Err(match reason {
-                Some(reason) => anyhow!(reason),
-                None => anyhow!("no se pudo conectar: {error}"),
-            });
-        }
-    };
-
-    authenticate(&mut session, connection, &credentials).await?;
+    let session = establish(connection, &credentials, events, wake, known_hosts, remote.clone(), tunnels.clone()).await?;
     feed.feed(b"Sesion iniciada.\r\n");
 
     let session = Arc::new(session);
@@ -466,20 +479,10 @@ pub fn default_known_hosts() -> std::path::PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use std::process::{Command as Process, Stdio};
     use std::time::Instant;
 
     use super::*;
     use crate::term::Session;
-
-    struct Sshd(std::process::Child);
-
-    impl Drop for Sshd {
-        fn drop(&mut self) {
-            let _ = self.0.kill();
-            let _ = self.0.wait();
-        }
-    }
 
     /// Proxy TCP que se puede cortar para simular una caída de red.
     struct CuttableProxy {
@@ -523,43 +526,8 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn interactive_shell_over_a_private_sshd() {
-        let sshd_path = std::path::Path::new("/usr/sbin/sshd");
-        if !sshd_path.exists() || Process::new("ssh-keygen").arg("-?").stderr(Stdio::null()).output().is_err() {
-            eprintln!("sshd o ssh-keygen no disponibles; prueba omitida");
-            return;
-        }
-
-        let dir = std::env::temp_dir().join(format!("omniterm-sshd-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let keygen = |name: &str| {
-            let status = Process::new("ssh-keygen")
-                .args(["-q", "-t", "ed25519", "-N", "", "-f"])
-                .arg(dir.join(name))
-                .status()
-                .unwrap();
-            assert!(status.success());
-        };
-        keygen("host_key");
-        keygen("client_key");
-        std::fs::copy(dir.join("client_key.pub"), dir.join("authorized_keys")).unwrap();
-
-        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
-        let sshd = Process::new(sshd_path)
-            .args(["-D", "-e", "-f", "/dev/null", "-p", &port.to_string()])
-            .arg("-h")
-            .arg(dir.join("host_key"))
-            .args(["-o", "ListenAddress=127.0.0.1", "-o", "PidFile=none", "-o", "UsePAM=no"])
-            .args(["-o", "StrictModes=no", "-o"])
-            .arg(format!("AuthorizedKeysFile={}", dir.join("authorized_keys").display()))
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap();
-        let _sshd = Sshd(sshd);
-        let started = Instant::now();
-        while std::net::TcpStream::connect(("127.0.0.1", port)).is_err() {
-            assert!(started.elapsed() < Duration::from_secs(5), "sshd no arrancó");
-            std::thread::sleep(Duration::from_millis(50));
-        }
+        let Some(sshd) = crate::testutil::PrivateSshd::start() else { return };
+        let (dir, port) = (sshd.dir.clone(), sshd.port);
 
         let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
         let (events, requests) = std_mpsc::channel();
@@ -569,9 +537,9 @@ mod tests {
             name: "test".into(),
             host: "127.0.0.1".into(),
             port,
-            user: std::env::var("USER").unwrap_or_else(|_| "root".into()),
+            user: sshd.user.clone(),
             auth: Auth::Key,
-            key_path: Some(dir.join("client_key").display().to_string()),
+            key_path: Some(sshd.key_path.clone()),
             init_command: None,
         };
         let again = connection.clone();

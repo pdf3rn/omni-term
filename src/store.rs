@@ -36,6 +36,9 @@ const MIGRATIONS: &[&str] = &[
         dest_host TEXT NOT NULL,
         dest_port INTEGER NOT NULL
     );",
+    "ALTER TABLE layout_tabs ADD COLUMN kind TEXT NOT NULL DEFAULT 'auto';
+     ALTER TABLE layout_tabs ADD COLUMN local_path TEXT;
+     ALTER TABLE layout_tabs ADD COLUMN remote_path TEXT;",
     "CREATE TABLE snippets (
         id INTEGER PRIMARY KEY,
         title TEXT NOT NULL,
@@ -149,6 +152,21 @@ impl Forward {
 pub enum TabKind {
     Local,
     Connection(i64),
+    Explorer(i64),
+}
+
+/// Una pestaña tal como se guarda: su tipo y, en el explorador, las dos rutas.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SavedTab {
+    pub kind: TabKind,
+    pub local_path: Option<String>,
+    pub remote_path: Option<String>,
+}
+
+impl SavedTab {
+    pub fn plain(kind: TabKind) -> Self {
+        Self { kind, local_path: None, remote_path: None }
+    }
 }
 
 pub struct Store {
@@ -353,17 +371,19 @@ impl Store {
         Ok(())
     }
 
-    pub fn save_layout(&mut self, tabs: &[TabKind], active: usize) -> anyhow::Result<()> {
+    pub fn save_layout(&mut self, tabs: &[SavedTab], active: usize) -> anyhow::Result<()> {
         let tx = self.db.transaction()?;
         tx.execute("DELETE FROM layout_tabs", [])?;
-        for (position, kind) in tabs.iter().enumerate() {
-            let connection_id = match kind {
-                TabKind::Local => None,
-                TabKind::Connection(id) => Some(*id),
+        for (position, tab) in tabs.iter().enumerate() {
+            let (kind, connection_id) = match tab.kind {
+                TabKind::Local => ("local", None),
+                TabKind::Connection(id) => ("connection", Some(id)),
+                TabKind::Explorer(id) => ("explorer", Some(id)),
             };
             tx.execute(
-                "INSERT INTO layout_tabs (position, connection_id) VALUES (?1, ?2)",
-                params![position as i64, connection_id],
+                "INSERT INTO layout_tabs (position, connection_id, kind, local_path, remote_path)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![position as i64, connection_id, kind, tab.local_path, tab.remote_path],
             )?;
         }
         tx.execute(
@@ -376,19 +396,34 @@ impl Store {
     }
 
     /// Pestañas guardadas y la activa. Las conexiones que ya no existen se descartan.
-    pub fn load_layout(&self) -> anyhow::Result<(Vec<TabKind>, usize)> {
+    pub fn load_layout(&self) -> anyhow::Result<(Vec<SavedTab>, usize)> {
         let mut statement = self.db.prepare(
-            "SELECT t.connection_id, c.id FROM layout_tabs t
+            "SELECT t.connection_id, c.id, t.kind, t.local_path, t.remote_path FROM layout_tabs t
              LEFT JOIN connections c ON c.id = t.connection_id
              ORDER BY t.position",
         )?;
         let tabs = statement
-            .query_map([], |row| Ok((row.get::<_, Option<i64>>(0)?, row.get::<_, Option<i64>>(1)?)))?
-            .filter_map(|row| match row {
-                Ok((None, _)) => Some(Ok(TabKind::Local)),
-                Ok((Some(_), Some(id))) => Some(Ok(TabKind::Connection(id))),
-                Ok((Some(_), None)) => None,
-                Err(error) => Some(Err(error)),
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, Option<i64>>(0)?,
+                    row.get::<_, Option<i64>>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                ))
+            })?
+            .filter_map(|row| {
+                let (wanted, existing, kind, local_path, remote_path) = match row {
+                    Ok(row) => row,
+                    Err(error) => return Some(Err(error)),
+                };
+                let kind = match (wanted, existing, kind.as_str()) {
+                    (None, _, _) => TabKind::Local,
+                    (Some(_), None, _) => return None,
+                    (Some(_), Some(id), "explorer") => TabKind::Explorer(id),
+                    (Some(_), Some(id), _) => TabKind::Connection(id),
+                };
+                Some(Ok(SavedTab { kind, local_path, remote_path }))
             })
             .collect::<Result<Vec<_>, _>>()?;
         let active: Option<Vec<u8>> =
@@ -481,15 +516,26 @@ mod tests {
         let mut store = Store::open_in_memory().unwrap();
         let a = store.save_connection(&sample("a")).unwrap();
         let b = store.save_connection(&sample("b")).unwrap();
-        store.save_layout(&[TabKind::Local, TabKind::Connection(a), TabKind::Connection(b)], 1).unwrap();
+        let explorer = SavedTab {
+            kind: TabKind::Explorer(a),
+            local_path: Some("/home/u/docs".into()),
+            remote_path: Some("/srv/www".into()),
+        };
+        let saved = vec![
+            SavedTab::plain(TabKind::Local),
+            SavedTab::plain(TabKind::Connection(a)),
+            explorer.clone(),
+            SavedTab::plain(TabKind::Connection(b)),
+        ];
+        store.save_layout(&saved, 2).unwrap();
 
-        assert_eq!(
-            store.load_layout().unwrap(),
-            (vec![TabKind::Local, TabKind::Connection(a), TabKind::Connection(b)], 1)
-        );
+        assert_eq!(store.load_layout().unwrap(), (saved, 2));
 
         store.delete_connection(a).unwrap();
-        assert_eq!(store.load_layout().unwrap().0, vec![TabKind::Local, TabKind::Connection(b)]);
+        assert_eq!(
+            store.load_layout().unwrap().0,
+            vec![SavedTab::plain(TabKind::Local), SavedTab::plain(TabKind::Connection(b))]
+        );
     }
 
     #[test]

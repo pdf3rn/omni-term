@@ -1,12 +1,17 @@
 mod dialogs;
+mod explorer;
 mod keys;
 mod local;
 mod pane;
 mod secrets;
+mod sftp;
 mod ssh;
 mod snippet_vars;
 mod sshconfig;
 mod store;
+mod transfer;
+#[cfg(test)]
+mod testutil;
 mod term;
 mod theme;
 mod ui;
