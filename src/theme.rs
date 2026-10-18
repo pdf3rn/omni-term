@@ -1,37 +1,110 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use alacritty_terminal::vte::ansi::{Color, Rgb};
 use eframe::egui::Color32;
 
-pub const BASE: Color32 = Color32::from_rgb(0x1e, 0x1e, 0x2e);
-pub const MANTLE: Color32 = Color32::from_rgb(0x18, 0x18, 0x25);
-pub const SUBTEXT: Color32 = Color32::from_rgb(0xa6, 0xad, 0xc8);
-pub const SURFACE: Color32 = Color32::from_rgb(0x31, 0x32, 0x44);
-pub const RED: Color32 = Color32::from_rgb(0xf3, 0x8b, 0xa8);
-pub const ACCENT: Color32 = Color32::from_rgb(0x89, 0xb4, 0xfa);
-pub const TEXT: Color32 = Color32::from_rgb(0xcd, 0xd6, 0xf4);
-pub const SELECTION: Color32 = Color32::from_rgb(0x58, 0x5b, 0x70);
-pub const CURSOR: Color32 = Color32::from_rgb(0xf5, 0xe0, 0xdc);
+/// Colores de la interfaz y del terminal: Catppuccin Mocha (oscuro) y Latte (claro).
+pub struct Palette {
+    base: Color32,
+    mantle: Color32,
+    text: Color32,
+    subtext: Color32,
+    surface: Color32,
+    selection: Color32,
+    cursor: Color32,
+    red: Color32,
+    accent: Color32,
+    ansi: [(u8, u8, u8); 16],
+}
 
-const ANSI: [(u8, u8, u8); 16] = [
-    (0x45, 0x47, 0x5a),
-    (0xf3, 0x8b, 0xa8),
-    (0xa6, 0xe3, 0xa1),
-    (0xf9, 0xe2, 0xaf),
-    (0x89, 0xb4, 0xfa),
-    (0xf5, 0xc2, 0xe7),
-    (0x94, 0xe2, 0xd5),
-    (0xba, 0xc2, 0xde),
-    (0x58, 0x5b, 0x70),
-    (0xf3, 0x8b, 0xa8),
-    (0xa6, 0xe3, 0xa1),
-    (0xf9, 0xe2, 0xaf),
-    (0x89, 0xb4, 0xfa),
-    (0xf5, 0xc2, 0xe7),
-    (0x94, 0xe2, 0xd5),
-    (0xa6, 0xad, 0xc8),
-];
+const fn rgb(hex: u32) -> Color32 {
+    Color32::from_rgb((hex >> 16) as u8, (hex >> 8) as u8, hex as u8)
+}
+
+const fn triple(hex: u32) -> (u8, u8, u8) {
+    ((hex >> 16) as u8, (hex >> 8) as u8, hex as u8)
+}
+
+static DARK: Palette = Palette {
+    base: rgb(0x1e1e2e),
+    mantle: rgb(0x181825),
+    text: rgb(0xcdd6f4),
+    subtext: rgb(0xa6adc8),
+    surface: rgb(0x313244),
+    selection: rgb(0x585b70),
+    cursor: rgb(0xf5e0dc),
+    red: rgb(0xf38ba8),
+    accent: rgb(0x89b4fa),
+    ansi: [
+        triple(0x45475a), triple(0xf38ba8), triple(0xa6e3a1), triple(0xf9e2af),
+        triple(0x89b4fa), triple(0xf5c2e7), triple(0x94e2d5), triple(0xbac2de),
+        triple(0x585b70), triple(0xf38ba8), triple(0xa6e3a1), triple(0xf9e2af),
+        triple(0x89b4fa), triple(0xf5c2e7), triple(0x94e2d5), triple(0xa6adc8),
+    ],
+};
+
+static LIGHT: Palette = Palette {
+    base: rgb(0xeff1f5),
+    mantle: rgb(0xe6e9ef),
+    text: rgb(0x4c4f69),
+    subtext: rgb(0x6c6f85),
+    surface: rgb(0xccd0da),
+    selection: rgb(0xacb0be),
+    cursor: rgb(0xdc8a78),
+    red: rgb(0xd20f39),
+    accent: rgb(0x1e66f5),
+    ansi: [
+        triple(0x5c5f77), triple(0xd20f39), triple(0x40a02b), triple(0xdf8e1d),
+        triple(0x1e66f5), triple(0xea76cb), triple(0x179299), triple(0xacb0be),
+        triple(0x6c6f85), triple(0xd20f39), triple(0x40a02b), triple(0xdf8e1d),
+        triple(0x1e66f5), triple(0xea76cb), triple(0x179299), triple(0xbcc0cc),
+    ],
+};
+
+static USE_LIGHT: AtomicBool = AtomicBool::new(false);
+
+pub fn set_light(light: bool) {
+    USE_LIGHT.store(light, Ordering::Relaxed);
+}
+
+pub fn is_light() -> bool {
+    USE_LIGHT.load(Ordering::Relaxed)
+}
+
+fn palette() -> &'static Palette {
+    if is_light() { &LIGHT } else { &DARK }
+}
+
+pub fn base() -> Color32 {
+    palette().base
+}
+pub fn mantle() -> Color32 {
+    palette().mantle
+}
+pub fn text() -> Color32 {
+    palette().text
+}
+pub fn subtext() -> Color32 {
+    palette().subtext
+}
+pub fn surface() -> Color32 {
+    palette().surface
+}
+pub fn selection() -> Color32 {
+    palette().selection
+}
+pub fn cursor() -> Color32 {
+    palette().cursor
+}
+pub fn red() -> Color32 {
+    palette().red
+}
+pub fn accent() -> Color32 {
+    palette().accent
+}
 
 fn ansi(index: usize) -> Color32 {
-    let (r, g, b) = ANSI[index];
+    let (r, g, b) = palette().ansi[index];
     Color32::from_rgb(r, g, b)
 }
 
@@ -61,11 +134,11 @@ pub fn resolve(color: Color) -> Color32 {
         Color::Indexed(i) => indexed(i),
         Color::Named(named) => match named as usize {
             i @ 0..=15 => ansi(i),
-            256 | 267 => TEXT,
-            257 => BASE,
-            258 => CURSOR,
+            256 | 267 => text(),
+            257 => base(),
+            258 => cursor(),
             i @ 259..=266 => dim(ansi(i - 259)),
-            _ => dim(TEXT),
+            _ => dim(text()),
         },
     }
 }

@@ -4,7 +4,8 @@ use eframe::egui::{self, ComboBox, Id, Modal, RichText, TextEdit};
 use zeroize::Zeroizing;
 
 use crate::secrets::SecretKind;
-use crate::ssh::HostKeyRequest;
+use crate::settings::{CursorChoice, Settings, ThemeChoice, MAX_FONT_SIZE, MAX_SCROLLBACK, MIN_FONT_SIZE, MIN_SCROLLBACK};
+use crate::ssh::{HostKeyRequest, PromptRequest};
 use crate::store::{Auth, Connection, Forward, ForwardKind, Snippet};
 use crate::theme;
 
@@ -45,9 +46,21 @@ impl ForwardRow {
             }
         };
         let bind_host = self.bind_host.trim();
+        if bind_host.is_empty() {
+            return Err("Cada túnel necesita una dirección de escucha".into());
+        }
+        if self.kind == ForwardKind::Dynamic {
+            return Ok(Forward {
+                kind: self.kind,
+                bind_host: bind_host.into(),
+                bind_port: port(&self.bind_port, "de escucha")?,
+                dest_host: String::new(),
+                dest_port: 0,
+            });
+        }
         let dest_host = self.dest_host.trim();
-        if bind_host.is_empty() || dest_host.is_empty() {
-            return Err("Cada túnel necesita dirección de escucha y de destino".into());
+        if dest_host.is_empty() {
+            return Err("Cada túnel necesita dirección de destino".into());
         }
         Ok(Forward {
             kind: self.kind,
@@ -60,6 +73,7 @@ impl ForwardRow {
 }
 
 pub struct ConnForm {
+    pub jump: Option<i64>,
     pub forwards: Vec<ForwardRow>,
     pub id: Option<i64>,
     pub name: String,
@@ -87,11 +101,13 @@ impl ConnForm {
             secret: String::new(),
             error: None,
             forwards: Vec::new(),
+            jump: None,
         }
     }
 
     pub fn from_connection(connection: &Connection, forwards: &[Forward]) -> Self {
         Self {
+            jump: connection.jump,
             forwards: forwards.iter().map(ForwardRow::from_forward).collect(),
             id: connection.id,
             name: connection.name.clone(),
@@ -135,6 +151,7 @@ impl ConnForm {
             auth: self.auth,
             key_path: (self.auth == Auth::Key).then(|| key_path.to_string()),
             init_command: Some(self.init_command.trim().to_string()).filter(|c| !c.is_empty()),
+            jump: self.jump,
         })
     }
 }
@@ -194,17 +211,31 @@ impl VarsPrompt {
     }
 }
 
+/// Dónde va un panel nuevo dentro de una pestaña de terminal.
+#[derive(Clone, Copy)]
+pub enum PaneTarget {
+    /// Divide el panel con foco.
+    Split(crate::layout::Dir),
+    /// Sustituye la sesión de un panel (reconexión).
+    Replace(u64),
+}
+
 /// Para qué se está abriendo una conexión.
 #[derive(Clone)]
 pub enum Purpose {
     Terminal,
+    /// Un panel dentro de una pestaña de terminal existente.
+    Pane { tab: u64, target: PaneTarget },
     /// Explorador de archivos, con las rutas (local, remota) a restaurar.
     Explorer(Option<String>, Option<String>),
 }
 
 pub struct SecretPrompt {
     pub purpose: Purpose,
+    /// Conexión que se está abriendo.
     pub connection: Connection,
+    /// Conexión a la que pertenece el secreto (puede ser un servidor de salto).
+    pub asking: Connection,
     /// Pestaña a reemplazar al reconectar.
     pub slot: Option<u64>,
     pub kind: SecretKind,
@@ -227,6 +258,7 @@ pub struct UnlockPrompt {
 }
 
 pub enum Dialog {
+    Settings,
     Edit(ConnForm),
     Snippet(SnippetForm),
     SnippetVars(VarsPrompt),
@@ -234,6 +266,7 @@ pub enum Dialog {
     Secret(SecretPrompt),
     Unlock(UnlockPrompt),
     HostKey(HostKeyRequest),
+    Prompt(PromptRequest, Vec<String>),
     ConfirmDelete { id: i64, name: String },
     ConfirmReset(Pending),
     Message(String),
@@ -255,7 +288,7 @@ fn id() -> Id {
 
 fn buttons(ui: &mut egui::Ui, accept: &str) -> Option<bool> {
     let destructive = matches!(accept, "Eliminar" | "Borrar todo");
-    let (fill, text) = if destructive { (theme::RED, theme::BASE) } else { (theme::ACCENT, theme::BASE) };
+    let (fill, text) = if destructive { (theme::red(), theme::base()) } else { (theme::accent(), theme::base()) };
     let mut result = None;
     ui.add_space(12.0);
     ui.horizontal(|ui| {
@@ -274,7 +307,7 @@ fn buttons(ui: &mut egui::Ui, accept: &str) -> Option<bool> {
 fn error_label(ui: &mut egui::Ui, error: &Option<String>) {
     if let Some(error) = error {
         ui.add_space(4.0);
-        ui.label(RichText::new(error).color(theme::RED));
+        ui.label(RichText::new(error).color(theme::red()));
     }
 }
 
@@ -282,13 +315,21 @@ fn enter_pressed(ui: &egui::Ui) -> bool {
     ui.input(|i| i.key_pressed(egui::Key::Enter))
 }
 
-pub fn show(ctx: &egui::Context, dialog: &mut Dialog, master_forced: bool) -> Outcome {
+pub fn show(
+    ctx: &egui::Context,
+    dialog: &mut Dialog,
+    master_forced: &mut bool,
+    connections: &[Connection],
+    settings: &mut Settings,
+) -> Outcome {
     let mut outcome = Outcome::None;
     let response = Modal::new(id()).show(ctx, |ui| {
         ui.set_width(520.0);
         ui.spacing_mut().item_spacing.y = 8.0;
         match dialog {
-            Dialog::Edit(form) => outcome = edit(ui, form),
+            Dialog::Settings => outcome = settings_dialog(ui, settings, master_forced),
+            Dialog::Edit(form) => outcome = edit(ui, form, connections),
+            Dialog::Prompt(request, answers) => outcome = prompt(ui, request, answers),
             Dialog::Snippet(form) => outcome = snippet(ui, form),
             Dialog::SnippetVars(prompt) => outcome = vars(ui, prompt),
             Dialog::ConfirmDeleteSnippet { title, .. } => {
@@ -302,7 +343,7 @@ pub fn show(ctx: &egui::Context, dialog: &mut Dialog, master_forced: bool) -> Ou
                 }
             }
             Dialog::Secret(prompt) => outcome = secret(ui, prompt),
-            Dialog::Unlock(prompt) => outcome = unlock(ui, prompt, master_forced),
+            Dialog::Unlock(prompt) => outcome = unlock(ui, prompt),
             Dialog::HostKey(request) => outcome = host_key(ui, request),
             Dialog::ConfirmDelete { name, .. } => {
                 ui.heading("Eliminar conexión");
@@ -339,7 +380,7 @@ pub fn show(ctx: &egui::Context, dialog: &mut Dialog, master_forced: bool) -> Ou
     outcome
 }
 
-fn edit(ui: &mut egui::Ui, form: &mut ConnForm) -> Outcome {
+fn edit(ui: &mut egui::Ui, form: &mut ConnForm, connections: &[Connection]) -> Outcome {
     ui.heading(if form.id.is_some() { "Editar conexión" } else { "Nueva conexión" });
     ui.add_space(8.0);
     egui::Grid::new("conn_form").num_columns(2).spacing([10.0, 8.0]).show(ui, |ui| {
@@ -361,19 +402,33 @@ fn edit(ui: &mut egui::Ui, form: &mut ConnForm) -> Outcome {
                 Auth::Password => "Contraseña",
                 Auth::Key => "Llave privada",
                 Auth::Agent => "ssh-agent",
+                Auth::Interactive => "Interactivo (2FA)",
             })
             .show_ui(ui, |ui| {
                 ui.selectable_value(&mut form.auth, Auth::Agent, "ssh-agent");
                 ui.selectable_value(&mut form.auth, Auth::Key, "Llave privada");
                 ui.selectable_value(&mut form.auth, Auth::Password, "Contraseña");
+                ui.selectable_value(&mut form.auth, Auth::Interactive, "Interactivo (2FA)");
             });
+        ui.end_row();
+        ui.label("Saltar mediante");
+        let current = form
+            .jump
+            .and_then(|id| connections.iter().find(|c| c.id == Some(id)))
+            .map_or("Directo".to_string(), |c| c.name.clone());
+        ComboBox::from_id_salt("jump").selected_text(current).show_ui(ui, |ui| {
+            ui.selectable_value(&mut form.jump, None, "Directo");
+            for other in connections.iter().filter(|c| c.id != form.id) {
+                ui.selectable_value(&mut form.jump, other.id, other.name.as_str());
+            }
+        });
         ui.end_row();
         if form.auth == Auth::Key {
             ui.label("Llave");
             ui.add(TextEdit::singleline(&mut form.key_path).desired_width(240.0));
             ui.end_row();
         }
-        if form.auth != Auth::Agent {
+        if matches!(form.auth, Auth::Password | Auth::Key) {
             ui.label(if form.auth == Auth::Password { "Contraseña" } else { "Passphrase" });
             ui.add(
                 TextEdit::singleline(&mut form.secret)
@@ -388,7 +443,7 @@ fn edit(ui: &mut egui::Ui, form: &mut ConnForm) -> Outcome {
         ui.end_row();
     });
     ui.add_space(4.0);
-    ui.label(RichText::new("Túneles (se activan al conectar)").small().color(theme::SUBTEXT));
+    ui.label(RichText::new("Túneles (se activan al conectar)").small().color(theme::subtext()));
     let mut remove = None;
     for (index, row) in form.forwards.iter_mut().enumerate() {
         ui.horizontal(|ui| {
@@ -397,16 +452,22 @@ fn edit(ui: &mut egui::Ui, form: &mut ConnForm) -> Outcome {
                 .selected_text(match row.kind {
                     ForwardKind::Local => "Local -L",
                     ForwardKind::Remote => "Remoto -R",
+                    ForwardKind::Dynamic => "SOCKS -D",
                 })
                 .show_ui(ui, |ui| {
                     ui.selectable_value(&mut row.kind, ForwardKind::Local, "Local -L");
                     ui.selectable_value(&mut row.kind, ForwardKind::Remote, "Remoto -R");
+                    ui.selectable_value(&mut row.kind, ForwardKind::Dynamic, "SOCKS -D");
                 });
             ui.add(TextEdit::singleline(&mut row.bind_host).desired_width(84.0).hint_text("escucha"));
             ui.add(TextEdit::singleline(&mut row.bind_port).desired_width(48.0).hint_text("puerto"));
-            ui.label("→");
-            ui.add(TextEdit::singleline(&mut row.dest_host).desired_width(84.0).hint_text("destino"));
-            ui.add(TextEdit::singleline(&mut row.dest_port).desired_width(48.0).hint_text("puerto"));
+            if row.kind == ForwardKind::Dynamic {
+                ui.label(RichText::new("proxy SOCKS5").small().color(theme::subtext()));
+            } else {
+                ui.label("→");
+                ui.add(TextEdit::singleline(&mut row.dest_host).desired_width(84.0).hint_text("destino"));
+                ui.add(TextEdit::singleline(&mut row.dest_port).desired_width(48.0).hint_text("puerto"));
+            }
             if ui.add(egui::Button::new("×").frame(false)).on_hover_text("Quitar túnel").clicked() {
                 remove = Some(index);
             }
@@ -419,9 +480,9 @@ fn edit(ui: &mut egui::Ui, form: &mut ConnForm) -> Outcome {
         form.forwards.push(ForwardRow::new());
     }
     ui.label(
-        RichText::new("-L: este equipo escucha y reenvía al destino vía el servidor. -R: el servidor escucha y reenvía a un destino alcanzable desde aquí. Los cambios se aplican al reconectar.")
+        RichText::new("-L: este equipo escucha y reenvía al destino vía el servidor. -R: el servidor escucha y reenvía a un destino alcanzable desde aquí. -D: proxy SOCKS5 local que sale por el servidor. Los cambios se aplican al reconectar.")
             .small()
-            .color(theme::SUBTEXT),
+            .color(theme::subtext()),
     );
     error_label(ui, &form.error);
     match buttons(ui, "Guardar") {
@@ -429,6 +490,51 @@ fn edit(ui: &mut egui::Ui, form: &mut ConnForm) -> Outcome {
         Some(false) => Outcome::Cancel,
         None => Outcome::None,
     }
+}
+
+fn settings_dialog(ui: &mut egui::Ui, settings: &mut Settings, master_forced: &mut bool) -> Outcome {
+    ui.heading("Ajustes");
+    ui.add_space(4.0);
+    let section = |ui: &mut egui::Ui, text: &str| {
+        ui.add_space(6.0);
+        ui.label(RichText::new(text).small().color(theme::subtext()));
+    };
+
+    section(ui, "Apariencia");
+    ui.horizontal(|ui| {
+        ui.label("Tema");
+        ui.selectable_value(&mut settings.theme, ThemeChoice::Dark, "Oscuro");
+        ui.selectable_value(&mut settings.theme, ThemeChoice::Light, "Claro");
+        ui.selectable_value(&mut settings.theme, ThemeChoice::System, "Sistema");
+    });
+    ui.horizontal(|ui| {
+        ui.label("Tamaño de fuente");
+        ui.add(egui::Slider::new(&mut settings.font_size, MIN_FONT_SIZE..=MAX_FONT_SIZE).step_by(1.0).suffix(" pt"));
+    });
+
+    section(ui, "Terminal");
+    ui.horizontal(|ui| {
+        ui.label("Cursor");
+        ui.selectable_value(&mut settings.cursor, CursorChoice::Block, "Bloque");
+        ui.selectable_value(&mut settings.cursor, CursorChoice::Beam, "Barra");
+        ui.selectable_value(&mut settings.cursor, CursorChoice::Underline, "Subrayado");
+    });
+    ui.checkbox(&mut settings.blink, "Cursor parpadeante");
+    ui.horizontal(|ui| {
+        ui.label("Historial");
+        ui.add(egui::DragValue::new(&mut settings.scrollback).range(MIN_SCROLLBACK..=MAX_SCROLLBACK).speed(100.0).suffix(" líneas"));
+    });
+    ui.label(RichText::new("El historial se aplica a las sesiones nuevas.").small().color(theme::subtext()));
+
+    section(ui, "Secretos");
+    ui.checkbox(master_forced, "Usar siempre la clave maestra, aunque haya keyring");
+    ui.label(RichText::new("Este cambio se aplica al reiniciar.").small().color(theme::subtext()));
+
+    ui.add_space(10.0);
+    if ui.add(egui::Button::new(RichText::new("Cerrar").color(theme::base())).fill(theme::accent())).clicked() {
+        return Outcome::Cancel;
+    }
+    Outcome::None
 }
 
 fn snippet(ui: &mut egui::Ui, form: &mut SnippetForm) -> Outcome {
@@ -443,7 +549,7 @@ fn snippet(ui: &mut egui::Ui, form: &mut SnippetForm) -> Outcome {
         ui.end_row();
     });
     ui.label("Contenido");
-    ui.label(RichText::new("Usa {{variable}} o {{variable=valor por defecto}}; se pedirán al insertar.").small().color(theme::SUBTEXT));
+    ui.label(RichText::new("Usa {{variable}} o {{variable=valor por defecto}}; se pedirán al insertar.").small().color(theme::subtext()));
     ui.add(
         TextEdit::multiline(&mut form.body)
             .font(egui::TextStyle::Monospace)
@@ -476,9 +582,9 @@ fn vars(ui: &mut egui::Ui, prompt: &mut VarsPrompt) -> Outcome {
         }
     });
     ui.add_space(4.0);
-    ui.label(RichText::new("Resultado").small().color(theme::SUBTEXT));
+    ui.label(RichText::new("Resultado").small().color(theme::subtext()));
     egui::ScrollArea::vertical().max_height(120.0).show(ui, |ui| {
-        ui.label(RichText::new(prompt.rendered()).monospace().color(theme::SUBTEXT));
+        ui.label(RichText::new(prompt.rendered()).monospace().color(theme::subtext()));
     });
     let accept = if prompt.run { "Insertar y ejecutar" } else { "Insertar" };
     match buttons(ui, accept) {
@@ -496,13 +602,11 @@ fn secret(ui: &mut egui::Ui, prompt: &mut SecretPrompt) -> Outcome {
     };
     ui.heading(title);
     ui.add_space(6.0);
-    ui.label(format!(
-        "{label} para {}@{} ({})",
-        prompt.connection.user, prompt.connection.host, prompt.connection.name
-    ));
+    ui.label(format!("{label} para {}@{} ({})", prompt.asking.user, prompt.asking.host, prompt.asking.name));
     let field = ui.add(TextEdit::singleline(&mut prompt.input).password(true).desired_width(f32::INFINITY));
     field.request_focus();
     ui.checkbox(&mut prompt.save, "Guardar en el almacén de secretos");
+    ui.label(RichText::new("Si no la guardas, se recuerda hasta cerrar omni-term.").small().color(theme::subtext()));
     let submitted = field.lost_focus() && enter_pressed(ui);
     match buttons(ui, "Conectar") {
         Some(true) => Outcome::Submit,
@@ -512,12 +616,12 @@ fn secret(ui: &mut egui::Ui, prompt: &mut SecretPrompt) -> Outcome {
     }
 }
 
-fn unlock(ui: &mut egui::Ui, prompt: &mut UnlockPrompt, master_forced: bool) -> Outcome {
+fn unlock(ui: &mut egui::Ui, prompt: &mut UnlockPrompt) -> Outcome {
     ui.heading(if prompt.creating { "Crear clave maestra" } else { "Desbloquear secretos" });
     ui.add_space(6.0);
     if prompt.creating {
         ui.label("No hay keyring del sistema disponible. Elige una clave maestra para cifrar tus contraseñas.");
-        ui.label(RichText::new("Si la olvidas no se puede recuperar: tendrás que borrar los secretos y volver a introducirlos.").color(theme::SUBTEXT));
+        ui.label(RichText::new("Si la olvidas no se puede recuperar: tendrás que borrar los secretos y volver a introducirlos.").color(theme::subtext()));
     } else {
         ui.label("Introduce tu clave maestra.");
     }
@@ -528,7 +632,6 @@ fn unlock(ui: &mut egui::Ui, prompt: &mut UnlockPrompt, master_forced: bool) -> 
         ui.add(TextEdit::singleline(&mut prompt.confirm).password(true).hint_text("repite la clave").desired_width(f32::INFINITY));
     }
     error_label(ui, &prompt.error);
-    let _ = master_forced;
 
     let mut outcome = Outcome::None;
     ui.add_space(8.0);
@@ -547,6 +650,31 @@ fn unlock(ui: &mut egui::Ui, prompt: &mut UnlockPrompt, master_forced: bool) -> 
         outcome = Outcome::Submit;
     }
     outcome
+}
+
+fn prompt(ui: &mut egui::Ui, request: &PromptRequest, answers: &mut Vec<String>) -> Outcome {
+    answers.resize(request.prompts.len(), String::new());
+    ui.heading(if request.title.trim().is_empty() { "Verificación en dos pasos" } else { request.title.trim() });
+    if !request.instructions.trim().is_empty() {
+        ui.label(RichText::new(request.instructions.trim()).color(theme::subtext()));
+    }
+    let mut submitted = false;
+    for (index, ((question, echo), answer)) in request.prompts.iter().zip(answers.iter_mut()).enumerate() {
+        ui.label(question.trim());
+        let field = ui.add(TextEdit::singleline(answer).password(!echo).desired_width(f32::INFINITY));
+        if index == 0 {
+            field.request_focus();
+        }
+        if field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+            submitted = true;
+        }
+    }
+    match buttons(ui, "Continuar") {
+        Some(true) => Outcome::Submit,
+        Some(false) => Outcome::Cancel,
+        None if submitted => Outcome::Submit,
+        None => Outcome::None,
+    }
 }
 
 fn host_key(ui: &mut egui::Ui, request: &HostKeyRequest) -> Outcome {

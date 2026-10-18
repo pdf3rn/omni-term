@@ -17,6 +17,8 @@ pub struct Entry {
     pub size: u64,
     /// Segundos desde la época Unix.
     pub modified: Option<u64>,
+    /// Bits de permisos POSIX (por ejemplo `0o755`), si el sistema los informa.
+    pub permissions: Option<u32>,
 }
 
 /// Une rutas POSIX (SFTP siempre usa `/` en el cable).
@@ -48,7 +50,14 @@ pub fn sort_entries(entries: &mut [Entry]) {
 /// Un cliente SFTP conectado. Mantener el `Handle` vivo mantiene abierta la sesión.
 pub struct Sftp {
     pub session: Arc<SftpSession>,
-    _connection: Arc<Handle<Client>>,
+    connection: Arc<Handle<Client>>,
+}
+
+impl Sftp {
+    /// ¿Se perdió la conexión SSH subyacente?
+    pub fn is_closed(&self) -> bool {
+        self.connection.is_closed()
+    }
 }
 
 pub async fn connect(
@@ -71,7 +80,7 @@ pub async fn connect(
     let channel = handle.channel_open_session().await.context("abriendo el canal")?;
     channel.request_subsystem(true, "sftp").await.context("el servidor no ofrece el subsistema sftp")?;
     let session = SftpSession::new(channel.into_stream()).await.context("iniciando SFTP")?;
-    Ok(Sftp { session: Arc::new(session), _connection: Arc::new(handle) })
+    Ok(Sftp { session: Arc::new(session), connection: Arc::new(handle) })
 }
 
 pub async fn home(sftp: &SftpSession) -> String {
@@ -93,7 +102,13 @@ pub async fn list(sftp: &SftpSession, path: &str) -> anyhow::Result<Vec<Entry>> 
                 is_dir = target.is_dir();
             }
         }
-        entries.push(Entry { name, is_dir, size: metadata.size.unwrap_or(0), modified: metadata.mtime.map(u64::from) });
+        entries.push(Entry {
+            name,
+            is_dir,
+            size: metadata.size.unwrap_or(0),
+            modified: metadata.mtime.map(u64::from),
+            permissions: metadata.permissions.map(|p| p & 0o7777),
+        });
     }
     sort_entries(&mut entries);
     Ok(entries)
@@ -105,6 +120,35 @@ pub async fn make_dir(sftp: &SftpSession, path: &str) -> anyhow::Result<()> {
 
 pub async fn rename(sftp: &SftpSession, from: &str, to: &str) -> anyhow::Result<()> {
     sftp.rename(from.to_string(), to.to_string()).await.with_context(|| format!("renombrando {from}"))
+}
+
+pub async fn set_permissions(sftp: &SftpSession, path: &str, mode: u32) -> anyhow::Result<()> {
+    let attributes = russh_sftp::protocol::FileAttributes { permissions: Some(mode & 0o7777), ..Default::default() };
+    sftp.set_metadata(path.to_string(), attributes).await.with_context(|| format!("cambiando permisos de {path}"))
+}
+
+/// Permisos en el formato de `ls -l`, por ejemplo `rwxr-xr-x`.
+pub fn format_mode(mode: u32) -> String {
+    let bit = |mask: u32, on: char| if mode & mask != 0 { on } else { '-' };
+    let exec = |exec: u32, special: u32, set: char, unset: char| match (mode & exec != 0, mode & special != 0) {
+        (true, true) => set,
+        (false, true) => unset,
+        (true, false) => 'x',
+        (false, false) => '-',
+    };
+    [
+        bit(0o400, 'r'),
+        bit(0o200, 'w'),
+        exec(0o100, 0o4000, 's', 'S'),
+        bit(0o040, 'r'),
+        bit(0o020, 'w'),
+        exec(0o010, 0o2000, 's', 'S'),
+        bit(0o004, 'r'),
+        bit(0o002, 'w'),
+        exec(0o001, 0o1000, 't', 'T'),
+    ]
+    .iter()
+    .collect()
 }
 
 /// Borra un archivo o una carpeta con todo su contenido.
@@ -149,8 +193,19 @@ mod tests {
     }
 
     #[test]
+    fn modes_are_formatted_like_ls() {
+        assert_eq!(format_mode(0o755), "rwxr-xr-x");
+        assert_eq!(format_mode(0o644), "rw-r--r--");
+        assert_eq!(format_mode(0o000), "---------");
+        assert_eq!(format_mode(0o4755), "rwsr-xr-x");
+        assert_eq!(format_mode(0o4644), "rwSr--r--");
+        assert_eq!(format_mode(0o1777), "rwxrwxrwt");
+        assert_eq!(format_mode(0o1776), "rwxrwxrwT");
+    }
+
+    #[test]
     fn directories_sort_before_files_case_insensitively() {
-        let entry = |name: &str, is_dir| Entry { name: name.into(), is_dir, size: 0, modified: None };
+        let entry = |name: &str, is_dir| Entry { name: name.into(), is_dir, size: 0, modified: None, permissions: None };
         let mut entries = vec![entry("zeta.txt", false), entry("Beta", true), entry("alfa.txt", false), entry("alpha", true)];
         sort_entries(&mut entries);
         let names: Vec<_> = entries.iter().map(|e| e.name.as_str()).collect();
@@ -184,6 +239,7 @@ mod tests {
             auth: Auth::Key,
             key_path: Some(sshd.key_path.clone()),
             init_command: None,
+            jump: None,
         };
         let known_hosts = sshd.dir.join("known_hosts");
         let client = runtime
@@ -247,6 +303,19 @@ mod tests {
         assert_eq!(std::fs::read(downloads.join("proj/sub/b.bin")).unwrap(), big);
         assert_eq!(std::fs::read(downloads.join("proj/a (1).txt")).unwrap(), b"version dos");
 
+        // Cambiar permisos: se ve en el listado y en el archivo real.
+        let target = join(&remote_path, "proj/sub/b.bin");
+        runtime.block_on(set_permissions(&sftp, &target, 0o640)).unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(remote.join("proj/sub/b.bin")).unwrap().permissions().mode() & 0o7777, 0o640);
+        }
+        let listed = runtime.block_on(list(&sftp, &join(&remote_path, "proj/sub"))).unwrap();
+        let changed = listed.iter().find(|e| e.name == "b.bin").unwrap();
+        let untouched = listed.iter().find(|e| e.name == "b (1).bin").unwrap();
+        assert_eq!(changed.permissions, Some(0o640));
+        assert_eq!(untouched.permissions, Some(0o644));
+
         // Renombrar y borrar de forma recursiva.
         let old = join(&remote_path, "proj/a.txt");
         let new = join(&remote_path, "proj/renombrado.txt");
@@ -257,5 +326,52 @@ mod tests {
 
         // Un error de lectura llega como error, no como pánico.
         assert!(runtime.block_on(list(&sftp, &join(&remote_path, "no-existe"))).is_err());
+    }
+
+    /// ProxyJump: se llega al servidor de destino a través de otro servidor SSH.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn connects_through_a_jump_host() {
+        use crate::ssh::JumpHost;
+        use crate::store::Auth;
+
+        let Some(jump) = crate::testutil::PrivateSshd::start() else { return };
+        let Some(target) = crate::testutil::PrivateSshd::start() else { return };
+        let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+
+        let (events, requests) = std_mpsc::channel();
+        std::thread::spawn(move || {
+            while let Ok(event) = requests.recv() {
+                if let UiEvent::HostKey(request) = event {
+                    let _ = request.reply.send(true);
+                }
+            }
+        });
+        let connection = |sshd: &crate::testutil::PrivateSshd, name: &str| Connection {
+            id: None,
+            name: name.into(),
+            host: "127.0.0.1".into(),
+            port: sshd.port,
+            user: sshd.user.clone(),
+            auth: Auth::Key,
+            key_path: Some(sshd.key_path.clone()),
+            init_command: None,
+            jump: None,
+        };
+        let credentials = Credentials {
+            jump: Some(Box::new(JumpHost { connection: connection(&jump, "salto"), credentials: Credentials::default() })),
+            ..Default::default()
+        };
+        std::fs::create_dir_all(target.dir.join("datos")).unwrap();
+        std::fs::write(target.dir.join("datos/hola.txt"), b"hola").unwrap();
+
+        let client = runtime
+            .block_on(connect(&connection(&target, "destino"), &credentials, events, Arc::new(|| {}), target.dir.join("known_hosts")))
+            .expect("conexión a través del salto");
+        let entries = runtime.block_on(list(&client.session, &target.dir.join("datos").to_string_lossy())).unwrap();
+        assert_eq!(entries.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(), ["hola.txt"]);
+
+        // Sin el salto no habría tráfico en el servidor intermedio: aquí sí aceptó una sesión.
+        assert!(jump.log().contains("Accepted publickey"), "el servidor de salto no participó:\n{}", jump.log());
     }
 }

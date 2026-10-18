@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=omni-term
+GenericName=Terminal
+Comment=Terminal con SSH, SFTP, túneles y snippets
+Exec=omni-term
+Icon=omni-term
+Terminal=false
+Categories=System;TerminalEmulator;
+Keywords=ssh;sftp;terminal;shell;
+StartupWMClass=omni-term

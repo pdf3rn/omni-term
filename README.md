@@ -1,0 +1,56 @@
+# omni-term
+
+Terminal multiplataforma en Rust nativo con una interfaz pensada como un IDE: terminal local, conexiones SSH guardadas, explorador SFTP, túneles y snippets.
+
+## Qué incluye
+
+- **Terminal local y SSH nativo** en pestañas, con la sesión restaurada al reabrir. Autenticación con contraseña, llave (con passphrase), `ssh-agent` e interactiva (2FA). Saltos entre servidores (`ProxyJump`) y verificación de huellas en `~/.ssh/known_hosts`.
+- **Secretos protegidos**: keyring del sistema, o una clave maestra propia (Argon2id + XChaCha20-Poly1305) si no hay keyring.
+- **Túneles** guardados por conexión: `-L`, `-R` y `-D` (proxy SOCKS5), con su estado en la barra lateral.
+- **Explorador SFTP** de dos paneles (local y remoto): arrastrar y soltar, transferencias recursivas en segundo plano con cancelación, resolución de conflictos, permisos y papelera local.
+- **Snippets** con búsqueda y variables `{{nombre}}` / `{{nombre=defecto}}`.
+- **Paneles divididos** dentro de cada pestaña, con divisores arrastrables. Una pestaña SSH divide abriendo otra sesión a la misma conexión.
+- **Terminal completo**: ratón para `vim`/`tmux`/`htop`, protocolo de teclado kitty, búsqueda en el historial, enlaces clicables, color verdadero y bloques/cajas dibujados como geometría.
+- Tema oscuro, claro o del sistema, tamaño de fuente, cursor y tamaño de ventana recordados.
+
+## Atajos
+
+| Atajo | Acción |
+|---|---|
+| `Ctrl+Shift+C` / `Ctrl+Shift+V` | Copiar la selección / pegar |
+| `Ctrl+Shift+F` | Buscar en el historial (`Enter` siguiente, `Mayús+Enter` anterior, `Esc` cierra) |
+| `Ctrl+Shift+D` / `Ctrl+Shift+E` | Dividir el panel a la derecha / hacia abajo (también en el menú *Dividir*) |
+| `Ctrl+Shift+W` | Cerrar el panel con foco (o la pestaña si es el único) |
+| `Ctrl+=` / `Ctrl+-` / `Ctrl+0` | Ampliar, reducir y restablecer la fuente |
+| `Ctrl` + clic | Abrir el enlace bajo el puntero |
+| `Mayús` + arrastrar | Seleccionar texto aunque la aplicación use el ratón |
+
+`Ctrl+C` se envía siempre a la aplicación (interrumpe el proceso).
+
+## Instalar
+
+Descarga el archivo de tu sistema desde las *Releases*. En Linux, el paquete incluye `install.sh`, que instala el binario, el icono y la entrada de escritorio para tu usuario:
+
+```bash
+./install.sh
+```
+
+También puedes compilarlo:
+
+```bash
+cargo build --release
+packaging/install-linux.sh        # opcional, solo Linux
+```
+
+En Linux necesitas las cabeceras de desarrollo de `libxkbcommon`, `wayland`, `x11` y `dbus`.
+
+## Datos
+
+La base de datos (conexiones, túneles, snippets, sesión y ajustes) está en el directorio de datos del sistema (`~/.local/share/omniterm/omniterm.db` en Linux). Las contraseñas no se guardan ahí, salvo cifradas con la clave maestra.
+
+## Desarrollo
+
+```bash
+cargo test            # incluye pruebas de extremo a extremo con un sshd privado en Linux
+cargo run -- --keys   # imprime las teclas recibidas y los bytes enviados
+```

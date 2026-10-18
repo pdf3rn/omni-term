@@ -5,6 +5,7 @@ use std::path::Path;
 use anyhow::{bail, Context};
 use rusqlite::{params, Connection as Db, OptionalExtension};
 
+// Las migraciones solo se añaden al final: reordenarlas rompe las bases de datos ya creadas.
 const MIGRATIONS: &[&str] = &[
     "CREATE TABLE connections (
         id INTEGER PRIMARY KEY,
@@ -36,15 +37,16 @@ const MIGRATIONS: &[&str] = &[
         dest_host TEXT NOT NULL,
         dest_port INTEGER NOT NULL
     );",
-    "ALTER TABLE layout_tabs ADD COLUMN kind TEXT NOT NULL DEFAULT 'auto';
-     ALTER TABLE layout_tabs ADD COLUMN local_path TEXT;
-     ALTER TABLE layout_tabs ADD COLUMN remote_path TEXT;",
     "CREATE TABLE snippets (
         id INTEGER PRIMARY KEY,
         title TEXT NOT NULL,
         tag TEXT NOT NULL DEFAULT '',
         body TEXT NOT NULL
     );",
+    "ALTER TABLE layout_tabs ADD COLUMN kind TEXT NOT NULL DEFAULT 'auto';
+     ALTER TABLE layout_tabs ADD COLUMN local_path TEXT;
+     ALTER TABLE layout_tabs ADD COLUMN remote_path TEXT;",
+    "ALTER TABLE connections ADD COLUMN jump_id INTEGER REFERENCES connections(id) ON DELETE SET NULL;",
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -52,6 +54,8 @@ pub enum Auth {
     Password,
     Key,
     Agent,
+    /// Preguntas del servidor (keyboard-interactive), por ejemplo contraseña más código 2FA.
+    Interactive,
 }
 
 impl Auth {
@@ -60,6 +64,7 @@ impl Auth {
             Auth::Password => "password",
             Auth::Key => "key",
             Auth::Agent => "agent",
+            Auth::Interactive => "interactive",
         }
     }
 
@@ -68,6 +73,7 @@ impl Auth {
             "password" => Ok(Auth::Password),
             "key" => Ok(Auth::Key),
             "agent" => Ok(Auth::Agent),
+            "interactive" => Ok(Auth::Interactive),
             other => bail!("método de autenticación desconocido: {other}"),
         }
     }
@@ -83,6 +89,8 @@ pub struct Connection {
     pub auth: Auth,
     pub key_path: Option<String>,
     pub init_command: Option<String>,
+    /// Conexión guardada por la que se salta para llegar a esta (ProxyJump).
+    pub jump: Option<i64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -108,6 +116,8 @@ pub enum ForwardKind {
     Local,
     /// `-R`: el servidor escucha y reenvía a un destino alcanzable desde este equipo.
     Remote,
+    /// `-D`: proxy SOCKS5 local; cada conexión elige su destino y sale por el servidor.
+    Dynamic,
 }
 
 impl ForwardKind {
@@ -115,6 +125,7 @@ impl ForwardKind {
         match self {
             ForwardKind::Local => "local",
             ForwardKind::Remote => "remote",
+            ForwardKind::Dynamic => "dynamic",
         }
     }
 
@@ -122,6 +133,7 @@ impl ForwardKind {
         match value {
             "local" => Ok(ForwardKind::Local),
             "remote" => Ok(ForwardKind::Remote),
+            "dynamic" => Ok(ForwardKind::Dynamic),
             other => bail!("tipo de túnel desconocido: {other}"),
         }
     }
@@ -139,11 +151,11 @@ pub struct Forward {
 impl Forward {
     /// Texto corto para la interfaz, por ejemplo `L 8080 → db:5432`.
     pub fn summary(&self) -> String {
-        let tag = match self.kind {
-            ForwardKind::Local => "L",
-            ForwardKind::Remote => "R",
-        };
-        format!("{tag} {} → {}:{}", self.bind_port, self.dest_host, self.dest_port)
+        match self.kind {
+            ForwardKind::Local => format!("L {} → {}:{}", self.bind_port, self.dest_host, self.dest_port),
+            ForwardKind::Remote => format!("R {} → {}:{}", self.bind_port, self.dest_host, self.dest_port),
+            ForwardKind::Dynamic => format!("D {} (SOCKS)", self.bind_port),
+        }
     }
 }
 
@@ -215,7 +227,7 @@ impl Store {
 
     pub fn list_connections(&self) -> anyhow::Result<Vec<Connection>> {
         let mut statement = self.db.prepare(
-            "SELECT id, name, host, port, user, auth, key_path, init_command
+            "SELECT id, name, host, port, user, auth, key_path, init_command, jump_id
              FROM connections ORDER BY name COLLATE NOCASE",
         )?;
         let rows = statement.query_map([], |row| {
@@ -228,11 +240,12 @@ impl Store {
                 row.get::<_, String>(5)?,
                 row.get::<_, Option<String>>(6)?,
                 row.get::<_, Option<String>>(7)?,
+                row.get::<_, Option<i64>>(8)?,
             ))
         })?;
         rows.map(|row| {
-            let (id, name, host, port, user, auth, key_path, init_command) = row?;
-            Ok(Connection { id: Some(id), name, host, port, user, auth: Auth::parse(&auth)?, key_path, init_command })
+            let (id, name, host, port, user, auth, key_path, init_command, jump) = row?;
+            Ok(Connection { id: Some(id), name, host, port, user, auth: Auth::parse(&auth)?, key_path, init_command, jump })
         })
         .collect()
     }
@@ -242,8 +255,8 @@ impl Store {
         match connection.id {
             Some(id) => {
                 self.db.execute(
-                    "UPDATE connections SET name=?1, host=?2, port=?3, user=?4, auth=?5, key_path=?6, init_command=?7
-                     WHERE id=?8",
+                    "UPDATE connections SET name=?1, host=?2, port=?3, user=?4, auth=?5, key_path=?6, init_command=?7, jump_id=?8
+                     WHERE id=?9",
                     params![
                         connection.name,
                         connection.host,
@@ -252,6 +265,7 @@ impl Store {
                         connection.auth.as_str(),
                         connection.key_path,
                         connection.init_command,
+                        connection.jump,
                         id
                     ],
                 )?;
@@ -259,8 +273,8 @@ impl Store {
             }
             None => {
                 self.db.execute(
-                    "INSERT INTO connections (name, host, port, user, auth, key_path, init_command)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    "INSERT INTO connections (name, host, port, user, auth, key_path, init_command, jump_id)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                     params![
                         connection.name,
                         connection.host,
@@ -268,7 +282,8 @@ impl Store {
                         connection.user,
                         connection.auth.as_str(),
                         connection.key_path,
-                        connection.init_command
+                        connection.init_command,
+                        connection.jump
                     ],
                 )?;
                 Ok(self.db.last_insert_rowid())
@@ -491,6 +506,7 @@ mod tests {
             auth: Auth::Key,
             key_path: Some("/home/u/.ssh/id_ed25519".into()),
             init_command: None,
+            jump: None,
         }
     }
 
@@ -509,6 +525,24 @@ mod tests {
         assert_eq!(all.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["Alpha", "beta"]);
         assert_eq!(all[1].host, "other.test");
         assert_eq!(all[1].port, 2222);
+    }
+
+    #[test]
+    fn jump_host_is_stored_and_cleared_when_the_jump_is_deleted() {
+        let store = Store::open_in_memory().unwrap();
+        let bastion = store.save_connection(&sample("bastion")).unwrap();
+        let mut inner = sample("interno");
+        inner.jump = Some(bastion);
+        inner.auth = Auth::Interactive;
+        let inner_id = store.save_connection(&inner).unwrap();
+
+        let loaded = store.list_connections().unwrap().into_iter().find(|c| c.id == Some(inner_id)).unwrap();
+        assert_eq!(loaded.jump, Some(bastion));
+        assert_eq!(loaded.auth, Auth::Interactive);
+
+        store.delete_connection(bastion).unwrap();
+        let loaded = store.list_connections().unwrap().into_iter().find(|c| c.id == Some(inner_id)).unwrap();
+        assert_eq!(loaded.jump, None);
     }
 
     #[test]
@@ -550,6 +584,11 @@ mod tests {
 
         assert_eq!(store.list_forwards(a).unwrap(), vec![web.clone(), db.clone()]);
         assert_eq!(web.summary(), "L 8080 → web:80");
+        let socks = Forward { kind: ForwardKind::Dynamic, bind_host: "127.0.0.1".into(), bind_port: 1080, dest_host: String::new(), dest_port: 0 };
+        assert_eq!(socks.summary(), "D 1080 (SOCKS)");
+        store.replace_forwards(b, &[socks.clone()]).unwrap();
+        assert_eq!(store.list_forwards(b).unwrap(), vec![socks]);
+        store.replace_forwards(b, &[db.clone()]).unwrap();
 
         store.replace_forwards(a, &[db.clone()]).unwrap();
         assert_eq!(store.list_forwards(a).unwrap(), vec![db.clone()]);
@@ -592,6 +631,29 @@ mod tests {
     fn empty_database_has_empty_layout() {
         let store = Store::open_in_memory().unwrap();
         assert_eq!(store.load_layout().unwrap(), (vec![], 0));
+    }
+
+    #[test]
+    fn upgrades_a_database_created_before_the_layout_columns() {
+        // Una base de datos como la de la versión con snippets: las tres primeras migraciones.
+        let dir = std::env::temp_dir().join(format!("omniterm-upgrade-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("old.db");
+        {
+            let db = Db::open(&path).unwrap();
+            for sql in &MIGRATIONS[..3] {
+                db.execute_batch(sql).unwrap();
+            }
+            db.pragma_update(None, "user_version", 3_i64).unwrap();
+            db.execute("INSERT INTO snippets (title, tag, body) VALUES ('viejo', '', 'ls')", []).unwrap();
+        }
+
+        let mut store = Store::open(&path).unwrap();
+        assert_eq!(store.list_snippets().unwrap().len(), 1);
+        store.save_layout(&[SavedTab::plain(TabKind::Local)], 0).unwrap();
+        assert_eq!(store.load_layout().unwrap().0, vec![SavedTab::plain(TabKind::Local)]);
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]

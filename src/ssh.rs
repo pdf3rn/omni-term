@@ -5,12 +5,12 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context};
-use russh::client::{self, Handle, Handler};
+use russh::client::{self, AuthResult, Handle, Handler, KeyboardInteractiveAuthResponse};
 use russh::keys::agent::client::AgentClient;
 use russh::keys::known_hosts::{check_known_hosts_path, learn_known_hosts_path};
 use russh::keys::{HashAlg, PrivateKeyWithHashAlg, PublicKeyOrCertificate};
 use russh::client::{ChannelOpenHandle, Msg, Session as ClientSession};
-use russh::{Channel, ChannelMsg};
+use russh::{Channel, ChannelMsg, MethodKind};
 use tokio::sync::{mpsc, oneshot};
 use zeroize::Zeroizing;
 
@@ -26,14 +26,33 @@ pub struct HostKeyRequest {
     pub reply: oneshot::Sender<bool>,
 }
 
+/// Preguntas del servidor durante la autenticación interactiva (por ejemplo, un código 2FA).
+pub struct PromptRequest {
+    pub title: String,
+    pub instructions: String,
+    /// Texto de cada pregunta y si la respuesta se muestra mientras se escribe.
+    pub prompts: Vec<(String, bool)>,
+    /// `None` si el usuario cancela.
+    pub reply: oneshot::Sender<Option<Vec<String>>>,
+}
+
 pub enum UiEvent {
     HostKey(HostKeyRequest),
+    Prompt(PromptRequest),
+}
+
+/// Servidor de salto (ProxyJump) con sus propias credenciales.
+#[derive(Clone)]
+pub struct JumpHost {
+    pub connection: Connection,
+    pub credentials: Credentials,
 }
 
 #[derive(Default, Clone)]
 pub struct Credentials {
     pub password: Option<Zeroizing<String>>,
     pub key_passphrase: Option<Zeroizing<String>>,
+    pub jump: Option<Box<JumpHost>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -127,6 +146,8 @@ impl Drop for SshBackend {
 }
 
 pub(crate) struct Client {
+    /// Mantiene viva la sesión del servidor de salto mientras dure esta.
+    _via: Option<Arc<Handle<Client>>>,
     known_hosts: std::path::PathBuf,
     host: String,
     port: u16,
@@ -262,43 +283,76 @@ pub fn spawn(
 }
 
 /// Conecta, verifica la huella del servidor y autentica. Lo comparten el terminal y el explorador SFTP.
-pub(crate) async fn establish(
-    connection: &Connection,
-    credentials: &Credentials,
+pub(crate) fn establish<'a>(
+    connection: &'a Connection,
+    credentials: &'a Credentials,
     events: std_mpsc::Sender<UiEvent>,
     wake: Arc<dyn Fn() + Send + Sync>,
     known_hosts: std::path::PathBuf,
     remote: Arc<Mutex<Vec<RemoteTarget>>>,
     tunnels: Tunnels,
-) -> anyhow::Result<Handle<Client>> {
-    let config = Arc::new(client::Config {
-        keepalive_interval: Some(Duration::from_secs(30)),
-        ..Default::default()
-    });
-    let rejection = Arc::new(Mutex::new(None));
-    let handler = Client {
-        known_hosts,
-        host: connection.host.clone(),
-        port: connection.port,
-        events,
-        wake,
-        rejection: rejection.clone(),
-        remote,
-        tunnels,
-    };
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<Handle<Client>>> + Send + 'a>> {
+    Box::pin(async move {
+        let config = Arc::new(client::Config {
+            keepalive_interval: Some(Duration::from_secs(30)),
+            ..Default::default()
+        });
 
-    let mut session = match client::connect(config, (connection.host.as_str(), connection.port), handler).await {
-        Ok(session) => session,
-        Err(error) => {
-            let reason = rejection.lock().unwrap().take();
-            return Err(match reason {
-                Some(reason) => anyhow!(reason),
-                None => anyhow!("no se pudo conectar: {error}"),
-            });
-        }
-    };
-    authenticate(&mut session, connection, credentials).await?;
-    Ok(session)
+        // Con ProxyJump, primero se conecta al servidor de salto (que puede tener otro salto).
+        let via = match &credentials.jump {
+            Some(jump) => {
+                let session = establish(
+                    &jump.connection,
+                    &jump.credentials,
+                    events.clone(),
+                    wake.clone(),
+                    known_hosts.clone(),
+                    Arc::new(Mutex::new(Vec::new())),
+                    new_tunnels(&[]),
+                )
+                .await
+                .with_context(|| format!("saltando por {}", jump.connection.name))?;
+                Some(Arc::new(session))
+            }
+            None => None,
+        };
+
+        let rejection = Arc::new(Mutex::new(None));
+        let handler = Client {
+            _via: via.clone(),
+            known_hosts,
+            host: connection.host.clone(),
+            port: connection.port,
+            events: events.clone(),
+            wake: wake.clone(),
+            rejection: rejection.clone(),
+            remote,
+            tunnels,
+        };
+
+        let connected = match &via {
+            Some(via) => {
+                let channel = via
+                    .channel_open_direct_tcpip(connection.host.clone(), connection.port as u32, "127.0.0.1", 0)
+                    .await
+                    .context("el servidor de salto no pudo abrir el túnel hasta el destino")?;
+                client::connect_stream(config, channel.into_stream(), handler).await
+            }
+            None => client::connect(config, (connection.host.as_str(), connection.port), handler).await,
+        };
+        let mut session = match connected {
+            Ok(session) => session,
+            Err(error) => {
+                let reason = rejection.lock().unwrap().take();
+                return Err(match reason {
+                    Some(reason) => anyhow!(reason),
+                    None => anyhow!("no se pudo conectar: {error}"),
+                });
+            }
+        };
+        authenticate(&mut session, connection, credentials, &PromptUi { events, wake }).await?;
+        Ok(session)
+    })
 }
 
 async fn run(
@@ -375,6 +429,9 @@ async fn start_forwards(
             ForwardKind::Local => {
                 tasks.spawn(local_forward(session.clone(), tunnels.clone(), index, forward));
             }
+            ForwardKind::Dynamic => {
+                tasks.spawn(dynamic_forward(session.clone(), tunnels.clone(), index, forward));
+            }
             ForwardKind::Remote => {
                 remote.lock().unwrap().push(RemoteTarget {
                     bind_port: forward.bind_port as u32,
@@ -425,16 +482,67 @@ async fn local_forward(session: Arc<Handle<Client>>, tunnels: Tunnels, index: us
     }
 }
 
+struct PromptUi {
+    events: std_mpsc::Sender<UiEvent>,
+    wake: Arc<dyn Fn() + Send + Sync>,
+}
+
+impl PromptUi {
+    async fn ask(&self, title: String, instructions: String, prompts: Vec<(String, bool)>) -> Option<Vec<String>> {
+        let (reply, answer) = oneshot::channel();
+        self.events.send(UiEvent::Prompt(PromptRequest { title, instructions, prompts, reply })).ok()?;
+        (self.wake)();
+        answer.await.ok().flatten()
+    }
+}
+
+/// Proxy SOCKS5 local (`-D`): cada conexión pide su destino y sale por el servidor.
+async fn dynamic_forward(session: Arc<Handle<Client>>, tunnels: Tunnels, index: usize, forward: Forward) {
+    let listener = match tokio::net::TcpListener::bind((forward.bind_host.as_str(), forward.bind_port)).await {
+        Ok(listener) => listener,
+        Err(error) => {
+            let reason = format!("no se pudo escuchar en {}:{}: {error}", forward.bind_host, forward.bind_port);
+            set_state(&tunnels, index, TunnelState::Failed(reason));
+            return;
+        }
+    };
+    set_state(&tunnels, index, TunnelState::Active);
+    while let Ok((mut local, peer)) = listener.accept().await {
+        let session = session.clone();
+        let tunnels = tunnels.clone();
+        tokio::spawn(async move {
+            let Ok((host, port)) = crate::socks::handshake(&mut local).await else { return };
+            let opened = session
+                .channel_open_direct_tcpip(host, port as u32, peer.ip().to_string(), peer.port() as u32)
+                .await;
+            match opened {
+                Ok(channel) => {
+                    if crate::socks::reply(&mut local, crate::socks::Reply::Succeeded).await.is_err() {
+                        return;
+                    }
+                    count_served(&tunnels, index);
+                    pump(local, channel.into_stream()).await;
+                }
+                Err(_) => {
+                    let _ = crate::socks::reply(&mut local, crate::socks::Reply::ConnectionRefused).await;
+                }
+            }
+        });
+    }
+}
+
 async fn authenticate(
     session: &mut Handle<Client>,
     connection: &Connection,
     credentials: &Credentials,
+    ui: &PromptUi,
 ) -> anyhow::Result<()> {
     let user = connection.user.clone();
-    let success = match connection.auth {
+    let first: Option<AuthResult> = match connection.auth {
+        Auth::Interactive => None,
         Auth::Password => {
             let password = credentials.password.as_ref().context("falta la contraseña")?;
-            session.authenticate_password(user, password.as_str()).await?.success()
+            Some(session.authenticate_password(user.clone(), password.as_str()).await?)
         }
         Auth::Key => {
             let path = connection.key_path.as_deref().context("falta la ruta de la llave privada")?;
@@ -442,7 +550,7 @@ async fn authenticate(
             let key = russh::keys::load_secret_key(expand_home(path), passphrase)
                 .map_err(|e| anyhow!("no se pudo leer la llave {path}: {e}"))?;
             let hash = session.best_supported_rsa_hash().await?.flatten();
-            session.authenticate_publickey(user, PrivateKeyWithHashAlg::new(Arc::new(key), hash)).await?.success()
+            Some(session.authenticate_publickey(user.clone(), PrivateKeyWithHashAlg::new(Arc::new(key), hash)).await?)
         }
         Auth::Agent => {
             let mut agent = AgentClient::connect_env().await.map_err(|e| anyhow!("no hay ssh-agent: {e}"))?;
@@ -451,7 +559,7 @@ async fn authenticate(
                 bail!("el ssh-agent no tiene identidades cargadas (ssh-add)");
             }
             let hash = session.best_supported_rsa_hash().await?.flatten();
-            let mut accepted = false;
+            let mut last = None;
             for identity in identities {
                 let key = identity.public_key().into_owned();
                 let result = session
@@ -459,17 +567,66 @@ async fn authenticate(
                     .await
                     .map_err(|e| anyhow!("firmando con el agente: {e}"))?;
                 if result.success() {
-                    accepted = true;
-                    break;
+                    return Ok(());
                 }
+                last = Some(result);
             }
-            accepted
+            last
         }
     };
-    if !success {
-        bail!("autenticación rechazada por el servidor");
+
+    if let Some(result) = first {
+        match result {
+            AuthResult::Success => return Ok(()),
+            AuthResult::Failure { remaining_methods, partial_success } => {
+                // Segunda etapa (2FA) tras un primer método válido, o servidores que solo
+                // aceptan contraseña a través de keyboard-interactive.
+                let can_continue = remaining_methods.contains(&MethodKind::KeyboardInteractive)
+                    && (partial_success || connection.auth == Auth::Password);
+                if !can_continue {
+                    bail!("autenticación rechazada por el servidor");
+                }
+            }
+        }
     }
-    Ok(())
+
+    let saved_password = credentials.password.as_ref().filter(|_| connection.auth == Auth::Password);
+    keyboard_interactive(session, &user, saved_password.map(|p| p.as_str()), ui).await
+}
+
+fn looks_like_password(prompt: &str) -> bool {
+    let prompt = prompt.to_lowercase();
+    prompt.contains("password") || prompt.contains("contraseña")
+}
+
+async fn keyboard_interactive(
+    session: &mut Handle<Client>,
+    user: &str,
+    saved_password: Option<&str>,
+    ui: &PromptUi,
+) -> anyhow::Result<()> {
+    let mut autofill = saved_password;
+    let mut response = session.authenticate_keyboard_interactive_start(user.to_string(), None).await?;
+    loop {
+        match response {
+            KeyboardInteractiveAuthResponse::Success => return Ok(()),
+            KeyboardInteractiveAuthResponse::Failure { .. } => bail!("autenticación rechazada por el servidor"),
+            KeyboardInteractiveAuthResponse::InfoRequest { name, instructions, prompts } => {
+                let answers = match (prompts.as_slice(), autofill) {
+                    ([], _) => Vec::new(),
+                    ([only], Some(password)) if looks_like_password(&only.prompt) => {
+                        autofill = None;
+                        vec![password.to_string()]
+                    }
+                    _ => {
+                        let questions = prompts.iter().map(|p| (p.prompt.clone(), p.echo)).collect();
+                        ui.ask(name, instructions, questions).await.context("autenticación cancelada")?
+                    }
+                };
+                response = session.authenticate_keyboard_interactive_respond(answers).await?;
+            }
+        }
+    }
 }
 
 /// Ruta estándar de `known_hosts` del usuario.
@@ -541,6 +698,7 @@ mod tests {
             auth: Auth::Key,
             key_path: Some(sshd.key_path.clone()),
             init_command: None,
+            jump: None,
         };
         let again = connection.clone();
 
@@ -554,7 +712,7 @@ mod tests {
             }
         });
         let free_port = || std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
-        let (local_bind, remote_bind) = (free_port(), free_port());
+        let (local_bind, remote_bind, socks_bind) = (free_port(), free_port(), free_port());
         let forward = |kind, bind_port| Forward {
             kind,
             bind_host: "127.0.0.1".into(),
@@ -566,19 +724,20 @@ mod tests {
             forward(ForwardKind::Local, local_bind),
             forward(ForwardKind::Remote, remote_bind),
             forward(ForwardKind::Local, local_bind), // puerto repetido: debe fallar sin tumbar la sesión
+            forward(ForwardKind::Dynamic, socks_bind),
         ];
         let tunnels = new_tunnels(&forwards);
         let tunnels_for_spawn = tunnels.clone();
         let handle = runtime.handle().clone();
         let hosts = known_hosts.clone();
-        let session = Session::start(80, 24, || {}, move |feed| {
+        let session = Session::start(80, 24, crate::term::TermOptions::default(), || {}, move |feed| {
             Ok(spawn(&handle, connection, Credentials::default(), (80, 24), feed, events, Arc::new(|| {}), hosts, tunnels_for_spawn))
         })
         .unwrap();
 
         let deadline = Instant::now() + Duration::from_secs(15);
         let request = requests.recv_timeout(Duration::from_secs(10)).expect("sin petición de huella");
-        let UiEvent::HostKey(request) = request;
+        let UiEvent::HostKey(request) = request else { panic!("se esperaba una petición de huella") };
         assert!(request.fingerprint.starts_with("SHA256:"));
         request.reply.send(true).unwrap();
 
@@ -597,7 +756,11 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
             let states: Vec<TunnelState> = tunnels.lock().unwrap().iter().map(|t| t.state.clone()).collect();
-            if states[0] == TunnelState::Active && states[1] == TunnelState::Active && matches!(states[2], TunnelState::Failed(_)) {
+            if states[0] == TunnelState::Active
+                && states[1] == TunnelState::Active
+                && matches!(states[2], TunnelState::Failed(_))
+                && states[3] == TunnelState::Active
+            {
                 break;
             }
             assert!(Instant::now() < deadline, "estado de túneles inesperado: {states:?}");
@@ -612,6 +775,33 @@ mod tests {
             assert_eq!(line.trim(), "hello-omni", "túnel en el puerto {port}");
         }
         assert!(tunnels.lock().unwrap()[0].served >= 1 && tunnels.lock().unwrap()[1].served >= 1);
+
+        // Proxy SOCKS5: una petición por IPv4 y otra por nombre de host, ambas hacia el servidor que saluda.
+        for by_name in [false, true] {
+            use std::io::{BufRead, BufReader, Read, Write};
+            let mut stream = std::net::TcpStream::connect(("127.0.0.1", socks_bind)).unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+            stream.write_all(&[5, 1, 0]).unwrap();
+            let mut method = [0u8; 2];
+            stream.read_exact(&mut method).unwrap();
+            assert_eq!(method, [5, 0]);
+            let mut request = vec![5, 1, 0];
+            if by_name {
+                request.extend([3, 9]);
+                request.extend(b"localhost");
+            } else {
+                request.extend([1, 127, 0, 0, 1]);
+            }
+            request.extend(hello_port.to_be_bytes());
+            stream.write_all(&request).unwrap();
+            let mut answer = [0u8; 10];
+            stream.read_exact(&mut answer).unwrap();
+            assert_eq!(&answer[..2], &[5, 0], "respuesta SOCKS");
+            let mut line = String::new();
+            BufReader::new(stream).read_line(&mut line).unwrap();
+            assert_eq!(line.trim(), "hello-omni");
+        }
+        assert!(tunnels.lock().unwrap()[3].served >= 2);
 
         // Un `exit` del usuario cierra la pestaña; no cuenta como conexión perdida.
         session.write(b"exit\n");
@@ -634,7 +824,7 @@ mod tests {
         });
         let handle = runtime.handle().clone();
         let hosts = known_hosts.clone();
-        let second = Session::start(80, 24, || {}, move |feed| {
+        let second = Session::start(80, 24, crate::term::TermOptions::default(), || {}, move |feed| {
             Ok(spawn(&handle, again, Credentials::default(), (80, 24), feed, events2, Arc::new(|| {}), hosts, new_tunnels(&[])))
         })
         .unwrap();
@@ -651,6 +841,64 @@ mod tests {
             std::thread::sleep(Duration::from_millis(100));
         }
         assert!(!second.has_exited());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Autenticación en dos pasos (keyboard-interactive) contra un servidor mínimo con un código fijo.
+    #[test]
+    fn keyboard_interactive_asks_the_user_and_checks_the_code() {
+        let Some(server) = crate::testutil::OtpServer::start("123456") else { return };
+        let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+        let dir = std::env::temp_dir().join(format!("omniterm-otp-client-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let connect_answering = |answer: Option<&'static str>| {
+            let (events, requests) = std_mpsc::channel();
+            std::thread::spawn(move || {
+                while let Ok(event) = requests.recv() {
+                    match event {
+                        UiEvent::HostKey(request) => {
+                            let _ = request.reply.send(true);
+                        }
+                        UiEvent::Prompt(request) => {
+                            assert_eq!(request.prompts, vec![("Verification code: ".to_string(), false)]);
+                            let _ = request.reply.send(answer.map(|a| vec![a.to_string()]));
+                        }
+                    }
+                }
+            });
+            let connection = Connection {
+                id: None,
+                name: "otp".into(),
+                host: "127.0.0.1".into(),
+                port: server.port,
+                user: "tester".into(),
+                auth: Auth::Interactive,
+                key_path: None,
+                init_command: None,
+                jump: None,
+            };
+            let credentials = Credentials::default();
+            runtime.block_on(async {
+                establish(
+                    &connection,
+                    &credentials,
+                    events,
+                    Arc::new(|| {}),
+                    dir.join("known_hosts"),
+                    Arc::new(Mutex::new(Vec::new())),
+                    new_tunnels(&[]),
+                )
+                .await
+                .map(|_| ())
+            })
+        };
+
+        assert!(connect_answering(Some("123456")).is_ok());
+        let wrong = connect_answering(Some("000000")).unwrap_err().to_string();
+        assert!(wrong.contains("rechazada"), "{wrong}");
+        let cancelled = connect_answering(None).unwrap_err().to_string();
+        assert!(cancelled.contains("cancelada"), "{cancelled}");
         std::fs::remove_dir_all(&dir).ok();
     }
 }

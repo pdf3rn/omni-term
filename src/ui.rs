@@ -1,4 +1,5 @@
 use std::collections::{HashMap, VecDeque};
+use std::time::Duration;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 
@@ -8,13 +9,15 @@ use eframe::egui::{
 };
 use zeroize::Zeroizing;
 
-use crate::dialogs::{self, ConnForm, Dialog, Outcome, Pending, Purpose, SecretPrompt, SnippetForm, UnlockPrompt, VarsPrompt};
+use crate::dialogs::{self, ConnForm, Dialog, Outcome, PaneTarget, Pending, Purpose, SecretPrompt, SnippetForm, UnlockPrompt, VarsPrompt};
+use crate::layout::{Dir, Tree};
 use crate::explorer::Explorer;
-use crate::pane::{self, bold_family, Pane, DEFAULT_FONT_SIZE, MAX_FONT_SIZE, MIN_FONT_SIZE, PADDING};
+use crate::pane::{self, bold_family, Pane, PaneRequest, PADDING};
+use crate::settings::{CursorChoice, Settings, ThemeChoice, DEFAULT_FONT_SIZE, MAX_FONT_SIZE, MIN_FONT_SIZE};
 use crate::secrets::{account_for, SecretError, SecretKind, SecretStore, Secrets};
-use crate::ssh::{self, Credentials, HostKeyRequest, TunnelState, Tunnels, UiEvent};
+use crate::ssh::{self, Credentials, JumpHost, TunnelState, Tunnels, UiEvent};
 use crate::store::{Auth, Connection, Forward, SavedTab, Snippet, Store, TabKind};
-use crate::term::Session;
+use crate::term::{Session, TermOptions};
 use crate::theme;
 
 const SIDEBAR_WIDTH: f32 = 230.0;
@@ -30,7 +33,13 @@ enum SidebarView {
 }
 
 enum Body {
-    Terminal { pane: Pane, tunnels: Option<Tunnels> },
+    Terminal {
+        panes: Tree<Pane>,
+        focused: u64,
+        next_pane: u64,
+        /// Túneles de la conexión de la pestaña (los paneles divididos no repiten los túneles).
+        tunnels: Option<Tunnels>,
+    },
     Explorer(Box<Explorer>),
 }
 
@@ -41,10 +50,21 @@ struct Tab {
     body: Body,
 }
 
+/// Separación entre paneles divididos; también aloja la barra de desplazamiento.
+const SPLIT_GAP: f32 = 16.0;
+
+impl Body {
+    fn terminal(pane: Pane, tunnels: Option<Tunnels>) -> Self {
+        let id = 1;
+        Body::Terminal { panes: Tree::new(id, pane), focused: id, next_pane: id + 1, tunnels }
+    }
+}
+
 impl Tab {
+    /// El panel con foco de una pestaña de terminal.
     fn pane(&self) -> Option<&Pane> {
         match &self.body {
-            Body::Terminal { pane, .. } => Some(pane),
+            Body::Terminal { panes, focused, .. } => panes.get(*focused),
             Body::Explorer(_) => None,
         }
     }
@@ -56,11 +76,11 @@ impl Tab {
         }
     }
 
-    /// Título mostrado: el del terminal si lo ha fijado, y si no la etiqueta de la pestaña.
+    /// Título mostrado: el del terminal con foco si lo ha fijado, y si no la etiqueta de la pestaña.
     fn title(&self) -> String {
         match &self.body {
-            Body::Terminal { pane, .. } => {
-                let title = pane.title();
+            Body::Terminal { .. } => {
+                let title = self.pane().map(Pane::title).unwrap_or_default();
                 if title.is_empty() { self.label.clone() } else { title }
             }
             Body::Explorer(explorer) => explorer.label(),
@@ -74,7 +94,9 @@ pub struct App {
     debug_keys: bool,
     window_title: String,
     next_tab_id: u64,
-    font_size: f32,
+    settings: Settings,
+    window_saved: (u32, u32),
+    window_saved_at: std::time::Instant,
     grid: (usize, usize),
     ctx: egui::Context,
     runtime: tokio::runtime::Runtime,
@@ -87,7 +109,9 @@ pub struct App {
     snippet_query: String,
     events_tx: Sender<UiEvent>,
     events_rx: Receiver<UiEvent>,
-    host_keys: VecDeque<HostKeyRequest>,
+    pending_ui: VecDeque<UiEvent>,
+    session_secrets: HashMap<(i64, SecretKind), Zeroizing<String>>,
+    save_queue: VecDeque<(String, Zeroizing<String>)>,
     open_queue: VecDeque<SavedTab>,
     restore_active: Option<usize>,
     dialog: Option<Dialog>,
@@ -114,15 +138,14 @@ impl App {
         let snippets = store.list_snippets().unwrap_or_default();
         let store = Arc::new(Mutex::new(store));
         let secrets = Secrets::select(store.clone());
-        let font_size = store
-            .lock()
-            .unwrap()
-            .meta("font_size")
-            .ok()
-            .flatten()
-            .and_then(|bytes| String::from_utf8(bytes).ok())
-            .and_then(|text| text.parse::<f32>().ok())
-            .map_or(DEFAULT_FONT_SIZE, |size| size.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE));
+        let settings = Settings::load(&store.lock().unwrap());
+        let light = match settings.theme {
+            ThemeChoice::Light => true,
+            ThemeChoice::Dark => false,
+            ThemeChoice::System => cc.egui_ctx.system_theme() == Some(egui::Theme::Light),
+        };
+        theme::set_light(light);
+        install_visuals(&cc.egui_ctx);
         let sidebar_view = match store.lock().unwrap().meta("sidebar_view") {
             Ok(Some(value)) if value == b"snippets" => SidebarView::Snippets,
             _ => SidebarView::Connections,
@@ -143,7 +166,9 @@ impl App {
             debug_keys,
             window_title: String::new(),
             next_tab_id: 0,
-            font_size,
+            settings,
+            window_saved: (0, 0),
+            window_saved_at: std::time::Instant::now(),
             grid: (80, 24),
             ctx: cc.egui_ctx.clone(),
             runtime,
@@ -156,7 +181,9 @@ impl App {
             snippet_query: String::new(),
             events_tx,
             events_rx,
-            host_keys: VecDeque::new(),
+            pending_ui: VecDeque::new(),
+            session_secrets: HashMap::new(),
+            save_queue: VecDeque::new(),
             open_queue,
             restore_active: Some(active),
             dialog: None,
@@ -170,12 +197,29 @@ impl App {
         Arc::new(move || ctx.request_repaint())
     }
 
-    fn open_local(&mut self) -> anyhow::Result<()> {
+    fn local_session(&mut self) -> anyhow::Result<Session> {
         let wake = self.wake();
         let (cols, rows) = self.grid;
-        let session = Session::start(cols, rows, move || wake(), move |feed| crate::local::spawn(cols, rows, feed))?;
+        let options = self.term_options();
+        Session::start(cols, rows, options, move || wake(), move |feed| crate::local::spawn(cols, rows, feed))
+    }
+
+    fn ssh_session(&mut self, connection: Connection, credentials: Credentials, tunnels: Tunnels) -> anyhow::Result<Session> {
+        let wake = self.wake();
+        let wake_for_ssh = wake.clone();
+        let handle = self.runtime.handle().clone();
+        let events = self.events_tx.clone();
+        let (cols, rows) = self.grid;
+        let options = self.term_options();
+        Session::start(cols, rows, options, move || wake(), move |feed| {
+            Ok(ssh::spawn(&handle, connection, credentials, (cols, rows), feed, events, wake_for_ssh, ssh::default_known_hosts(), tunnels))
+        })
+    }
+
+    fn open_local(&mut self) -> anyhow::Result<()> {
+        let session = self.local_session()?;
         let id = self.take_tab_id();
-        let body = Body::Terminal { pane: Pane::new(session, self.debug_keys), tunnels: None };
+        let body = Body::terminal(Pane::new(session, self.debug_keys, 1), None);
         self.tabs.push(Tab { id, kind: TabKind::Local, label: "Terminal local".into(), body });
         self.active = self.tabs.len() - 1;
         Ok(())
@@ -189,20 +233,12 @@ impl App {
     /// Abre la sesión SSH en una pestaña nueva o, con `slot`, en lugar de una caída.
     fn open_ssh(&mut self, connection: Connection, credentials: Credentials, slot: Option<u64>) -> anyhow::Result<()> {
         let Some(id) = connection.id else { anyhow::bail!("la conexión no está guardada") };
-        let wake = self.wake();
-        let wake_for_ssh = wake.clone();
-        let handle = self.runtime.handle().clone();
-        let events = self.events_tx.clone();
         let label = connection.name.clone();
-        let (cols, rows) = self.grid;
         let forwards = self.forwards.get(&id).cloned().unwrap_or_default();
         let tunnels = ssh::new_tunnels(&forwards);
-        let tunnels_for_spawn = tunnels.clone();
-        let session = Session::start(cols, rows, move || wake(), move |feed| {
-            Ok(ssh::spawn(&handle, connection, credentials, (cols, rows), feed, events, wake_for_ssh, ssh::default_known_hosts(), tunnels_for_spawn))
-        })?;
+        let session = self.ssh_session(connection, credentials, tunnels.clone())?;
         let tab_id = slot.unwrap_or_else(|| self.take_tab_id());
-        let body = Body::Terminal { pane: Pane::new(session, self.debug_keys), tunnels: Some(tunnels) };
+        let body = Body::terminal(Pane::new(session, self.debug_keys, 1), Some(tunnels));
         let tab = Tab { id: tab_id, kind: TabKind::Connection(id), label, body };
         match slot.and_then(|slot| self.tabs.iter().position(|t| t.id == slot)) {
             Some(index) => {
@@ -215,6 +251,72 @@ impl App {
             }
         }
         Ok(())
+    }
+
+    /// Añade o sustituye un panel SSH dentro de una pestaña de terminal.
+    fn open_ssh_pane(&mut self, connection: Connection, credentials: Credentials, tab: u64, target: PaneTarget) -> anyhow::Result<()> {
+        let session = self.ssh_session(connection, credentials, ssh::new_tunnels(&[]))?;
+        self.place_pane(tab, target, session);
+        Ok(())
+    }
+
+    fn place_pane(&mut self, tab: u64, target: PaneTarget, session: Session) {
+        let debug_keys = self.debug_keys;
+        let Some(Body::Terminal { panes, focused, next_pane, .. }) =
+            self.tabs.iter_mut().find(|t| t.id == tab).map(|t| &mut t.body)
+        else {
+            return;
+        };
+        match target {
+            PaneTarget::Split(dir) => {
+                let id = *next_pane;
+                *next_pane += 1;
+                if panes.split(*focused, dir, id, Pane::new(session, debug_keys, id)) {
+                    *focused = id;
+                }
+            }
+            PaneTarget::Replace(id) => {
+                if let Some(slot) = panes.get_mut(id) {
+                    *slot = Pane::new(session, debug_keys, id);
+                }
+            }
+        }
+    }
+
+    /// Divide el panel con foco de la pestaña activa con un terminal nuevo del mismo tipo.
+    fn split_active(&mut self, dir: Dir) {
+        let Some(tab) = self.tabs.get(self.active) else { return };
+        let (tab_id, kind) = (tab.id, tab.kind);
+        if !matches!(tab.body, Body::Terminal { .. }) {
+            return;
+        }
+        match kind {
+            TabKind::Local => match self.local_session() {
+                Ok(session) => self.place_pane(tab_id, PaneTarget::Split(dir), session),
+                Err(error) => self.dialog = Some(Dialog::Message(format!("No se pudo abrir el terminal: {error:#}"))),
+            },
+            TabKind::Connection(id) => {
+                if let Some(connection) = self.connections.iter().find(|c| c.id == Some(id)).cloned() {
+                    self.begin_open(connection, None, Purpose::Pane { tab: tab_id, target: PaneTarget::Split(dir) });
+                }
+            }
+            TabKind::Explorer(_) => {}
+        }
+    }
+
+    /// Cierra el panel con foco; si es el único, cierra la pestaña.
+    fn close_focused_pane(&mut self) {
+        let active = self.active;
+        let Some(tab) = self.tabs.get_mut(active) else { return };
+        match &mut tab.body {
+            Body::Terminal { panes, focused, .. } if panes.len() > 1 => {
+                let closing = *focused;
+                if panes.remove(closing) {
+                    *focused = panes.ids().first().copied().unwrap_or(1);
+                }
+            }
+            _ => self.close_tab(active),
+        }
     }
 
     /// Abre un explorador de archivos con su propia sesión SSH.
@@ -236,33 +338,63 @@ impl App {
         Ok(())
     }
 
-    /// Reúne los secretos necesarios (pidiéndolos si hace falta) y abre la pestaña SSH.
-    fn begin_open(&mut self, connection: Connection, slot: Option<u64>, purpose: Purpose) {
+    /// Credenciales de una sola conexión: contraseña o passphrase si las necesita.
+    fn own_credentials(&mut self, connection: &Connection) -> Result<Credentials, Step> {
         let kind = match connection.auth {
             Auth::Password => Some(SecretKind::Password),
             Auth::Key => match connection.key_path.as_deref().map(ssh::key_is_encrypted) {
                 Some(Ok(true)) => Some(SecretKind::Passphrase),
-                Some(Err(error)) => {
-                    self.dialog = Some(Dialog::Message(format!("{error:#}")));
-                    return;
-                }
+                Some(Err(error)) => return Err(Step::Failed(format!("{error:#}"))),
                 _ => None,
             },
-            Auth::Agent => None,
+            Auth::Agent | Auth::Interactive => None,
         };
-        let Some(kind) = kind else {
-            self.finish_open(connection, Credentials::default(), slot, purpose);
-            return;
-        };
+        let Some(kind) = kind else { return Ok(Credentials::default()) };
+        let id = connection.id.unwrap_or_default();
+        if let Some(secret) = self.session_secrets.get(&(id, kind)) {
+            return Ok(credentials(kind, secret.clone()));
+        }
+        match self.secrets.get(&account_for(id, kind)) {
+            Ok(Some(secret)) => Ok(credentials(kind, secret)),
+            Ok(None) => Err(Step::Prompt { asking: connection.clone(), kind }),
+            Err(SecretError::Locked) => Err(Step::Unlock),
+            Err(error) => Err(Step::Failed(format!("Almacén de secretos: {error}"))),
+        }
+    }
 
-        let account = account_for(connection.id.unwrap_or_default(), kind);
-        match self.secrets.get(&account) {
-            Ok(Some(secret)) => self.finish_open(connection, credentials(kind, secret), slot, purpose),
-            Ok(None) => {
-                self.dialog = Some(Dialog::Secret(SecretPrompt { purpose, connection, slot, kind, input: String::new(), save: true }));
+    /// Credenciales de la conexión y de toda su cadena de servidores de salto.
+    fn gather_credentials(&mut self, connection: &Connection, depth: usize) -> Result<Credentials, Step> {
+        let mut credentials = self.own_credentials(connection)?;
+        if let Some(jump_id) = connection.jump {
+            if depth >= 4 {
+                return Err(Step::Failed("Demasiados saltos encadenados: revisa que no haya un ciclo".into()));
             }
-            Err(SecretError::Locked) => self.ask_unlock(Pending::Open(connection, slot, purpose)),
-            Err(error) => self.dialog = Some(Dialog::Message(format!("Almacén de secretos: {error}"))),
+            let Some(jump) = self.connections.iter().find(|c| c.id == Some(jump_id)).cloned() else {
+                return Err(Step::Failed("El servidor de salto de esta conexión ya no existe".into()));
+            };
+            let jump_credentials = self.gather_credentials(&jump, depth + 1)?;
+            credentials.jump = Some(Box::new(JumpHost { connection: jump, credentials: jump_credentials }));
+        }
+        Ok(credentials)
+    }
+
+    /// Reúne los secretos necesarios (pidiéndolos si hace falta) y abre la pestaña.
+    fn begin_open(&mut self, connection: Connection, slot: Option<u64>, purpose: Purpose) {
+        match self.gather_credentials(&connection, 0) {
+            Ok(credentials) => self.finish_open(connection, credentials, slot, purpose),
+            Err(Step::Prompt { asking, kind }) => {
+                self.dialog = Some(Dialog::Secret(SecretPrompt {
+                    purpose,
+                    connection,
+                    asking,
+                    slot,
+                    kind,
+                    input: String::new(),
+                    save: true,
+                }));
+            }
+            Err(Step::Unlock) => self.ask_unlock(Pending::Open(connection, slot, purpose)),
+            Err(Step::Failed(message)) => self.dialog = Some(Dialog::Message(message)),
         }
     }
 
@@ -270,6 +402,7 @@ impl App {
         let result = match purpose {
             Purpose::Terminal => self.open_ssh(connection, credentials, slot),
             Purpose::Explorer(local, remote) => self.open_explorer(connection, credentials, (local, remote)),
+            Purpose::Pane { tab, target } => self.open_ssh_pane(connection, credentials, tab, target),
         };
         if let Err(error) = result {
             self.dialog = Some(Dialog::Message(format!("No se pudo abrir la conexión: {error:#}")));
@@ -313,23 +446,82 @@ impl App {
 
     fn insert_into_active(&mut self, body: &str, run: bool) {
         match self.tabs.get(self.active) {
-            Some(Tab { body: Body::Terminal { pane, .. }, .. }) if !pane.session.is_disconnected() => pane.insert_text(body, run),
+            Some(tab) if tab.pane().is_some_and(|p| !p.session.is_disconnected()) => {
+                if let Some(pane) = tab.pane() {
+                    pane.insert_text(body, run);
+                }
+            }
             _ => self.notice = Some("No hay un terminal activo donde insertar".into()),
         }
     }
 
     fn reconnect(&mut self, index: usize) {
         let (TabKind::Connection(id), tab_id) = (self.tabs[index].kind, self.tabs[index].id) else { return };
+        let split_focus = match &self.tabs[index].body {
+            Body::Terminal { panes, focused, .. } if panes.len() > 1 => Some(*focused),
+            _ => None,
+        };
         if let Some(connection) = self.connections.iter().find(|c| c.id == Some(id)).cloned() {
-            self.begin_open(connection, Some(tab_id), Purpose::Terminal);
+            match split_focus {
+                // Con paneles divididos solo se reconecta el panel caído.
+                Some(pane) => self.begin_open(connection, None, Purpose::Pane { tab: tab_id, target: PaneTarget::Replace(pane) }),
+                None => self.begin_open(connection, Some(tab_id), Purpose::Terminal),
+            }
         }
+    }
+
+    fn term_options(&self) -> TermOptions {
+        use alacritty_terminal::vte::ansi::{CursorShape, CursorStyle};
+        let shape = match self.settings.cursor {
+            CursorChoice::Block => CursorShape::Block,
+            CursorChoice::Beam => CursorShape::Beam,
+            CursorChoice::Underline => CursorShape::Underline,
+        };
+        TermOptions { history: self.settings.scrollback, cursor: CursorStyle { shape, blinking: self.settings.blink } }
+    }
+
+    /// Guarda los ajustes y los aplica a las sesiones abiertas.
+    fn apply_settings(&mut self) {
+        let _ = self.settings.save(&self.store.lock().unwrap());
+        let options = self.term_options();
+        for tab in &self.tabs {
+            if let Body::Terminal { panes, .. } = &tab.body {
+                panes.for_each(&mut |_, pane| pane.session.set_options(options));
+            }
+        }
+    }
+
+    /// Cambia entre tema claro y oscuro según el ajuste (o el del sistema) y reinstala los estilos.
+    fn sync_theme(&mut self, ctx: &egui::Context) {
+        let light = match self.settings.theme {
+            ThemeChoice::Light => true,
+            ThemeChoice::Dark => false,
+            ThemeChoice::System => ctx.system_theme() == Some(egui::Theme::Light),
+        };
+        if light != theme::is_light() {
+            theme::set_light(light);
+            install_visuals(ctx);
+        }
+    }
+
+    /// Recuerda el tamaño de la ventana para la próxima vez (como mucho una vez por segundo).
+    fn remember_window_size(&mut self, ctx: &egui::Context) {
+        let (rect, maximized) = ctx.input(|i| (i.viewport().inner_rect, i.viewport().maximized.unwrap_or(false)));
+        let Some(rect) = rect else { return };
+        let size = (rect.width().round() as u32, rect.height().round() as u32);
+        if maximized || size == self.window_saved || self.window_saved_at.elapsed() < Duration::from_secs(1) {
+            return;
+        }
+        self.window_saved = size;
+        self.window_saved_at = std::time::Instant::now();
+        let _ = self.store.lock().unwrap().set_meta("window_size", format!("{}x{}", size.0, size.1).as_bytes());
     }
 
     fn set_font_size(&mut self, size: f32) {
         let size = size.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE);
-        if (size - self.font_size).abs() > f32::EPSILON {
-            self.font_size = size;
-            let _ = self.store.lock().unwrap().set_meta("font_size", size.to_string().as_bytes());
+        if (size - self.settings.font_size).abs() > f32::EPSILON {
+            self.settings.font_size = size;
+            let _ = self.settings.save(&self.store.lock().unwrap());
         }
     }
 
@@ -353,15 +545,29 @@ impl App {
         };
         let user = std::env::var("USER").unwrap_or_default();
         let mut imported = 0;
+        let mut jumps: Vec<(i64, String)> = Vec::new();
         {
             let store = self.store.lock().unwrap();
-            for connection in crate::sshconfig::parse(&text, &user) {
-                if self.connections.iter().any(|c| c.name == connection.name) {
+            for host in crate::sshconfig::parse(&text, &user) {
+                if self.connections.iter().any(|c| c.name == host.connection.name) {
                     continue;
                 }
-                if store.save_connection(&connection).is_ok() {
+                if let Ok(id) = store.save_connection(&host.connection) {
                     imported += 1;
+                    if let Some(alias) = host.jump_alias {
+                        jumps.push((id, alias));
+                    }
                 }
+            }
+        }
+        self.refresh_connections();
+        // Con todos los hosts ya guardados, se resuelven los saltos por nombre.
+        for (id, alias) in jumps {
+            let jump = self.connections.iter().find(|c| c.name == alias).and_then(|c| c.id);
+            let target = self.connections.iter().find(|c| c.id == Some(id)).cloned();
+            if let (Some(jump), Some(mut target)) = (jump, target) {
+                target.jump = Some(jump);
+                let _ = self.store.lock().unwrap().save_connection(&target);
             }
         }
         self.refresh_connections();
@@ -369,24 +575,44 @@ impl App {
     }
 
     fn drive_pending(&mut self) {
-        while let Ok(UiEvent::HostKey(request)) = self.events_rx.try_recv() {
-            self.host_keys.push_back(request);
+        while let Ok(event) = self.events_rx.try_recv() {
+            self.pending_ui.push_back(event);
         }
 
-        let exited: Vec<usize> =
-            (0..self.tabs.len())
-                .rev()
-                .filter(|&i| self.tabs[i].pane().is_some_and(|p| p.session.has_exited()))
-                .collect();
-        for index in exited {
+        // Un panel cuyo proceso terminó se quita; si era el único de la pestaña, se cierra la pestaña.
+        let mut closing_tabs = Vec::new();
+        for (index, tab) in self.tabs.iter_mut().enumerate() {
+            let Body::Terminal { panes, focused, .. } = &mut tab.body else { continue };
+            let mut gone = Vec::new();
+            panes.for_each(&mut |id, pane| {
+                if pane.session.has_exited() {
+                    gone.push(id);
+                }
+            });
+            for id in gone {
+                if panes.remove(id) {
+                    if *focused == id {
+                        *focused = panes.ids().first().copied().unwrap_or(1);
+                    }
+                } else {
+                    closing_tabs.push(index);
+                }
+            }
+        }
+        for index in closing_tabs.into_iter().rev() {
             self.close_tab(index);
         }
 
         if self.dialog.is_some() {
             return;
         }
-        if let Some(request) = self.host_keys.pop_front() {
-            self.dialog = Some(Dialog::HostKey(request));
+        if let Some(event) = self.pending_ui.pop_front() {
+            self.dialog = Some(match event {
+                UiEvent::HostKey(request) => Dialog::HostKey(request),
+                UiEvent::Prompt(request) => Dialog::Prompt(request, Vec::new()),
+            });
+        } else if let Some((account, secret)) = self.save_queue.pop_front() {
+            self.save_secret(account, secret);
         } else if let Some(saved) = self.open_queue.pop_front() {
             match saved.kind {
                 TabKind::Local => {
@@ -439,13 +665,30 @@ impl App {
 
     fn handle_dialog(&mut self, ctx: &egui::Context) {
         let Some(mut dialog) = self.dialog.take() else { return };
-        let forced = Secrets::is_master_forced(&self.store.lock().unwrap());
-        let outcome = dialogs::show(ctx, &mut dialog, forced);
+        let mut forced = Secrets::is_master_forced(&self.store.lock().unwrap());
+        let (forced_before, settings_before) = (forced, self.settings.clone());
+        let outcome = dialogs::show(ctx, &mut dialog, &mut forced, &self.connections, &mut self.settings);
+        if self.settings != settings_before {
+            self.apply_settings();
+        }
+        if forced != forced_before {
+            let result = Secrets::set_master_forced(&self.store.lock().unwrap(), forced);
+            self.notice = Some(match result {
+                Ok(()) => "Reinicia omni-term para aplicar el cambio de almacén de secretos".into(),
+                Err(error) => format!("No se pudo guardar el ajuste: {error:#}"),
+            });
+        }
 
         match (outcome, dialog) {
             (Outcome::None, dialog) => self.dialog = Some(dialog),
-            (Outcome::Cancel, Dialog::Secret(_) | Dialog::Unlock(_) | Dialog::Edit(_) | Dialog::Snippet(_) | Dialog::SnippetVars(_) | Dialog::ConfirmDelete { .. } | Dialog::ConfirmDeleteSnippet { .. } | Dialog::ConfirmReset(_) | Dialog::Message(_)) => {}
+            (Outcome::Cancel, Dialog::Prompt(request, _)) => {
+                let _ = request.reply.send(None);
+            }
+            (Outcome::Cancel, Dialog::Secret(_) | Dialog::Unlock(_) | Dialog::Edit(_) | Dialog::Settings | Dialog::Snippet(_) | Dialog::SnippetVars(_) | Dialog::ConfirmDelete { .. } | Dialog::ConfirmDeleteSnippet { .. } | Dialog::ConfirmReset(_) | Dialog::Message(_)) => {}
             (Outcome::Cancel, dialog) => self.dialog = Some(dialog),
+            (Outcome::Submit, Dialog::Prompt(request, answers)) => {
+                let _ = request.reply.send(Some(answers));
+            }
             (Outcome::Trust(accepted), Dialog::HostKey(request)) => {
                 let _ = request.reply.send(accepted);
             }
@@ -516,11 +759,12 @@ impl App {
             (Outcome::ResetMasterKey, Dialog::Unlock(prompt)) => self.dialog = Some(Dialog::ConfirmReset(prompt.then)),
             (Outcome::Submit, Dialog::Secret(prompt)) => {
                 let secret = Zeroizing::new(prompt.input);
-                let account = account_for(prompt.connection.id.unwrap_or_default(), prompt.kind);
-                self.finish_open(prompt.connection, credentials(prompt.kind, secret.clone()), prompt.slot, prompt.purpose);
+                let id = prompt.asking.id.unwrap_or_default();
+                self.session_secrets.insert((id, prompt.kind), secret.clone());
                 if prompt.save && !secret.is_empty() {
-                    self.save_secret(account, secret);
+                    self.save_queue.push_back((account_for(id, prompt.kind), secret));
                 }
+                self.begin_open(prompt.connection, prompt.slot, prompt.purpose);
             }
             (Outcome::Submit, Dialog::Unlock(mut prompt)) => {
                 let Some(master) = self.secrets.master().cloned() else { return };
@@ -557,6 +801,7 @@ impl App {
         let mut edit: Option<Connection> = None;
         let mut delete: Option<Connection> = None;
         let mut files: Option<Connection> = None;
+        let mut open_settings = false;
         let mut new_snippet = false;
         let mut snippet_from_selection = false;
         let mut insert: Option<(Snippet, bool)> = None;
@@ -575,10 +820,10 @@ impl App {
         Panel::left("sidebar")
             .default_size(SIDEBAR_WIDTH)
             .min_size(180.0)
-            .frame(Frame::NONE.fill(theme::MANTLE).inner_margin(Margin::same(12)))
+            .frame(Frame::NONE.fill(theme::mantle()).inner_margin(Margin::same(12)))
             .show(ui, |ui| {
-                let primary = Button::new(RichText::new("Terminal local").color(theme::BASE).font(FontId::new(14.0, strong_family())))
-                    .fill(theme::ACCENT)
+                let primary = Button::new(RichText::new("Terminal local").color(theme::base()).font(FontId::new(14.0, strong_family())))
+                    .fill(theme::accent())
                     .min_size(Vec2::new(ui.available_width(), 34.0));
                 if ui.add(primary).clicked() {
                     open_local = true;
@@ -588,7 +833,7 @@ impl App {
                 ui.horizontal(|ui| {
                     for (view, label) in [(SidebarView::Connections, "Conexiones"), (SidebarView::Snippets, "Snippets")] {
                         let selected = self.sidebar_view == view;
-                        let color = if selected { theme::TEXT } else { theme::SUBTEXT };
+                        let color = if selected { theme::text() } else { theme::subtext() };
                         let font = FontId::new(13.0, if selected { strong_family() } else { FontFamily::Proportional });
                         let button = Button::new(RichText::new(label).font(font).color(color)).fill(Color32::TRANSPARENT);
                         let response = ui.add(button);
@@ -596,7 +841,7 @@ impl App {
                             let y = response.rect.max.y + 1.0;
                             ui.painter().line_segment(
                                 [Pos2::new(response.rect.min.x + 8.0, y), Pos2::new(response.rect.max.x - 8.0, y)],
-                                Stroke::new(2.0, theme::ACCENT),
+                                Stroke::new(2.0, theme::accent()),
                             );
                         }
                         if response.clicked() && self.sidebar_view != view {
@@ -610,7 +855,7 @@ impl App {
 
                 if self.sidebar_view == SidebarView::Connections {
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("Guardadas").small().color(theme::SUBTEXT));
+                    ui.label(RichText::new("Guardadas").small().color(theme::subtext()));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let add = Button::new(RichText::new("+").size(16.0)).fill(Color32::TRANSPARENT).min_size(Vec2::splat(26.0));
                         if ui.add(add).on_hover_text("Nueva conexión").clicked() {
@@ -621,14 +866,14 @@ impl App {
                 ui.add_space(-2.0);
 
                 if self.connections.is_empty() {
-                    ui.label(RichText::new("Aún no hay conexiones. Crea una con + o importa las de ~/.ssh/config.").color(theme::SUBTEXT));
+                    ui.label(RichText::new("Aún no hay conexiones. Crea una con + o importa las de ~/.ssh/config.").color(theme::subtext()));
                 }
                 ui.spacing_mut().item_spacing.y = 2.0;
                 for connection in &self.connections {
                     let is_open = connection.id.is_some_and(|id| open_ids.contains(&id));
                     let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_HEIGHT), Sense::click());
                     if response.hovered() {
-                        ui.painter().rect_filled(rect, CornerRadius::same(CONTROL_RADIUS), theme::SURFACE);
+                        ui.painter().rect_filled(rect, CornerRadius::same(CONTROL_RADIUS), theme::surface());
                     }
                     let left = rect.min.x + 10.0;
                     let painter = ui.painter().with_clip_rect(rect.shrink2(Vec2::new(4.0, 0.0)));
@@ -637,17 +882,17 @@ impl App {
                         Align2::LEFT_TOP,
                         &connection.name,
                         FontId::new(14.0, strong_family()),
-                        theme::TEXT,
+                        theme::text(),
                     );
                     painter.text(
                         Pos2::new(left, rect.min.y + 27.0),
                         Align2::LEFT_TOP,
                         format!("{}@{}", connection.user, connection.host),
                         FontId::new(12.0, FontFamily::Proportional),
-                        theme::SUBTEXT,
+                        theme::subtext(),
                     );
                     if is_open {
-                        ui.painter().circle_filled(Pos2::new(rect.max.x - 14.0, rect.center().y), 3.5, theme::ACCENT);
+                        ui.painter().circle_filled(Pos2::new(rect.max.x - 14.0, rect.center().y), 3.5, theme::accent());
                     }
                     let response = response.on_hover_text(if is_open { "Sesión abierta. Doble clic para otra pestaña" } else { "Doble clic para conectar" });
                     if response.double_clicked() {
@@ -686,21 +931,21 @@ impl App {
                             let count = connection.id.and_then(|id| self.forwards.get(&id)).map_or(0, Vec::len);
                             if count > 0 {
                                 let text = if count == 1 { "1 túnel".to_string() } else { format!("{count} túneles") };
-                                ui.label(RichText::new(text).small().color(theme::SUBTEXT));
+                                ui.label(RichText::new(text).small().color(theme::subtext()));
                             }
                         }
                     }
                 }
 
                 ui.add_space(8.0);
-                let import_button = Button::new(RichText::new("Importar de ~/.ssh/config").small().color(theme::SUBTEXT))
+                let import_button = Button::new(RichText::new("Importar de ~/.ssh/config").small().color(theme::subtext()))
                     .fill(Color32::TRANSPARENT)
-                    .stroke(Stroke::new(1.0, theme::SURFACE));
+                    .stroke(Stroke::new(1.0, theme::surface()));
                 if ui.add(import_button).clicked() {
                     import = true;
                 }
                 if let Some(notice) = &self.notice {
-                    ui.label(RichText::new(notice).small().color(theme::SUBTEXT));
+                    ui.label(RichText::new(notice).small().color(theme::subtext()));
                 }
 
                 } else {
@@ -716,7 +961,7 @@ impl App {
                         }
                     });
                     if ui
-                        .add(Button::new(RichText::new("Guardar selección").small().color(theme::SUBTEXT)).fill(Color32::TRANSPARENT).stroke(Stroke::new(1.0, theme::SURFACE)))
+                        .add(Button::new(RichText::new("Guardar selección").small().color(theme::subtext())).fill(Color32::TRANSPARENT).stroke(Stroke::new(1.0, theme::surface())))
                         .clicked()
                     {
                         snippet_from_selection = true;
@@ -726,15 +971,15 @@ impl App {
                     let query = self.snippet_query.clone();
                     let visible: Vec<&Snippet> = self.snippets.iter().filter(|s| s.matches(&query)).collect();
                     if self.snippets.is_empty() {
-                        ui.label(RichText::new("Aún no hay snippets. Crea uno con + o guarda la selección del terminal.").color(theme::SUBTEXT));
+                        ui.label(RichText::new("Aún no hay snippets. Crea uno con + o guarda la selección del terminal.").color(theme::subtext()));
                     } else if visible.is_empty() {
-                        ui.label(RichText::new("Ningún snippet coincide con la búsqueda.").color(theme::SUBTEXT));
+                        ui.label(RichText::new("Ningún snippet coincide con la búsqueda.").color(theme::subtext()));
                     }
                     ui.spacing_mut().item_spacing.y = 2.0;
                     for snippet in visible {
                         let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_HEIGHT), Sense::click());
                         if response.hovered() {
-                            ui.painter().rect_filled(rect, CornerRadius::same(CONTROL_RADIUS), theme::SURFACE);
+                            ui.painter().rect_filled(rect, CornerRadius::same(CONTROL_RADIUS), theme::surface());
                         }
                         let left = rect.min.x + 10.0;
                         let painter = ui.painter().with_clip_rect(rect.shrink2(Vec2::new(4.0, 0.0)));
@@ -743,7 +988,7 @@ impl App {
                             Align2::LEFT_TOP,
                             &snippet.title,
                             FontId::new(14.0, strong_family()),
-                            theme::TEXT,
+                            theme::text(),
                         );
                         let preview = snippet.body.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
                         let preview: String = preview.chars().take(80).collect();
@@ -753,7 +998,7 @@ impl App {
                             Align2::LEFT_TOP,
                             preview,
                             FontId::new(12.0, FontFamily::Monospace),
-                            theme::SUBTEXT,
+                            theme::subtext(),
                         );
                         let response = response.on_hover_text("Clic para insertar en el terminal activo. Clic derecho: más opciones");
                         if response.clicked() {
@@ -785,18 +1030,16 @@ impl App {
                 }
 
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
-                    let mut forced = Secrets::is_master_forced(&self.store.lock().unwrap());
-                    if ui.checkbox(&mut forced, RichText::new("Forzar clave maestra").small()).changed() {
-                        let result = Secrets::set_master_forced(&self.store.lock().unwrap(), forced);
-                        self.notice = Some(match result {
-                            Ok(()) => "Reinicia omni-term para aplicar el cambio de almacén".into(),
-                            Err(error) => format!("No se pudo guardar el ajuste: {error:#}"),
-                        });
+                    if ui.add(Button::new("Ajustes").fill(Color32::TRANSPARENT).stroke(Stroke::new(1.0, theme::surface()))).clicked() {
+                        open_settings = true;
                     }
-                    ui.label(RichText::new(format!("Secretos: {}", self.secrets.label())).small().color(theme::SUBTEXT));
+                    ui.label(RichText::new(format!("Secretos: {}", self.secrets.label())).small().color(theme::subtext()));
                 });
             });
 
+        if open_settings {
+            self.dialog = Some(Dialog::Settings);
+        }
         if let Some((snippet, run)) = insert {
             self.insert_snippet(&snippet, run);
         }
@@ -847,10 +1090,10 @@ impl App {
 fn tunnel_line(ui: &mut egui::Ui, status: &ssh::TunnelStatus) {
     let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 20.0), Sense::hover());
     let (color, tip) = match &status.state {
-        TunnelState::Starting => (theme::SUBTEXT, "Iniciando".to_string()),
-        TunnelState::Active => (theme::ACCENT, "Activo".to_string()),
-        TunnelState::Failed(reason) => (theme::RED, reason.clone()),
-        TunnelState::Stopped => (theme::SELECTION, "Detenido".to_string()),
+        TunnelState::Starting => (theme::subtext(), "Iniciando".to_string()),
+        TunnelState::Active => (theme::accent(), "Activo".to_string()),
+        TunnelState::Failed(reason) => (theme::red(), reason.clone()),
+        TunnelState::Stopped => (theme::selection(), "Detenido".to_string()),
     };
     ui.painter().circle_filled(Pos2::new(rect.min.x + 14.0, rect.center().y), 3.0, color);
     ui.painter().text(
@@ -858,7 +1101,7 @@ fn tunnel_line(ui: &mut egui::Ui, status: &ssh::TunnelStatus) {
         Align2::LEFT_CENTER,
         status.forward.summary(),
         FontId::new(12.0, FontFamily::Proportional),
-        theme::SUBTEXT,
+        theme::subtext(),
     );
     if status.served > 0 {
         ui.painter().text(
@@ -866,16 +1109,23 @@ fn tunnel_line(ui: &mut egui::Ui, status: &ssh::TunnelStatus) {
             Align2::RIGHT_CENTER,
             status.served.to_string(),
             FontId::new(12.0, FontFamily::Proportional),
-            theme::SUBTEXT,
+            theme::subtext(),
         );
     }
     response.on_hover_text(tip);
 }
 
+/// Qué falta para poder abrir una conexión.
+enum Step {
+    Prompt { asking: Connection, kind: SecretKind },
+    Unlock,
+    Failed(String),
+}
+
 fn credentials(kind: SecretKind, secret: Zeroizing<String>) -> Credentials {
     match kind {
-        SecretKind::Password => Credentials { password: Some(secret), key_passphrase: None },
-        SecretKind::Passphrase => Credentials { password: None, key_passphrase: Some(secret) },
+        SecretKind::Password => Credentials { password: Some(secret), ..Default::default() },
+        SecretKind::Passphrase => Credentials { key_passphrase: Some(secret), ..Default::default() },
     }
 }
 
@@ -917,30 +1167,30 @@ fn install_visuals(ctx: &egui::Context) {
 
     let radius = CornerRadius::same(CONTROL_RADIUS);
     let v = &mut style.visuals;
-    v.panel_fill = theme::BASE;
-    v.window_fill = theme::MANTLE;
+    v.panel_fill = theme::base();
+    v.window_fill = theme::mantle();
     v.window_corner_radius = CornerRadius::same(10);
-    v.window_stroke = Stroke::new(1.0, theme::SURFACE);
+    v.window_stroke = Stroke::new(1.0, theme::surface());
     v.window_shadow = egui::Shadow { offset: [0, 10], blur: 28, spread: 0, color: Color32::from_black_alpha(110) };
     v.popup_shadow = egui::Shadow { offset: [0, 6], blur: 16, spread: 0, color: Color32::from_black_alpha(90) };
     v.menu_corner_radius = CornerRadius::same(8);
-    v.override_text_color = Some(theme::TEXT);
-    v.extreme_bg_color = theme::BASE;
-    v.selection.bg_fill = theme::ACCENT.gamma_multiply(0.35);
-    v.selection.stroke = Stroke::new(1.0, theme::ACCENT);
+    v.override_text_color = Some(theme::text());
+    v.extreme_bg_color = theme::base();
+    v.selection.bg_fill = theme::accent().gamma_multiply(0.35);
+    v.selection.stroke = Stroke::new(1.0, theme::accent());
 
-    v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, theme::SURFACE);
+    v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, theme::surface());
     for (widget, fill) in [
-        (&mut v.widgets.inactive, theme::SURFACE),
-        (&mut v.widgets.hovered, theme::SELECTION),
-        (&mut v.widgets.active, theme::SELECTION),
+        (&mut v.widgets.inactive, theme::surface()),
+        (&mut v.widgets.hovered, theme::selection()),
+        (&mut v.widgets.active, theme::selection()),
     ] {
         widget.weak_bg_fill = fill;
         widget.bg_fill = fill;
         widget.bg_stroke = Stroke::NONE;
         widget.corner_radius = radius;
     }
-    v.widgets.hovered.fg_stroke = Stroke::new(1.0, theme::TEXT);
+    v.widgets.hovered.fg_stroke = Stroke::new(1.0, theme::text());
     ctx.set_global_style(style);
 }
 
@@ -952,15 +1202,15 @@ fn tab(ui: &mut egui::Ui, label: &str, selected: bool, index: usize) -> (bool, b
         label.to_string()
     };
     let font = FontId::new(14.0, if selected { strong_family() } else { FontFamily::Proportional });
-    let galley = ui.painter().layout_no_wrap(shown, font, Color32::WHITE);
+    let galley = ui.painter().layout_no_wrap(shown, font, Color32::PLACEHOLDER);
     let size = Vec2::new(galley.size().x + 12.0 + 8.0 + 20.0 + 8.0, TAB_HEIGHT);
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
 
     let hovered = response.hovered();
     let fill = if selected {
-        theme::BASE
+        theme::base()
     } else if hovered {
-        theme::SURFACE
+        theme::surface()
     } else {
         Color32::TRANSPARENT
     };
@@ -968,10 +1218,10 @@ fn tab(ui: &mut egui::Ui, label: &str, selected: bool, index: usize) -> (bool, b
     ui.painter().rect_filled(rect, corner, fill);
     if selected {
         let line = Rect::from_min_size(rect.min, Vec2::new(rect.width(), 2.0));
-        ui.painter().rect_filled(line, CornerRadius { nw: 8, ne: 8, sw: 0, se: 0 }, theme::ACCENT);
+        ui.painter().rect_filled(line, CornerRadius { nw: 8, ne: 8, sw: 0, se: 0 }, theme::accent());
     }
 
-    let color = if selected { theme::TEXT } else { theme::SUBTEXT };
+    let color = if selected { theme::text() } else { theme::subtext() };
     ui.painter().galley(Pos2::new(rect.min.x + 12.0, rect.center().y - galley.size().y / 2.0 + 1.0), galley, color);
 
     let close_rect = Rect::from_center_size(Pos2::new(rect.max.x - 18.0, rect.center().y + 1.0), Vec2::splat(20.0));
@@ -979,7 +1229,7 @@ fn tab(ui: &mut egui::Ui, label: &str, selected: bool, index: usize) -> (bool, b
     if selected || hovered {
         let close = ui.interact(close_rect, ui.auto_id_with(("tab-close", index)), Sense::click());
         if close.hovered() {
-            ui.painter().rect_filled(close_rect, CornerRadius::same(4), theme::SELECTION);
+            ui.painter().rect_filled(close_rect, CornerRadius::same(4), theme::selection());
         }
         ui.painter().text(close_rect.center(), Align2::CENTER_CENTER, "×", FontId::proportional(15.0), color);
         close_clicked = close.on_hover_text("Cerrar pestaña").clicked();
@@ -990,6 +1240,8 @@ fn tab(ui: &mut egui::Ui, label: &str, selected: bool, index: usize) -> (bool, b
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        self.sync_theme(&ctx);
+        self.remember_window_size(&ctx);
 
         self.sidebar(ui);
 
@@ -997,10 +1249,12 @@ impl eframe::App for App {
         let mut close = None;
         let mut new_local = false;
         let mut files_tab: Option<i64> = None;
+        let mut split: Option<Dir> = None;
+        let mut close_pane = false;
         Panel::top("tabs")
             .exact_size(TAB_BAR_HEIGHT)
             .show_separator_line(false)
-            .frame(Frame::NONE.fill(theme::MANTLE).inner_margin(Margin { left: 8, right: 8, top: 6, bottom: 0 }))
+            .frame(Frame::NONE.fill(theme::mantle()).inner_margin(Margin { left: 8, right: 8, top: 6, bottom: 0 }))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 2.0;
@@ -1018,6 +1272,23 @@ impl eframe::App for App {
                     if plus.on_hover_text("Nueva pestaña").clicked() {
                         new_local = true;
                     }
+                    if self.tabs.get(self.active).is_some_and(|t| matches!(t.body, Body::Terminal { .. })) {
+                        ui.add_space(8.0);
+                        ui.menu_button(RichText::new("Dividir").small(), |ui| {
+                            if ui.button("A la derecha  (Ctrl+Shift+D)").clicked() {
+                                split = Some(Dir::Horizontal);
+                                ui.close();
+                            }
+                            if ui.button("Hacia abajo  (Ctrl+Shift+E)").clicked() {
+                                split = Some(Dir::Vertical);
+                                ui.close();
+                            }
+                            if ui.button("Cerrar panel  (Ctrl+Shift+W)").clicked() {
+                                close_pane = true;
+                                ui.close();
+                            }
+                        });
+                    }
                     if let Some(TabKind::Connection(id)) = self.tabs.get(self.active).map(|t| t.kind) {
                         ui.add_space(8.0);
                         let files = Button::new(RichText::new("Archivos").small()).fill(Color32::TRANSPARENT);
@@ -1030,6 +1301,12 @@ impl eframe::App for App {
 
         if let Some(i) = activate {
             self.active = i;
+        }
+        if let Some(dir) = split {
+            self.split_active(dir);
+        }
+        if close_pane {
+            self.close_focused_pane();
         }
         if let Some(id) = files_tab {
             if let Some(connection) = self.connections.iter().find(|c| c.id == Some(id)).cloned() {
@@ -1044,12 +1321,12 @@ impl eframe::App for App {
         }
 
         let area = ui.available_rect_before_wrap();
-        ui.painter().rect_filled(area, CornerRadius::ZERO, theme::BASE);
+        ui.painter().rect_filled(area, CornerRadius::ZERO, theme::base());
         let text_area = area.shrink(PADDING);
 
         // Zoom del terminal: Ctrl+= / Ctrl+- / Ctrl+0, reservados y no enviados a la aplicación.
         let zoom = ctx.input_mut(|i| {
-            let mut next = self.font_size;
+            let mut next = self.settings.font_size;
             if i.consume_key(Modifiers::CTRL, Key::Equals)
                 || i.consume_key(Modifiers::CTRL, Key::Plus)
                 || i.consume_key(Modifiers::CTRL | Modifiers::SHIFT, Key::Equals)
@@ -1067,7 +1344,7 @@ impl eframe::App for App {
         self.set_font_size(zoom);
 
         // Con el tamaño real de la zona de terminal, las sesiones nuevas arrancan sin reajuste.
-        self.grid = pane::grid_for(ui, text_area, self.font_size);
+        self.grid = pane::grid_for(ui, text_area, self.settings.font_size);
         let tabs_before = self.tabs.len();
         self.drive_pending();
         if self.tabs.len() != tabs_before {
@@ -1083,15 +1360,76 @@ impl eframe::App for App {
         let mut reconnect = None;
         if !self.tabs.is_empty() {
             let active = self.active.min(self.tabs.len() - 1);
-            let input_enabled = self.dialog.is_none() && self.host_keys.is_empty();
-            let font_size = self.font_size;
+            let input_enabled = self.dialog.is_none() && self.pending_ui.is_empty();
+            let font_size = self.settings.font_size;
             let mut disconnected = false;
+            let mut request = None;
             match &mut self.tabs[active].body {
-                Body::Terminal { pane, .. } => {
-                    pane.show(ui, text_area, input_enabled, font_size);
-                    disconnected = pane.session.is_disconnected();
+                Body::Terminal { panes, focused, .. } => {
+                    let gap = if panes.len() > 1 { SPLIT_GAP } else { 0.0 };
+                    let (leaves, handles) = panes.layout(text_area, gap);
+
+                    // Arrastrar las asas redimensiona las divisiones.
+                    let mut ratios = Vec::new();
+                    for (index, handle) in handles.iter().enumerate() {
+                        let id = ui.scope_id().with(("split-handle", active, index));
+                        let response = ui.interact(handle.rect, id, Sense::drag());
+                        let icon = match handle.dir {
+                            Dir::Horizontal => egui::CursorIcon::ResizeHorizontal,
+                            Dir::Vertical => egui::CursorIcon::ResizeVertical,
+                        };
+                        if response.hovered() || response.dragged() {
+                            ctx.set_cursor_icon(icon);
+                        }
+                        if let (true, Some(pointer)) = (response.dragged(), response.interact_pointer_pos()) {
+                            ratios.push((handle.path.clone(), handle.ratio_at(pointer)));
+                        }
+                        let line = match handle.dir {
+                            Dir::Horizontal => Rect::from_center_size(handle.rect.center(), Vec2::new(2.0, handle.rect.height())),
+                            Dir::Vertical => Rect::from_center_size(handle.rect.center(), Vec2::new(handle.rect.width(), 2.0)),
+                        };
+                        let color = if response.hovered() || response.dragged() { theme::accent() } else { theme::surface() };
+                        ui.painter().rect_filled(line, CornerRadius::same(1), color);
+                    }
+                    for (path, ratio) in ratios {
+                        panes.set_ratio(&path, ratio);
+                    }
+
+                    // Un clic en un panel le da el foco.
+                    let pressed = ctx.input(|i| i.pointer.primary_pressed().then(|| i.pointer.interact_pos()).flatten());
+                    if let Some(position) = pressed {
+                        if let Some((id, _)) = leaves.iter().find(|(_, rect)| rect.contains(position)) {
+                            *focused = *id;
+                        }
+                    }
+
+                    for (id, rect) in &leaves {
+                        if let Some(pane) = panes.get_mut(*id) {
+                            pane.show(ui, *rect, input_enabled && *id == *focused, font_size);
+                        }
+                    }
+                    if leaves.len() > 1 {
+                        if let Some((_, rect)) = leaves.iter().find(|(id, _)| id == focused) {
+                            ui.painter().rect_stroke(
+                                rect.expand(4.0),
+                                CornerRadius::same(4),
+                                egui::Stroke::new(1.5, theme::accent().gamma_multiply(0.6)),
+                                egui::StrokeKind::Outside,
+                            );
+                        }
+                    }
+                    if let Some(pane) = panes.get_mut(*focused) {
+                        disconnected = pane.session.is_disconnected();
+                        request = pane.take_request();
+                    }
                 }
                 Body::Explorer(explorer) => explorer.show(ui, area.shrink2(Vec2::new(8.0, 8.0))),
+            }
+            match request {
+                Some(PaneRequest::SplitRight) => self.split_active(Dir::Horizontal),
+                Some(PaneRequest::SplitDown) => self.split_active(Dir::Vertical),
+                Some(PaneRequest::Close) => self.close_focused_pane(),
+                None => {}
             }
 
             let title = self.tabs[active].title();
@@ -1110,7 +1448,7 @@ impl eframe::App for App {
                         Frame::popup(ui.style()).inner_margin(Margin::symmetric(14, 10)).show(ui, |ui| {
                             ui.horizontal(|ui| {
                                 ui.label("Sesión desconectada");
-                                let button = Button::new(RichText::new("Reconectar").color(theme::BASE)).fill(theme::ACCENT);
+                                let button = Button::new(RichText::new("Reconectar").color(theme::base())).fill(theme::accent());
                                 clicked = ui.add(button).clicked();
                             });
                         });

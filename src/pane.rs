@@ -1,5 +1,8 @@
 use alacritty_terminal::grid::{Dimensions, Scroll};
-use alacritty_terminal::index::{Column, Point, Side};
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
+
+use alacritty_terminal::index::{Column, Line, Point, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::{point_to_viewport, viewport_to_point, TermMode};
@@ -8,15 +11,15 @@ use eframe::egui::{
     self, Align2, Color32, CornerRadius, Event, EventFilter, FontFamily, FontId, Key, Pos2, Rect, Sense,
     Stroke, StrokeKind, Vec2,
 };
+use alacritty_terminal::Term;
 
 use crate::keys;
-use crate::term::Session;
+use crate::mouse::{self, Button as MouseButton, Kind as MouseKind, Mods as MouseMods};
+use crate::search;
+use crate::term::{Proxy, Session};
 use crate::theme;
 
 pub const PADDING: f32 = 12.0;
-pub const DEFAULT_FONT_SIZE: f32 = 15.0;
-pub const MIN_FONT_SIZE: f32 = 9.0;
-pub const MAX_FONT_SIZE: f32 = 32.0;
 
 pub fn bold_family() -> FontFamily {
     FontFamily::Name("mono-bold".into())
@@ -36,16 +39,76 @@ pub fn grid_for(ui: &egui::Ui, area: Rect, font_size: f32) -> (usize, usize) {
     ((area.width() / cell_w).floor().max(1.0) as usize, (area.height() / cell_h).floor().max(1.0) as usize)
 }
 
+struct LineMatch {
+    line: i32,
+    start: usize,
+    end: usize,
+}
+
+struct SearchState {
+    query: String,
+    searched: String,
+    matches: Vec<LineMatch>,
+    current: usize,
+    last_run: Instant,
+    focus: bool,
+}
+
+struct LinkHit {
+    line: i32,
+    start: usize,
+    end: usize,
+    url: String,
+}
+
+/// Texto de una fila y, para cada carácter, la columna donde empieza.
+fn line_text(term: &Term<Proxy>, line: i32) -> (String, Vec<usize>) {
+    let mut text = String::new();
+    let mut columns = Vec::new();
+    let row = &term.grid()[Line(line)];
+    for column in 0..term.columns() {
+        let cell = &row[Column(column)];
+        if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
+            continue;
+        }
+        text.push(if cell.c == '\0' { ' ' } else { cell.c });
+        columns.push(column);
+    }
+    (text, columns)
+}
+
+/// Solo se abren enlaces web o de correo.
+fn is_openable(url: &str) -> bool {
+    ["http://", "https://", "mailto:"].iter().any(|scheme| url.starts_with(scheme))
+}
+
+/// Acciones que el usuario pide con atajos sobre un panel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PaneRequest {
+    SplitRight,
+    SplitDown,
+    Close,
+}
+
 /// Vista de un terminal: pinta la rejilla de una sesión y le envía la entrada.
 pub struct Pane {
+    id: u64,
+    request: Option<PaneRequest>,
     pub session: Session,
     debug_keys: bool,
     input_enabled: bool,
+    held: Option<MouseButton>,
+    last_cell: Option<(usize, usize)>,
+    hover_cell: (usize, usize),
+    window_focused: bool,
+    search: Option<SearchState>,
+    link: Option<LinkHit>,
+    epoch: Instant,
 }
 
 impl Pane {
-    pub fn new(session: Session, debug_keys: bool) -> Self {
-        Self { session, debug_keys, input_enabled: true }
+    pub fn new(session: Session, debug_keys: bool, id: u64) -> Self {
+        Self { id, request: None, session, debug_keys, input_enabled: true, held: None, last_cell: None, hover_cell: (0, 0), window_focused: true, search: None, link: None, epoch: Instant::now() }
     }
 
     /// Escribe `text` como un pegado (con pegado entre corchetes si la aplicación lo pidió).
@@ -63,6 +126,10 @@ impl Pane {
     /// Texto seleccionado con el ratón, si lo hay.
     pub fn selection_text(&self) -> Option<String> {
         self.session.term.lock().unwrap().selection_to_string().filter(|t| !t.is_empty())
+    }
+
+    pub fn take_request(&mut self) -> Option<PaneRequest> {
+        self.request.take()
     }
 
     pub fn title(&self) -> String {
@@ -88,9 +155,9 @@ impl Pane {
         let rows = (area.height() / cell_h).floor().max(1.0) as usize;
         self.session.resize(cols, rows);
 
-        let id = ui.scope_id().with("terminal");
+        let id = ui.scope_id().with(("terminal", self.id));
         let response = ui.interact(area, id, Sense::click_and_drag());
-        if self.input_enabled {
+        if self.input_enabled && self.search.is_none() {
             ui.memory_mut(|m| m.request_focus(id));
         }
         ui.memory_mut(|m| {
@@ -110,7 +177,19 @@ impl Pane {
             (point, side)
         };
 
-        {
+        let mode = *self.session.term.lock().unwrap().mode();
+        let shift = ui.input(|i| i.modifiers.shift);
+        // Con Mayús se salta el reporte y se puede seleccionar texto aunque la aplicación use el ratón.
+        let reporting = self.input_enabled && mouse::is_reporting(mode) && !shift;
+        self.send_focus_events(ui, mode);
+        if reporting {
+            self.report_mouse(ui, area, (cell_w, cell_h), (cols, rows), mode);
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Default);
+        } else {
+            self.held = None;
+        }
+
+        if !reporting {
             let mut term = self.session.term.lock().unwrap();
             let offset = term.grid().display_offset();
             if let Some(pos) = response.interact_pointer_pos() {
@@ -129,12 +208,29 @@ impl Pane {
             }
         }
 
-        if self.input_enabled {
-            self.handle_scroll(ui, cell_h);
-            self.handle_input(ui);
+        self.update_link(ui, area, (cell_w, cell_h), (cols, rows), reporting);
+        if let Some(link) = &self.link {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            if response.clicked() && is_openable(&link.url) {
+                let _ = open::that_detached(&link.url);
+            }
         }
-        self.paint_grid(ui, area, &font, &bold, cell_w, cell_h);
+
+        let searching = self.search.is_some();
+        if self.input_enabled {
+            self.handle_scroll(ui, cell_h, reporting);
+            if !searching {
+                self.handle_input(ui);
+            }
+        }
+        if self.window_focused && self.session.term.lock().unwrap().cursor_style().blinking {
+            ui.ctx().request_repaint_after(Duration::from_millis(265));
+        }
+        self.refresh_search();
+        let highlights = self.highlights(rows);
+        self.paint_grid(ui, area, &font, &bold, cell_w, cell_h, &highlights);
         self.scrollbar(ui, area, rows);
+        self.search_bar(ui, area);
     }
 
     /// Barra de scroll sobre el historial; solo aparece si lo hay. Se arrastra con el ratón.
@@ -152,7 +248,7 @@ impl Pane {
         let thumb_top = track.min.y + travel * (1.0 - offset as f32 / history as f32);
 
         let hit = track.expand2(Vec2::new(4.0, 0.0));
-        let response = ui.interact(hit, ui.scope_id().with("scrollbar"), Sense::click_and_drag());
+        let response = ui.interact(hit, ui.scope_id().with(("scrollbar", self.id)), Sense::click_and_drag());
         if let Some(pos) = response.interact_pointer_pos() {
             if response.dragged() || response.is_pointer_button_down_on() {
                 let ratio = ((pos.y - track.min.y - thumb_len / 2.0) / travel).clamp(0.0, 1.0);
@@ -161,15 +257,254 @@ impl Pane {
             }
         }
         let active = response.hovered() || response.dragged();
-        let color = if active { theme::SUBTEXT } else { theme::SELECTION };
+        let color = if active { theme::subtext() } else { theme::selection() };
         let thumb = Rect::from_min_size(Pos2::new(track.min.x, thumb_top), Vec2::new(track.width(), thumb_len));
         ui.painter().rect_filled(thumb, CornerRadius::same(3), color);
     }
 
-    fn handle_scroll(&mut self, ui: &egui::Ui, cell_h: f32) {
+    pub fn toggle_search(&mut self) {
+        self.search = match self.search {
+            Some(_) => None,
+            None => Some(SearchState {
+                query: String::new(),
+                searched: String::new(),
+                matches: Vec::new(),
+                current: 0,
+                last_run: Instant::now(),
+                focus: true,
+            }),
+        };
+    }
+
+    /// Recalcula las coincidencias cuando cambia la búsqueda y, mientras haya salida nueva, cada poco.
+    fn refresh_search(&mut self) {
+        let Some(state) = &self.search else { return };
+        if state.query == state.searched && state.last_run.elapsed() < Duration::from_millis(800) {
+            return;
+        }
+        let query = state.query.clone();
+        let changed = query != state.searched;
+        let mut matches = Vec::new();
+        if !query.is_empty() {
+            let term = self.session.term.lock().unwrap();
+            let (top, bottom) = (term.topmost_line().0, term.bottommost_line().0);
+            'lines: for line in top..=bottom {
+                let (text, columns) = line_text(&term, line);
+                for (start, end) in search::find(&text, &query) {
+                    matches.push(LineMatch { line, start: columns[start], end: columns[end - 1] + 1 });
+                    if matches.len() >= 5000 {
+                        break 'lines;
+                    }
+                }
+            }
+        }
+        let Some(state) = &mut self.search else { return };
+        state.searched = query;
+        state.last_run = Instant::now();
+        state.current = if changed { matches.len().saturating_sub(1) } else { state.current.min(matches.len().saturating_sub(1)) };
+        let target = matches.get(state.current).map(|m| m.line);
+        state.matches = matches;
+        if changed {
+            if let Some(line) = target {
+                self.reveal(line);
+            }
+        }
+    }
+
+    /// Desplaza el historial para que `line` quede visible.
+    fn reveal(&mut self, line: i32) {
+        let mut term = self.session.term.lock().unwrap();
+        let rows = term.screen_lines() as i32;
+        let history = term.history_size() as i32;
+        let offset = term.grid().display_offset() as i32;
+        let (top, bottom) = (-offset, -offset + rows - 1);
+        if line < top || line > bottom {
+            let wanted = (-line + rows / 2).clamp(0, history);
+            term.scroll_display(Scroll::Delta(wanted - offset));
+        }
+    }
+
+    fn step_search(&mut self, forward: bool) {
+        let Some(state) = &mut self.search else { return };
+        if state.matches.is_empty() {
+            return;
+        }
+        let count = state.matches.len();
+        state.current = if forward { (state.current + 1) % count } else { (state.current + count - 1) % count };
+        let line = state.matches[state.current].line;
+        self.reveal(line);
+    }
+
+    /// Coincidencias visibles por línea: columnas inicial y final, y si es la actual.
+    fn highlights(&self, rows: usize) -> HashMap<i32, Vec<(usize, usize, bool)>> {
+        let mut map: HashMap<i32, Vec<(usize, usize, bool)>> = HashMap::new();
+        let Some(state) = &self.search else { return map };
+        let offset = self.session.term.lock().unwrap().grid().display_offset() as i32;
+        let (top, bottom) = (-offset, -offset + rows as i32 - 1);
+        for (index, found) in state.matches.iter().enumerate() {
+            if found.line >= top && found.line <= bottom {
+                map.entry(found.line).or_default().push((found.start, found.end, index == state.current));
+            }
+        }
+        map
+    }
+
+    fn search_bar(&mut self, ui: &egui::Ui, area: Rect) {
+        let Some(state) = &mut self.search else { return };
+        let mut close = false;
+        let mut step: Option<bool> = None;
+        egui::Area::new(egui::Id::NULL.with(("search-bar", self.id)))
+            .pivot(Align2::RIGHT_TOP)
+            .fixed_pos(Pos2::new(area.max.x - 6.0, area.min.y + 4.0))
+            .show(ui.ctx(), |ui| {
+                egui::Frame::popup(ui.style()).inner_margin(egui::Margin::symmetric(10, 8)).show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        let field = ui.add(egui::TextEdit::singleline(&mut state.query).hint_text("Buscar").desired_width(190.0));
+                        if state.focus {
+                            field.request_focus();
+                            state.focus = false;
+                        }
+                        let count = if state.query.is_empty() {
+                            String::new()
+                        } else if state.matches.is_empty() {
+                            "Sin resultados".to_string()
+                        } else {
+                            format!("{} de {}", state.current + 1, state.matches.len())
+                        };
+                        ui.label(egui::RichText::new(count).small().color(theme::subtext()));
+                        let small = |text: &str| egui::Button::new(egui::RichText::new(text).small()).fill(Color32::TRANSPARENT);
+                        if ui.add(small("Anterior")).clicked() {
+                            step = Some(false);
+                        }
+                        if ui.add(small("Siguiente")).clicked() {
+                            step = Some(true);
+                        }
+                        if ui.add(small("Cerrar")).clicked() {
+                            close = true;
+                        }
+                        if field.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
+                            step = Some(!ui.input(|i| i.modifiers.shift));
+                            field.request_focus();
+                        }
+                    });
+                });
+            });
+        if ui.input(|i| i.key_pressed(Key::Escape)) {
+            close = true;
+        }
+        if let Some(forward) = step {
+            self.step_search(forward);
+        }
+        if close {
+            self.search = None;
+        }
+    }
+
+    /// Enlace bajo el puntero (con Ctrl pulsado): hipervínculo OSC 8 o una URL en el texto.
+    fn update_link(&mut self, ui: &egui::Ui, area: Rect, (cell_w, cell_h): (f32, f32), (cols, rows): (usize, usize), reporting: bool) {
+        self.link = None;
+        let (ctrl, pos) = ui.input(|i| (i.modifiers.ctrl, i.pointer.hover_pos()));
+        let Some(pos) = pos.filter(|p| ctrl && !reporting && area.contains(*p)) else { return };
+        let col = ((pos.x - area.min.x) / cell_w).floor().clamp(0.0, cols as f32 - 1.0) as usize;
+        let row = ((pos.y - area.min.y) / cell_h).floor().clamp(0.0, rows as f32 - 1.0) as usize;
+        let term = self.session.term.lock().unwrap();
+        let line = row as i32 - term.grid().display_offset() as i32;
+
+        let hyperlink = term.grid()[Line(line)][Column(col)].hyperlink().map(|h| h.uri().to_string());
+        if let Some(url) = hyperlink {
+            let same = |c: usize| term.grid()[Line(line)][Column(c)].hyperlink().is_some_and(|h| h.uri() == url);
+            let (mut start, mut end) = (col, col + 1);
+            while start > 0 && same(start - 1) {
+                start -= 1;
+            }
+            while end < cols && same(end) {
+                end += 1;
+            }
+            self.link = Some(LinkHit { line, start, end, url });
+            return;
+        }
+
+        let (text, columns) = line_text(&term, line);
+        for (start, end, url) in search::find_urls(&text) {
+            let (first, last) = (columns[start], columns[end - 1] + 1);
+            if (first..last).contains(&col) {
+                self.link = Some(LinkHit { line, start: first, end: last, url });
+                return;
+            }
+        }
+    }
+
+    /// Avisa a la aplicación cuando la ventana gana o pierde el foco (modo 1004).
+    fn send_focus_events(&mut self, ui: &egui::Ui, mode: TermMode) {
+        let focused = ui.input(|i| i.focused);
+        if focused != self.window_focused {
+            self.window_focused = focused;
+            if mode.contains(TermMode::FOCUS_IN_OUT) {
+                self.session.write(if focused { b"\x1b[I" } else { b"\x1b[O" });
+            }
+        }
+    }
+
+    /// Envía a la aplicación los pulsados, soltados y movimientos del ratón sobre el terminal.
+    fn report_mouse(&mut self, ui: &egui::Ui, area: Rect, (cell_w, cell_h): (f32, f32), (cols, rows): (usize, usize), mode: TermMode) {
+        let cell_at = |pos: Pos2| {
+            let col = ((pos.x - area.min.x) / cell_w).floor().clamp(0.0, cols as f32 - 1.0) as usize;
+            let row = ((pos.y - area.min.y) / cell_h).floor().clamp(0.0, rows as f32 - 1.0) as usize;
+            (col, row)
+        };
+        let mods = mouse_mods(ui);
+        let events = ui.input(|i| i.events.clone());
+        let mut out: Vec<u8> = Vec::new();
+        for event in events {
+            match event {
+                Event::PointerButton { pos, button, pressed, .. } => {
+                    let Some(button) = mouse_button(button) else { continue };
+                    let inside = area.contains(pos);
+                    let (col, row) = cell_at(pos);
+                    self.hover_cell = (col, row);
+                    if pressed && inside {
+                        self.held = Some(button);
+                        self.last_cell = Some((col, row));
+                        out.extend(mouse::encode(MouseKind::Press(button), col, row, mods, mode).unwrap_or_default());
+                    } else if !pressed && self.held == Some(button) {
+                        self.held = None;
+                        out.extend(mouse::encode(MouseKind::Release(button), col, row, mods, mode).unwrap_or_default());
+                    }
+                }
+                Event::PointerMoved(pos) => {
+                    if !area.contains(pos) && self.held.is_none() {
+                        continue;
+                    }
+                    let cell = cell_at(pos);
+                    self.hover_cell = cell;
+                    if self.last_cell != Some(cell) {
+                        self.last_cell = Some(cell);
+                        out.extend(mouse::encode(MouseKind::Motion(self.held), cell.0, cell.1, mods, mode).unwrap_or_default());
+                    }
+                }
+                _ => {}
+            }
+        }
+        if !out.is_empty() {
+            self.session.write(&out);
+        }
+    }
+
+    fn handle_scroll(&mut self, ui: &egui::Ui, cell_h: f32, reporting: bool) {
         let dy = ui.input(|i| i.smooth_scroll_delta.y);
         let lines = (dy / cell_h).round() as i32;
         if lines == 0 {
+            return;
+        }
+        if reporting {
+            let mode = *self.session.term.lock().unwrap().mode();
+            let (col, row) = self.hover_cell;
+            let kind = if lines > 0 { MouseKind::WheelUp } else { MouseKind::WheelDown };
+            if let Some(bytes) = mouse::encode(kind, col, row, mouse_mods(ui), mode) {
+                for _ in 0..lines.unsigned_abs() {
+                    self.session.write(&bytes);
+                }
+            }
             return;
         }
         let mut term = self.session.term.lock().unwrap();
@@ -199,9 +534,17 @@ impl Pane {
         for event in &events {
             match event {
                 Event::Key { key, pressed, modifiers, repeat, .. } => {
-                    let reserved = modifiers.ctrl && modifiers.shift && matches!(key, Key::C | Key::V);
+                    let reserved = modifiers.ctrl && modifiers.shift && matches!(key, Key::C | Key::V | Key::F | Key::D | Key::E | Key::W);
                     if reserved {
-                        if *pressed && *key == Key::C {
+                        if *pressed && matches!(key, Key::D | Key::E | Key::W) {
+                            self.request = Some(match key {
+                                Key::D => PaneRequest::SplitRight,
+                                Key::E => PaneRequest::SplitDown,
+                                _ => PaneRequest::Close,
+                            });
+                        } else if *pressed && *key == Key::F {
+                            self.toggle_search();
+                        } else if *pressed && *key == Key::C {
                             self.copy_selection(ui);
                         } else if *pressed && *key == Key::V {
                             if let Some(text) = clipboard_text() {
@@ -242,14 +585,30 @@ impl Pane {
         }
     }
 
-    fn paint_grid(&self, ui: &egui::Ui, area: Rect, font: &FontId, bold: &FontId, cell_w: f32, cell_h: f32) {
+    fn paint_grid(
+        &self,
+        ui: &egui::Ui,
+        area: Rect,
+        font: &FontId,
+        bold: &FontId,
+        cell_w: f32,
+        cell_h: f32,
+        highlights: &HashMap<i32, Vec<(usize, usize, bool)>>,
+    ) {
         let ppp = ui.ctx().pixels_per_point();
         let painter = ui.painter_at(area.expand(PADDING));
         let term = self.session.term.lock().unwrap();
         let content = term.renderable_content();
         let offset = content.display_offset;
         let cursor = content.cursor;
-        let cursor_visible = offset == 0 && cursor.shape != CursorShape::Hidden;
+        // Sin foco, el cursor se dibuja hueco; con parpadeo, se apaga cada medio segundo.
+        let shape = match cursor.shape {
+            CursorShape::Hidden => CursorShape::Hidden,
+            shape if self.window_focused && self.input_enabled => shape,
+            _ => CursorShape::HollowBlock,
+        };
+        let blink_on = !(term.cursor_style().blinking && self.window_focused && self.input_enabled) || self.epoch.elapsed().as_millis() / 530 % 2 == 0;
+        let cursor_visible = offset == 0 && shape != CursorShape::Hidden && blink_on;
 
         let cell_rect = |line: usize, col: usize, cols: usize| {
             let x0 = area.min.x + col as f32 * cell_w;
@@ -287,19 +646,30 @@ impl Pane {
                 std::mem::swap(&mut fg, &mut bg);
             }
             let selected = content.selection.is_some_and(|s| s.contains(indexed.point));
-            let at_cursor = cursor_visible && indexed.point == cursor.point;
+            let at_cursor = cursor_visible && shape == CursorShape::Block && indexed.point == cursor.point;
+
+            let found = highlights.get(&indexed.point.line.0).and_then(|ranges| {
+                ranges.iter().find(|(start, end, _)| (*start..*end).contains(&indexed.point.column.0)).map(|r| r.2)
+            });
 
             let fill = if at_cursor {
-                fg = theme::BASE;
-                Some(theme::CURSOR)
+                fg = theme::base();
+                Some(theme::cursor())
+            } else if let Some(current) = found {
+                if current {
+                    fg = theme::base();
+                    Some(theme::accent())
+                } else {
+                    Some(theme::accent().gamma_multiply(0.35))
+                }
             } else if selected {
-                Some(theme::SELECTION)
-            } else if bg != theme::BASE {
+                Some(theme::selection())
+            } else if bg != theme::base() {
                 Some(bg)
             } else {
                 None
             };
-            let shown_bg = fill.unwrap_or(theme::BASE);
+            let shown_bg = fill.unwrap_or(theme::base());
 
             if let Some(color) = fill {
                 let span = if wide { 2 } else { 1 };
@@ -354,12 +724,38 @@ impl Pane {
             }
         }
 
-        if cursor_visible && matches!(cursor.shape, CursorShape::HollowBlock) {
+        if let Some(link) = &self.link {
+            let viewport_line = link.line + offset as i32;
+            if viewport_line >= 0 {
+                let rect = cell_rect(viewport_line as usize, link.start, link.end - link.start);
+                let y = rect.max.y - 1.0 / ppp;
+                painter.rect_filled(
+                    Rect::from_min_max(Pos2::new(rect.min.x, y - 1.0 / ppp), Pos2::new(rect.max.x, y + 1.0 / ppp)),
+                    CornerRadius::ZERO,
+                    theme::accent(),
+                );
+            }
+        }
+
+        if cursor_visible && matches!(shape, CursorShape::Underline | CursorShape::Beam) {
+            if let Some(vp) = point_to_viewport(offset, cursor.point) {
+                let rect = cell_rect(vp.line, vp.column.0, 1);
+                let thickness = (2.0 / ppp).max(rect.height() * 0.1);
+                let bar = if shape == CursorShape::Underline {
+                    Rect::from_min_max(Pos2::new(rect.min.x, rect.max.y - thickness), rect.max)
+                } else {
+                    Rect::from_min_max(rect.min, Pos2::new(rect.min.x + thickness, rect.max.y))
+                };
+                painter.rect_filled(bar, CornerRadius::ZERO, theme::cursor());
+            }
+        }
+
+        if cursor_visible && matches!(shape, CursorShape::HollowBlock) {
             if let Some(vp) = point_to_viewport(offset, cursor.point) {
                 painter.rect_stroke(
                     cell_rect(vp.line, vp.column.0, 1),
                     CornerRadius::ZERO,
-                    Stroke::new(1.0, theme::CURSOR),
+                    Stroke::new(1.0, theme::cursor()),
                     StrokeKind::Inside,
                 );
             }
@@ -483,6 +879,19 @@ fn box_segments(c: char) -> Option<(u8, u8, u8, u8)> {
         0x257F => Some((0, 0, 2, 1)),
         _ => None,
     }
+}
+
+fn mouse_button(button: egui::PointerButton) -> Option<MouseButton> {
+    match button {
+        egui::PointerButton::Primary => Some(MouseButton::Left),
+        egui::PointerButton::Middle => Some(MouseButton::Middle),
+        egui::PointerButton::Secondary => Some(MouseButton::Right),
+        _ => None,
+    }
+}
+
+fn mouse_mods(ui: &egui::Ui) -> MouseMods {
+    ui.input(|i| MouseMods { shift: i.modifiers.shift, alt: i.modifiers.alt, ctrl: i.modifiers.ctrl })
 }
 
 fn clipboard_text() -> Option<String> {

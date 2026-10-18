@@ -76,13 +76,15 @@ enum PaneAction {
     NewFolder,
     Rename,
     Delete,
+    Permissions,
     PickFolder,
 }
 
 enum Dialog {
     NewFolder { side: Side, name: String },
     Rename { side: Side, old: String, new: String },
-    ConfirmDelete { names: Vec<String> },
+    ConfirmDelete { side: Side, names: Vec<String> },
+    Permissions { name: String, mode: u32 },
     Conflict { conflict: Conflict, apply_all: bool },
     Message(String),
 }
@@ -156,6 +158,9 @@ impl Explorer {
     }
 
     fn connect(&mut self) {
+        if self.saved_remote.is_none() && !self.remote.path.is_empty() {
+            self.saved_remote = Some(self.remote.path.clone());
+        }
         *self.link.lock().unwrap() = Link::Connecting;
         let (connection, credentials) = (self.connection.clone(), self.credentials.clone());
         let (events, wake, known_hosts) = (self.ui_events.clone(), self.wake.clone(), self.known_hosts.clone());
@@ -167,7 +172,7 @@ impl Explorer {
                     *link.lock().unwrap() = Link::Ready(client);
                     inbox.lock().unwrap().push_back(Message::Connected { home });
                 }
-                Err(error) => *link.lock().unwrap() = Link::Failed(format!("{error:#}")),
+                Err(error) => *link.lock().unwrap() = Link::Failed(format!("No se pudo conectar: {error:#}")),
             }
             wake();
         });
@@ -354,6 +359,14 @@ impl Explorer {
     pub fn show(&mut self, ui: &mut egui::Ui, area: Rect) {
         let ctx = ui.ctx().clone();
         self.poll(&ctx);
+        // Sin eventos de entrada no hay fotogramas: se revisa cada segundo si la conexión sigue viva.
+        ctx.request_repaint_after(Duration::from_secs(1));
+        {
+            let mut link = self.link.lock().unwrap();
+            if matches!(&*link, Link::Ready(client) if client.is_closed()) {
+                *link = Link::Failed("Se perdió la conexión con el servidor.".into());
+            }
+        }
 
         let failure = match &*self.link.lock().unwrap() {
             Link::Failed(reason) => Some(reason.clone()),
@@ -389,7 +402,7 @@ impl Explorer {
                 Side::Local => (&mut self.local, None),
                 Side::Remote => {
                     let status = if let Some(reason) = &failure {
-                        Some(format!("No se pudo conectar: {reason}"))
+                        Some(reason.clone())
                     } else if connecting {
                         Some("Conectando…".to_string())
                     } else {
@@ -407,7 +420,7 @@ impl Explorer {
                     ui.painter().rect_stroke(
                         rect.shrink(2.0),
                         CornerRadius::same(6),
-                        egui::Stroke::new(2.0, theme::ACCENT),
+                        egui::Stroke::new(2.0, theme::accent()),
                         egui::StrokeKind::Inside,
                     );
                 }
@@ -425,7 +438,7 @@ impl Explorer {
                 .pivot(Align2::CENTER_CENTER)
                 .fixed_pos(Pos2::new(remote_rect.center().x, remote_rect.center().y))
                 .show(&ctx, |ui| {
-                    retry = ui.add(Button::new(RichText::new("Reintentar").color(theme::BASE)).fill(theme::ACCENT)).clicked();
+                    retry = ui.add(Button::new(RichText::new("Reintentar").color(theme::base())).fill(theme::accent())).clicked();
                 });
             if retry {
                 self.connect();
@@ -437,7 +450,7 @@ impl Explorer {
             let mut middle = ui.new_child(UiBuilder::new().max_rect(middle_rect.shrink(6.0)));
             middle.add_space((middle_rect.height() / 2.0 - 56.0).max(40.0));
             let width = middle.available_width();
-            let upload = Button::new(RichText::new("Subir →").color(theme::BASE)).fill(theme::ACCENT).min_size(Vec2::new(width, 32.0));
+            let upload = Button::new(RichText::new("Subir →").color(theme::base())).fill(theme::accent()).min_size(Vec2::new(width, 32.0));
             if middle.add(upload).on_hover_text("Copia la selección local al directorio remoto actual").clicked() {
                 self.copy_from(Side::Local);
             }
@@ -511,7 +524,13 @@ impl Explorer {
             PaneAction::Delete => {
                 let names: Vec<String> = state.selected.iter().cloned().collect();
                 if !names.is_empty() {
-                    self.dialog = Some(Dialog::ConfirmDelete { names });
+                    self.dialog = Some(Dialog::ConfirmDelete { side, names });
+                }
+            }
+            PaneAction::Permissions => {
+                if let Some(entry) = state.selected_entries().first() {
+                    self.dialog =
+                        Some(Dialog::Permissions { name: entry.name.clone(), mode: entry.permissions.unwrap_or(0o644) });
                 }
             }
             PaneAction::PickFolder => {
@@ -529,7 +548,7 @@ impl Explorer {
 
     fn transfers_ui(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            ui.label(RichText::new("Transferencias").small().color(theme::SUBTEXT));
+            ui.label(RichText::new("Transferencias").small().color(theme::subtext()));
             if ui.add(Button::new(RichText::new("Quitar terminadas").small()).fill(Color32::TRANSPARENT)).clicked() {
                 self.transfers.retain(|t| t.state() == TransferState::Running);
             }
@@ -549,7 +568,7 @@ impl Explorer {
                         TransferState::Failed(reason) => format!("Error: {reason}"),
                     };
                     ui.add(ProgressBar::new(if state == TransferState::Done { 1.0 } else { fraction }).desired_width(180.0));
-                    ui.label(RichText::new(text).small().color(theme::SUBTEXT));
+                    ui.label(RichText::new(text).small().color(theme::subtext()));
                     if state == TransferState::Running && ui.add(Button::new("Cancelar").fill(Color32::TRANSPARENT)).clicked() {
                         transfer.cancel();
                     }
@@ -573,8 +592,8 @@ impl Explorer {
             let buttons = |ui: &mut egui::Ui, accept: &str, outcome: &mut Outcome| {
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    let fill = if accept == "Eliminar" { theme::RED } else { theme::ACCENT };
-                    if ui.add(Button::new(RichText::new(accept).color(theme::BASE)).fill(fill)).clicked() {
+                    let fill = if accept == "Eliminar" { theme::red() } else { theme::accent() };
+                    if ui.add(Button::new(RichText::new(accept).color(theme::base())).fill(fill)).clicked() {
                         *outcome = Outcome::Accept;
                     }
                     if ui.add(Button::new("Cancelar").fill(Color32::TRANSPARENT)).clicked() {
@@ -601,15 +620,44 @@ impl Explorer {
                     }
                     buttons(ui, "Renombrar", &mut outcome);
                 }
-                Dialog::ConfirmDelete { names } => {
-                    ui.heading("Eliminar en el servidor");
-                    let text = if names.len() == 1 {
-                        format!("¿Eliminar \"{}\"? Las carpetas se borran con todo su contenido.", names[0])
+                Dialog::ConfirmDelete { side, names } => {
+                    let local = *side == Side::Local;
+                    ui.heading(if local { "Mover a la papelera" } else { "Eliminar en el servidor" });
+                    let what = if names.len() == 1 { format!("\"{}\"", names[0]) } else { format!("{} elementos", names.len()) };
+                    ui.label(if local {
+                        format!("¿Mover {what} a la papelera?")
                     } else {
-                        format!("¿Eliminar {} elementos? Las carpetas se borran con todo su contenido.", names.len())
-                    };
-                    ui.label(text);
-                    buttons(ui, "Eliminar", &mut outcome);
+                        format!("¿Eliminar {what}? Las carpetas se borran con todo su contenido y no se puede deshacer.")
+                    });
+                    buttons(ui, if local { "Mover" } else { "Eliminar" }, &mut outcome);
+                }
+                Dialog::Permissions { name, mode } => {
+                    ui.heading("Permisos");
+                    ui.label(RichText::new(name.as_str()).color(theme::subtext()));
+                    egui::Grid::new("permission-grid").num_columns(4).spacing([18.0, 6.0]).show(ui, |ui| {
+                        ui.label("");
+                        for header in ["Propietario", "Grupo", "Otros"] {
+                            ui.label(RichText::new(header).small().color(theme::subtext()));
+                        }
+                        ui.end_row();
+                        for (label, bit) in [("Leer", 0o4), ("Escribir", 0o2), ("Ejecutar", 0o1)] {
+                            ui.label(label);
+                            for shift in [6, 3, 0] {
+                                let mask = bit << shift;
+                                let mut on = *mode & mask != 0;
+                                if ui.checkbox(&mut on, "").changed() {
+                                    *mode = if on { *mode | mask } else { *mode & !mask };
+                                }
+                            }
+                            ui.end_row();
+                        }
+                    });
+                    ui.label(
+                        RichText::new(format!("{:04o}  {}", *mode & 0o7777, sftp::format_mode(*mode)))
+                            .monospace()
+                            .color(theme::subtext()),
+                    );
+                    buttons(ui, "Aplicar", &mut outcome);
                 }
                 Dialog::Conflict { conflict, apply_all } => {
                     ui.heading("El destino ya existe");
@@ -675,7 +723,7 @@ impl Explorer {
                     }
                 },
             },
-            (Outcome::Accept, Dialog::ConfirmDelete { names }) => {
+            (Outcome::Accept, Dialog::ConfirmDelete { side: Side::Remote, names }) => {
                 let paths: Vec<String> = names.iter().map(|n| sftp::join(&self.remote.path, n)).collect();
                 self.remote_task(move |session| async move {
                     for path in paths {
@@ -683,6 +731,18 @@ impl Explorer {
                     }
                     Ok(())
                 });
+            }
+            (Outcome::Accept, Dialog::ConfirmDelete { side: Side::Local, names }) => {
+                let base = PathBuf::from(&self.local.path);
+                let paths: Vec<PathBuf> = names.iter().map(|n| base.join(n)).collect();
+                if let Err(error) = trash::delete_all(paths) {
+                    self.dialog = Some(Dialog::Message(format!("No se pudo mover a la papelera: {error}")));
+                }
+                self.refresh_local();
+            }
+            (Outcome::Accept, Dialog::Permissions { name, mode }) => {
+                let path = sftp::join(&self.remote.path, &name);
+                self.remote_task(move |session| async move { sftp::set_permissions(&session, &path, mode).await });
             }
             _ => {}
         }
@@ -709,6 +769,7 @@ fn list_local(path: &Path) -> std::io::Result<Vec<Entry>> {
                 .ok()
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                 .map(|d| d.as_secs()),
+            permissions: None,
         });
     }
     sftp::sort_entries(&mut entries);
@@ -747,6 +808,7 @@ fn pane_ui(
     status: Option<&str>,
     can_delete: bool,
 ) -> Vec<PaneAction> {
+    let show_permissions = side == Side::Remote && ui.available_width() > 440.0;
     let mut actions = Vec::new();
     ui.label(RichText::new(title).font(FontId::new(14.0, crate::ui::strong_family())));
     ui.horizontal(|ui| {
@@ -768,17 +830,17 @@ fn pane_ui(
         }
     });
 
-    let list_height = (ui.available_height() - 44.0).max(60.0);
+    let list_height = (ui.available_height() - 74.0).max(60.0);
     let (list_rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), list_height), Sense::hover());
-    ui.painter().rect_filled(list_rect, CornerRadius::same(6), theme::MANTLE);
+    ui.painter().rect_filled(list_rect, CornerRadius::same(6), theme::mantle());
     let mut list_ui = ui.new_child(UiBuilder::new().max_rect(list_rect.shrink(2.0)));
 
     if let Some(message) = status.or(state.error.as_deref()) {
         list_ui.add_space(8.0);
-        list_ui.label(RichText::new(message).color(if state.error.is_some() { theme::RED } else { theme::SUBTEXT }));
+        list_ui.label(RichText::new(message).color(if state.error.is_some() { theme::red() } else { theme::subtext() }));
     } else if state.loading && state.entries.is_empty() {
         list_ui.add_space(8.0);
-        list_ui.label(RichText::new("Cargando…").color(theme::SUBTEXT));
+        list_ui.label(RichText::new("Cargando…").color(theme::subtext()));
     } else {
         let visible_names: Vec<String> = state.visible().iter().map(|e| e.name.clone()).collect();
         ScrollArea::vertical().id_salt(("explorer-list", side == Side::Remote)).auto_shrink([false, false]).show(&mut list_ui, |ui| {
@@ -786,27 +848,36 @@ fn pane_ui(
             let visible: Vec<Entry> = state.visible().into_iter().cloned().collect();
             if visible.is_empty() {
                 ui.add_space(8.0);
-                ui.label(RichText::new("Carpeta vacía").color(theme::SUBTEXT));
+                ui.label(RichText::new("Carpeta vacía").color(theme::subtext()));
             }
             for (index, entry) in visible.iter().enumerate() {
                 let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_HEIGHT), Sense::click_and_drag());
                 let selected = state.selected.contains(&entry.name);
                 if selected {
-                    ui.painter().rect_filled(rect, CornerRadius::same(4), theme::ACCENT.gamma_multiply(0.28));
+                    ui.painter().rect_filled(rect, CornerRadius::same(4), theme::accent().gamma_multiply(0.28));
                 } else if response.hovered() {
-                    ui.painter().rect_filled(rect, CornerRadius::same(4), theme::SURFACE);
+                    ui.painter().rect_filled(rect, CornerRadius::same(4), theme::surface());
                 }
                 let painter = ui.painter().with_clip_rect(rect);
                 let name = if entry.is_dir { format!("{}/", entry.name) } else { entry.name.clone() };
                 let font = FontId::new(14.0, if entry.is_dir { crate::ui::strong_family() } else { FontFamily::Proportional });
-                painter.text(Pos2::new(rect.min.x + 8.0, rect.center().y), Align2::LEFT_CENTER, name, font, theme::TEXT);
+                painter.text(Pos2::new(rect.min.x + 8.0, rect.center().y), Align2::LEFT_CENTER, name, font, theme::text());
+                if let (true, Some(mode)) = (show_permissions, entry.permissions) {
+                    painter.text(
+                        Pos2::new(rect.max.x - 250.0, rect.center().y),
+                        Align2::RIGHT_CENTER,
+                        sftp::format_mode(mode),
+                        FontId::new(12.0, FontFamily::Monospace),
+                        theme::subtext(),
+                    );
+                }
                 let size = if entry.is_dir { String::new() } else { human_size(entry.size) };
                 painter.text(
                     Pos2::new(rect.max.x - 150.0, rect.center().y),
                     Align2::RIGHT_CENTER,
                     size,
                     FontId::new(12.0, FontFamily::Proportional),
-                    theme::SUBTEXT,
+                    theme::subtext(),
                 );
                 if let Some(modified) = entry.modified {
                     painter.text(
@@ -814,7 +885,7 @@ fn pane_ui(
                         Align2::RIGHT_CENTER,
                         format_time(modified),
                         FontId::new(12.0, FontFamily::Proportional),
-                        theme::SUBTEXT,
+                        theme::subtext(),
                     );
                 }
 
@@ -850,7 +921,7 @@ fn pane_ui(
     }
 
     ui.add_space(6.0);
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 6.0;
         ui.spacing_mut().button_padding.x = 8.0;
         if ui.add(Button::new(RichText::new("Nueva carpeta").small())).clicked() {
@@ -860,7 +931,11 @@ fn pane_ui(
         if ui.add_enabled(one, Button::new(RichText::new("Renombrar").small())).clicked() {
             actions.push(PaneAction::Rename);
         }
-        if can_delete && ui.add_enabled(!state.selected.is_empty(), Button::new(RichText::new("Eliminar").small())).clicked() {
+        if side == Side::Remote && ui.add_enabled(one, Button::new(RichText::new("Permisos").small())).clicked() {
+            actions.push(PaneAction::Permissions);
+        }
+        let delete_label = if can_delete { "Eliminar" } else { "A la papelera" };
+        if ui.add_enabled(!state.selected.is_empty(), Button::new(RichText::new(delete_label).small())).clicked() {
             actions.push(PaneAction::Delete);
         }
     });
@@ -882,7 +957,7 @@ mod tests {
 
     #[test]
     fn hidden_files_are_filtered_unless_requested() {
-        let entry = |name: &str| Entry { name: name.into(), is_dir: false, size: 0, modified: None };
+        let entry = |name: &str| Entry { name: name.into(), is_dir: false, size: 0, modified: None, permissions: None };
         let mut pane = PaneState { entries: vec![entry(".bashrc"), entry("notas.txt")], ..Default::default() };
         assert_eq!(pane.visible().len(), 1);
         pane.show_hidden = true;

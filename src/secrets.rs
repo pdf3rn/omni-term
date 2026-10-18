@@ -57,7 +57,7 @@ pub fn account_for(connection_id: i64, kind: SecretKind) -> String {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SecretKind {
     Password,
     Passphrase,

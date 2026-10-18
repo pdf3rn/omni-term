@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 use alacritty_terminal::event::{Event, EventListener};
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::term::Config;
-use alacritty_terminal::vte::ansi::Processor;
+use alacritty_terminal::vte::ansi::{CursorShape, CursorStyle, Processor};
 use alacritty_terminal::Term;
 
 /// Destino de la entrada del usuario: un PTY local o un canal SSH.
@@ -34,6 +34,25 @@ impl EventListener for Proxy {
             Event::ResetTitle => self.title.lock().unwrap().clear(),
             _ => {}
         }
+    }
+}
+
+/// Opciones del emulador que el usuario puede cambiar en los ajustes.
+#[derive(Clone, Copy, Debug)]
+pub struct TermOptions {
+    pub history: usize,
+    pub cursor: CursorStyle,
+}
+
+impl Default for TermOptions {
+    fn default() -> Self {
+        Self { history: 10_000, cursor: CursorStyle { shape: CursorShape::Block, blinking: false } }
+    }
+}
+
+impl TermOptions {
+    fn config(self) -> Config {
+        Config { kitty_keyboard: true, scrolling_history: self.history, default_cursor_style: self.cursor, ..Config::default() }
     }
 }
 
@@ -98,14 +117,14 @@ impl Session {
     pub fn start(
         cols: usize,
         rows: usize,
+        options: TermOptions,
         on_output: impl Fn() + Send + Sync + 'static,
         connect: impl FnOnce(Feed) -> anyhow::Result<Arc<dyn Backend>>,
     ) -> anyhow::Result<Self> {
         let slot: BackendSlot = Arc::new(OnceLock::new());
         let title = Arc::new(Mutex::new(String::new()));
         let proxy = Proxy { backend: slot.clone(), title: title.clone() };
-        let config = Config { kitty_keyboard: true, ..Config::default() };
-        let term = Arc::new(Mutex::new(Term::new(config, &GridSize { cols, rows }, proxy)));
+        let term = Arc::new(Mutex::new(Term::new(options.config(), &GridSize { cols, rows }, proxy)));
         let exited = Arc::new(AtomicBool::new(false));
         let disconnected = Arc::new(AtomicBool::new(false));
 
@@ -120,6 +139,11 @@ impl Session {
         let _ = slot.set(Arc::downgrade(&backend));
 
         Ok(Self { term, title, exited, disconnected, backend, size: (cols, rows) })
+    }
+
+    /// Aplica ajustes nuevos a una sesión ya abierta.
+    pub fn set_options(&self, options: TermOptions) {
+        self.term.lock().unwrap().set_options(options.config());
     }
 
     pub fn has_exited(&self) -> bool {
