@@ -174,6 +174,26 @@ impl SnippetForm {
     }
 }
 
+pub struct VarsPrompt {
+    pub title: String,
+    pub body: String,
+    pub run: bool,
+    /// Nombre y valor actual de cada variable, en orden de aparición.
+    pub fields: Vec<(String, String)>,
+}
+
+impl VarsPrompt {
+    pub fn new(snippet: &Snippet, run: bool) -> Self {
+        let fields = crate::snippet_vars::variables(&snippet.body).into_iter().map(|v| (v.name, v.default)).collect();
+        Self { title: snippet.title.clone(), body: snippet.body.clone(), run, fields }
+    }
+
+    pub fn rendered(&self) -> String {
+        let values = self.fields.iter().cloned().collect();
+        crate::snippet_vars::render(&self.body, &values)
+    }
+}
+
 pub struct SecretPrompt {
     pub connection: Connection,
     /// Pestaña a reemplazar al reconectar.
@@ -200,6 +220,7 @@ pub struct UnlockPrompt {
 pub enum Dialog {
     Edit(ConnForm),
     Snippet(SnippetForm),
+    SnippetVars(VarsPrompt),
     ConfirmDeleteSnippet { id: i64, title: String },
     Secret(SecretPrompt),
     Unlock(UnlockPrompt),
@@ -260,6 +281,7 @@ pub fn show(ctx: &egui::Context, dialog: &mut Dialog, master_forced: bool) -> Ou
         match dialog {
             Dialog::Edit(form) => outcome = edit(ui, form),
             Dialog::Snippet(form) => outcome = snippet(ui, form),
+            Dialog::SnippetVars(prompt) => outcome = vars(ui, prompt),
             Dialog::ConfirmDeleteSnippet { title, .. } => {
                 ui.heading("Eliminar snippet");
                 ui.add_space(6.0);
@@ -412,6 +434,7 @@ fn snippet(ui: &mut egui::Ui, form: &mut SnippetForm) -> Outcome {
         ui.end_row();
     });
     ui.label("Contenido");
+    ui.label(RichText::new("Usa {{variable}} o {{variable=valor por defecto}}; se pedirán al insertar.").small().color(theme::SUBTEXT));
     ui.add(
         TextEdit::multiline(&mut form.body)
             .font(egui::TextStyle::Monospace)
@@ -422,6 +445,37 @@ fn snippet(ui: &mut egui::Ui, form: &mut SnippetForm) -> Outcome {
     match buttons(ui, "Guardar") {
         Some(true) => Outcome::Save,
         Some(false) => Outcome::Cancel,
+        None => Outcome::None,
+    }
+}
+
+fn vars(ui: &mut egui::Ui, prompt: &mut VarsPrompt) -> Outcome {
+    ui.heading(prompt.title.clone());
+    ui.add_space(6.0);
+    let mut submitted = false;
+    egui::Grid::new("snippet_vars").num_columns(2).spacing([10.0, 8.0]).show(ui, |ui| {
+        for (index, (name, value)) in prompt.fields.iter_mut().enumerate() {
+            ui.label(name.as_str());
+            let field = ui.add(TextEdit::singleline(value).desired_width(f32::INFINITY));
+            if index == 0 {
+                field.request_focus();
+            }
+            if field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                submitted = true;
+            }
+            ui.end_row();
+        }
+    });
+    ui.add_space(4.0);
+    ui.label(RichText::new("Resultado").small().color(theme::SUBTEXT));
+    egui::ScrollArea::vertical().max_height(120.0).show(ui, |ui| {
+        ui.label(RichText::new(prompt.rendered()).monospace().color(theme::SUBTEXT));
+    });
+    let accept = if prompt.run { "Insertar y ejecutar" } else { "Insertar" };
+    match buttons(ui, accept) {
+        Some(true) => Outcome::Submit,
+        Some(false) => Outcome::Cancel,
+        None if submitted => Outcome::Submit,
         None => Outcome::None,
     }
 }

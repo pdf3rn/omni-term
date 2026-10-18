@@ -8,7 +8,7 @@ use eframe::egui::{
 };
 use zeroize::Zeroizing;
 
-use crate::dialogs::{self, ConnForm, Dialog, Outcome, Pending, SecretPrompt, SnippetForm, UnlockPrompt};
+use crate::dialogs::{self, ConnForm, Dialog, Outcome, Pending, SecretPrompt, SnippetForm, UnlockPrompt, VarsPrompt};
 use crate::pane::{self, bold_family, Pane, DEFAULT_FONT_SIZE, MAX_FONT_SIZE, MIN_FONT_SIZE, PADDING};
 use crate::secrets::{account_for, SecretError, SecretKind, SecretStore, Secrets};
 use crate::ssh::{self, Credentials, HostKeyRequest, TunnelState, Tunnels, UiEvent};
@@ -245,6 +245,15 @@ impl App {
         self.snippets = store.list_snippets().unwrap_or_default();
     }
 
+    /// Inserta el snippet; si tiene variables, primero pide sus valores.
+    fn insert_snippet(&mut self, snippet: &Snippet, run: bool) {
+        if crate::snippet_vars::variables(&snippet.body).is_empty() {
+            self.insert_into_active(&snippet.body, run);
+        } else {
+            self.dialog = Some(Dialog::SnippetVars(VarsPrompt::new(snippet, run)));
+        }
+    }
+
     fn insert_into_active(&mut self, body: &str, run: bool) {
         match self.tabs.get(self.active) {
             Some(tab) if !tab.pane.session.is_disconnected() => tab.pane.insert_text(body, run),
@@ -359,7 +368,7 @@ impl App {
 
         match (outcome, dialog) {
             (Outcome::None, dialog) => self.dialog = Some(dialog),
-            (Outcome::Cancel, Dialog::Secret(_) | Dialog::Unlock(_) | Dialog::Edit(_) | Dialog::Snippet(_) | Dialog::ConfirmDelete { .. } | Dialog::ConfirmDeleteSnippet { .. } | Dialog::ConfirmReset(_) | Dialog::Message(_)) => {}
+            (Outcome::Cancel, Dialog::Secret(_) | Dialog::Unlock(_) | Dialog::Edit(_) | Dialog::Snippet(_) | Dialog::SnippetVars(_) | Dialog::ConfirmDelete { .. } | Dialog::ConfirmDeleteSnippet { .. } | Dialog::ConfirmReset(_) | Dialog::Message(_)) => {}
             (Outcome::Cancel, dialog) => self.dialog = Some(dialog),
             (Outcome::Trust(accepted), Dialog::HostKey(request)) => {
                 let _ = request.reply.send(accepted);
@@ -405,6 +414,10 @@ impl App {
                     }
                 }
             },
+            (Outcome::Submit, Dialog::SnippetVars(prompt)) => {
+                let text = prompt.rendered();
+                self.insert_into_active(&text, prompt.run);
+            }
             (Outcome::Delete, Dialog::ConfirmDeleteSnippet { id, .. }) => {
                 let _ = self.store.lock().unwrap().delete_snippet(id);
                 self.refresh_connections();
@@ -469,7 +482,7 @@ impl App {
         let mut delete: Option<Connection> = None;
         let mut new_snippet = false;
         let mut snippet_from_selection = false;
-        let mut insert: Option<(String, bool)> = None;
+        let mut insert: Option<(Snippet, bool)> = None;
         let mut copy: Option<String> = None;
         let mut edit_snippet: Option<Snippet> = None;
         let mut delete_snippet: Option<Snippet> = None;
@@ -663,15 +676,15 @@ impl App {
                         );
                         let response = response.on_hover_text("Clic para insertar en el terminal activo. Clic derecho: más opciones");
                         if response.clicked() {
-                            insert = Some((snippet.body.clone(), false));
+                            insert = Some((snippet.clone(), false));
                         }
                         response.context_menu(|ui| {
                             if ui.button("Insertar").clicked() {
-                                insert = Some((snippet.body.clone(), false));
+                                insert = Some((snippet.clone(), false));
                                 ui.close();
                             }
                             if ui.button("Insertar y ejecutar").clicked() {
-                                insert = Some((snippet.body.clone(), true));
+                                insert = Some((snippet.clone(), true));
                                 ui.close();
                             }
                             if ui.button("Copiar").clicked() {
@@ -703,8 +716,8 @@ impl App {
                 });
             });
 
-        if let Some((body, run)) = insert {
-            self.insert_into_active(&body, run);
+        if let Some((snippet, run)) = insert {
+            self.insert_snippet(&snippet, run);
         }
         if let Some(body) = copy {
             self.ctx.copy_text(body);

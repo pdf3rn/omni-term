@@ -4,6 +4,7 @@ mod local;
 mod pane;
 mod secrets;
 mod ssh;
+mod snippet_vars;
 mod sshconfig;
 mod store;
 mod term;
