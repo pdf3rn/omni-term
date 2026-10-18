@@ -1,0 +1,11 @@
+[package]
+name = "omniterm"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+alacritty_terminal = "0.26.0"
+anyhow = "1.0.104"
+arboard = "3.7.0"
+eframe = "0.37.0"
+portable-pty = "0.9.0"
