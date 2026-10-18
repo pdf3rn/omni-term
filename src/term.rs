@@ -1,19 +1,24 @@
-use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use alacritty_terminal::event::{Event, EventListener};
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::term::Config;
 use alacritty_terminal::vte::ansi::Processor;
 use alacritty_terminal::Term;
-use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 
-type SharedWriter = Arc<Mutex<Box<dyn Write + Send>>>;
+/// Destino de la entrada del usuario: un PTY local o un canal SSH.
+/// Quien lo implementa también alimenta la salida mediante un [`Feed`].
+pub trait Backend: Send + Sync {
+    fn write(&self, bytes: &[u8]);
+    fn resize(&self, cols: usize, rows: usize);
+}
+
+type BackendSlot = Arc<OnceLock<Weak<dyn Backend>>>;
 
 #[derive(Clone)]
 pub struct Proxy {
-    writer: SharedWriter,
+    backend: BackendSlot,
     title: Arc<Mutex<String>>,
 }
 
@@ -21,7 +26,9 @@ impl EventListener for Proxy {
     fn send_event(&self, event: Event) {
         match event {
             Event::PtyWrite(text) => {
-                let _ = self.writer.lock().unwrap().write_all(text.as_bytes());
+                if let Some(backend) = self.backend.get().and_then(Weak::upgrade) {
+                    backend.write(text.as_bytes());
+                }
             }
             Event::Title(title) => *self.title.lock().unwrap() = title,
             Event::ResetTitle => self.title.lock().unwrap().clear(),
@@ -49,59 +56,59 @@ impl Dimensions for GridSize {
     }
 }
 
+/// Entrada de salida del terminal: el backend la llama con los bytes que recibe.
+pub struct Feed {
+    term: Arc<Mutex<Term<Proxy>>>,
+    processor: Processor,
+    exited: Arc<AtomicBool>,
+    on_output: Arc<dyn Fn() + Send + Sync>,
+}
+
+impl Feed {
+    pub fn feed(&mut self, bytes: &[u8]) {
+        self.processor.advance(&mut *self.term.lock().unwrap(), bytes);
+        (self.on_output)();
+    }
+
+    pub fn close(&mut self) {
+        self.exited.store(true, Ordering::SeqCst);
+        (self.on_output)();
+    }
+}
+
 pub struct Session {
     pub term: Arc<Mutex<Term<Proxy>>>,
     pub title: Arc<Mutex<String>>,
     exited: Arc<AtomicBool>,
-    writer: SharedWriter,
-    master: Box<dyn MasterPty + Send>,
-    child: Box<dyn Child + Send + Sync>,
+    backend: Arc<dyn Backend>,
     size: (usize, usize),
 }
 
 impl Session {
-    pub fn spawn(cols: usize, rows: usize, on_output: impl Fn() + Send + 'static) -> anyhow::Result<Self> {
-        let pair = native_pty_system().openpty(PtySize {
-            rows: rows as u16,
-            cols: cols as u16,
-            pixel_width: 0,
-            pixel_height: 0,
-        })?;
-
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| default_shell().into());
-        let mut cmd = CommandBuilder::new(shell);
-        cmd.env("TERM", "xterm-256color");
-        cmd.env("COLORTERM", "truecolor");
-        if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
-            cmd.cwd(home);
-        }
-        let child = pair.slave.spawn_command(cmd)?;
-        drop(pair.slave);
-
-        let writer: SharedWriter = Arc::new(Mutex::new(pair.master.take_writer()?));
+    /// Crea el terminal y deja que `connect` arranque el backend con el que alimentarlo.
+    pub fn start(
+        cols: usize,
+        rows: usize,
+        on_output: impl Fn() + Send + Sync + 'static,
+        connect: impl FnOnce(Feed) -> anyhow::Result<Arc<dyn Backend>>,
+    ) -> anyhow::Result<Self> {
+        let slot: BackendSlot = Arc::new(OnceLock::new());
         let title = Arc::new(Mutex::new(String::new()));
-        let proxy = Proxy { writer: writer.clone(), title: title.clone() };
-        let term = Arc::new(Mutex::new(Term::new(Config { kitty_keyboard: true, ..Config::default() }, &GridSize { cols, rows }, proxy)));
+        let proxy = Proxy { backend: slot.clone(), title: title.clone() };
+        let config = Config { kitty_keyboard: true, ..Config::default() };
+        let term = Arc::new(Mutex::new(Term::new(config, &GridSize { cols, rows }, proxy)));
         let exited = Arc::new(AtomicBool::new(false));
 
-        let mut reader = pair.master.try_clone_reader()?;
-        let reader_term = term.clone();
-        let reader_exited = exited.clone();
-        std::thread::spawn(move || {
-            let mut processor: Processor = Processor::new();
-            let mut buf = [0u8; 16 * 1024];
-            while let Ok(n) = reader.read(&mut buf) {
-                if n == 0 {
-                    break;
-                }
-                processor.advance(&mut *reader_term.lock().unwrap(), &buf[..n]);
-                on_output();
-            }
-            reader_exited.store(true, Ordering::SeqCst);
-            on_output();
-        });
+        let feed = Feed {
+            term: term.clone(),
+            processor: Processor::new(),
+            exited: exited.clone(),
+            on_output: Arc::new(on_output),
+        };
+        let backend = connect(feed)?;
+        let _ = slot.set(Arc::downgrade(&backend));
 
-        Ok(Self { term, title, exited, writer, master: pair.master, child, size: (cols, rows) })
+        Ok(Self { term, title, exited, backend, size: (cols, rows) })
     }
 
     pub fn has_exited(&self) -> bool {
@@ -109,7 +116,7 @@ impl Session {
     }
 
     pub fn write(&self, bytes: &[u8]) {
-        let _ = self.writer.lock().unwrap().write_all(bytes);
+        self.backend.write(bytes);
     }
 
     pub fn resize(&mut self, cols: usize, rows: usize) {
@@ -118,21 +125,6 @@ impl Session {
         }
         self.size = (cols, rows);
         self.term.lock().unwrap().resize(GridSize { cols, rows });
-        let _ = self.master.resize(PtySize {
-            rows: rows as u16,
-            cols: cols as u16,
-            pixel_width: 0,
-            pixel_height: 0,
-        });
+        self.backend.resize(cols, rows);
     }
-}
-
-impl Drop for Session {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-    }
-}
-
-fn default_shell() -> &'static str {
-    if cfg!(windows) { "powershell.exe" } else { "/bin/sh" }
 }
