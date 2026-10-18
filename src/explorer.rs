@@ -24,6 +24,8 @@ use crate::transfer::{self, Conflict, Resolution, Transfer, TransferEvent, Trans
 const ROW_HEIGHT: f32 = 26.0;
 const MIDDLE_WIDTH: f32 = 60.0;
 const COLLAPSED_TRANSFERS: f32 = 34.0;
+/// Por debajo de este ancho solo se ve un panel a la vez.
+const NARROW_WIDTH: f32 = 640.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Side {
@@ -130,6 +132,8 @@ pub struct Explorer {
     dialog: Option<Dialog>,
     active_side: Side,
     transfers_open: bool,
+    /// Panel visible cuando el espacio es poco.
+    narrow_side: Side,
 }
 
 impl Explorer {
@@ -162,6 +166,7 @@ impl Explorer {
             dialog: None,
             active_side: Side::Local,
             transfers_open: true,
+            narrow_side: Side::Local,
         };
         let start = paths
             .0
@@ -419,21 +424,37 @@ impl Explorer {
         } else {
             (self.transfers.len() as f32 * 30.0 + 40.0).min(190.0)
         };
-        let panes_area = Rect::from_min_max(area.min, Pos2::new(area.max.x, area.max.y - transfers_height));
-        let pane_width = ((panes_area.width() - MIDDLE_WIDTH) / 2.0).max(120.0);
-        let local_rect = Rect::from_min_size(panes_area.min, Vec2::new(pane_width, panes_area.height()));
-        let middle_rect = Rect::from_min_size(
-            Pos2::new(local_rect.max.x, panes_area.min.y),
-            Vec2::new(MIDDLE_WIDTH, panes_area.height()),
-        );
-        let remote_rect = Rect::from_min_max(Pos2::new(middle_rect.max.x, panes_area.min.y), panes_area.max);
+        let narrow = area.width() < NARROW_WIDTH;
+        let mut panes_area = Rect::from_min_max(area.min, Pos2::new(area.max.x, area.max.y - transfers_height));
+        let (local_rect, middle_rect, remote_rect);
+        if narrow {
+            // Un solo panel, con un selector arriba y el botón de copiar al lado.
+            let bar = Rect::from_min_size(panes_area.min, Vec2::new(panes_area.width(), 34.0));
+            panes_area.min.y += 38.0;
+            self.narrow_selector(ui, bar);
+            local_rect = panes_area;
+            remote_rect = panes_area;
+            middle_rect = Rect::from_min_size(panes_area.min, Vec2::ZERO);
+        } else {
+            let pane_width = ((panes_area.width() - MIDDLE_WIDTH) / 2.0).max(120.0);
+            local_rect = Rect::from_min_size(panes_area.min, Vec2::new(pane_width, panes_area.height()));
+            middle_rect = Rect::from_min_size(
+                Pos2::new(local_rect.max.x, panes_area.min.y),
+                Vec2::new(MIDDLE_WIDTH, panes_area.height()),
+            );
+            remote_rect = Rect::from_min_max(Pos2::new(middle_rect.max.x, panes_area.min.y), panes_area.max);
+        }
 
         let mut actions: Vec<(Side, PaneAction)> = Vec::new();
         let mut dropped_on: Option<(Side, Side)> = None;
 
         for (side, rect) in [(Side::Local, local_rect), (Side::Remote, remote_rect)] {
+            if narrow && side != self.narrow_side {
+                continue;
+            }
             let mut child = ui.new_child(UiBuilder::new().max_rect(rect.shrink2(Vec2::new(4.0, 0.0))));
             let title = match side {
+                _ if narrow => String::new(),
                 Side::Local => "Este equipo".to_string(),
                 Side::Remote => self.connection.name.clone(),
             };
@@ -472,7 +493,7 @@ impl Explorer {
             }
         }
 
-        if failure.is_some() {
+        if failure.is_some() && (!narrow || self.narrow_side == Side::Remote) {
             let mut retry = false;
             egui::Area::new(Id::NULL.with("explorer-retry"))
                 .pivot(Align2::CENTER_CENTER)
@@ -486,7 +507,7 @@ impl Explorer {
         }
 
         // Botones centrales para copiar entre paneles.
-        {
+        if !narrow {
             let mut middle = ui.new_child(UiBuilder::new().max_rect(middle_rect.shrink(6.0)));
             middle.add_space((middle_rect.height() / 2.0 - 56.0).max(40.0));
             let width = middle.available_width();
@@ -559,6 +580,38 @@ impl Explorer {
         }
 
         self.dialog_ui(&ctx);
+    }
+
+    /// Selector Local/Remoto de la vista estrecha, con el botón de copiar hacia el otro lado.
+    fn narrow_selector(&mut self, ui: &mut egui::Ui, bar: Rect) {
+        let mut child = ui.new_child(UiBuilder::new().max_rect(bar.shrink2(Vec2::new(4.0, 0.0))));
+        child.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 18.0;
+            ui.spacing_mut().button_padding.x = 0.0;
+            for (side, label) in [(Side::Local, "Este equipo".to_string()), (Side::Remote, self.connection.name.clone())] {
+                let selected = self.narrow_side == side;
+                let color = if selected { theme::text() } else { theme::subtext() };
+                let font = FontId::new(14.0, if selected { crate::ui::strong_family() } else { FontFamily::Proportional });
+                let response = ui.add(Button::new(RichText::new(label).font(font).color(color)).fill(Color32::TRANSPARENT)).hand();
+                if selected {
+                    let y = response.rect.max.y + 1.0;
+                    ui.painter().line_segment([Pos2::new(response.rect.min.x, y), Pos2::new(response.rect.max.x, y)], egui::Stroke::new(2.0, theme::accent()));
+                }
+                if response.clicked() {
+                    self.narrow_side = side;
+                    self.active_side = side;
+                }
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let (glyph, tip, from) = match self.narrow_side {
+                    Side::Local => (icons::ARROW_RIGHT, "Subir la selección al directorio remoto actual", Side::Local),
+                    Side::Remote => (icons::ARROW_LEFT, "Bajar la selección al directorio local actual", Side::Remote),
+                };
+                if tool_button(ui, glyph, tip, true, false) {
+                    self.copy_from(from);
+                }
+            });
+        });
     }
 
     fn apply(&mut self, ctx: &egui::Context, side: Side, action: PaneAction) {
@@ -1068,8 +1121,10 @@ fn pane_ui(
 ) -> Vec<PaneAction> {
     let show_permissions = side == Side::Remote && ui.available_width() > 440.0;
     let mut actions = Vec::new();
-    ui.label(RichText::new(title).font(FontId::new(14.0, crate::ui::strong_family())));
-    ui.add_space(2.0);
+    if !title.is_empty() {
+        ui.label(RichText::new(title).font(FontId::new(14.0, crate::ui::strong_family())));
+        ui.add_space(2.0);
+    }
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 2.0;
         let one = state.selected.len() == 1;
@@ -1157,7 +1212,7 @@ fn pane_ui(
                 ui.label(RichText::new("Carpeta vacía").color(theme::subtext()));
             }
             for (index, entry) in visible.iter().enumerate() {
-                let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_HEIGHT), Sense::click_and_drag());
+                let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), theme::row(ROW_HEIGHT)), Sense::click_and_drag());
                 let selected = state.selected.contains(&entry.name);
                 if selected {
                     ui.painter().rect_filled(rect, CornerRadius::same(4), theme::accent().gamma_multiply(0.28));

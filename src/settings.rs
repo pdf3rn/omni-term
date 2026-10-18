@@ -16,8 +16,49 @@ pub enum CursorChoice {
     Underline,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AccentChoice {
+    Blue,
+    Gray,
+    Green,
+    Mauve,
+}
+
+impl AccentChoice {
+    pub const ALL: [(AccentChoice, &'static str); 4] = [
+        (AccentChoice::Blue, "Azul"),
+        (AccentChoice::Gray, "Gris"),
+        (AccentChoice::Green, "Verde"),
+        (AccentChoice::Mauve, "Malva"),
+    ];
+
+    pub fn index(self) -> u8 {
+        self as u8
+    }
+
+    fn key(self) -> &'static str {
+        match self {
+            AccentChoice::Blue => "blue",
+            AccentChoice::Gray => "gray",
+            AccentChoice::Green => "green",
+            AccentChoice::Mauve => "mauve",
+        }
+    }
+
+    fn from_key(key: &str) -> Option<Self> {
+        Self::ALL.iter().map(|(choice, _)| *choice).find(|c| c.key() == key)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Settings {
+    pub accent: AccentChoice,
+    /// Filas de las listas más bajas.
+    pub compact: bool,
+    /// Segundos de actividad en una pestaña en segundo plano a partir de los cuales se avisa; 0 lo apaga.
+    pub notify_after: u32,
+    /// Fuente del terminal elegida por el usuario (archivo TTF/OTF); sin ella, JetBrains Mono.
+    pub font_path: Option<String>,
     pub theme: ThemeChoice,
     pub font_size: f32,
     pub cursor: CursorChoice,
@@ -35,6 +76,10 @@ pub const MAX_SCROLLBACK: usize = 200_000;
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            accent: AccentChoice::Blue,
+            compact: false,
+            notify_after: 15,
+            font_path: None,
             theme: ThemeChoice::Dark,
             font_size: DEFAULT_FONT_SIZE,
             cursor: CursorChoice::Block,
@@ -52,6 +97,12 @@ impl Settings {
     pub fn load(store: &Store) -> Self {
         let defaults = Self::default();
         Self {
+            accent: text(store, "setting.accent").and_then(|k| AccentChoice::from_key(&k)).unwrap_or(defaults.accent),
+            compact: text(store, "setting.compact").map_or(defaults.compact, |t| t == "1"),
+            notify_after: text(store, "setting.notify_after")
+                .and_then(|t| t.parse::<u32>().ok())
+                .map_or(defaults.notify_after, |n| n.min(3600)),
+            font_path: text(store, "setting.font_path").filter(|p| !p.is_empty()),
             theme: match text(store, "setting.theme").as_deref() {
                 Some("system") => ThemeChoice::System,
                 Some("light") => ThemeChoice::Light,
@@ -86,6 +137,10 @@ impl Settings {
             CursorChoice::Beam => "beam",
             CursorChoice::Underline => "underline",
         };
+        store.set_meta("setting.accent", self.accent.key().as_bytes())?;
+        store.set_meta("setting.compact", if self.compact { b"1" } else { b"0" })?;
+        store.set_meta("setting.notify_after", self.notify_after.to_string().as_bytes())?;
+        store.set_meta("setting.font_path", self.font_path.as_deref().unwrap_or("").as_bytes())?;
         store.set_meta("setting.theme", theme.as_bytes())?;
         store.set_meta("font_size", self.font_size.to_string().as_bytes())?;
         store.set_meta("setting.cursor", cursor.as_bytes())?;
@@ -109,6 +164,10 @@ mod tests {
     fn settings_round_trip() {
         let store = Store::open_in_memory().unwrap();
         let settings = Settings {
+            accent: AccentChoice::Mauve,
+            compact: true,
+            notify_after: 45,
+            font_path: Some("/usr/share/fonts/mono.ttf".into()),
             theme: ThemeChoice::Light,
             font_size: 18.0,
             cursor: CursorChoice::Beam,

@@ -5,7 +5,7 @@ use zeroize::Zeroizing;
 
 use crate::cursor::HandExt;
 use crate::secrets::SecretKind;
-use crate::settings::{CursorChoice, Settings, ThemeChoice, MAX_FONT_SIZE, MAX_SCROLLBACK, MIN_FONT_SIZE, MIN_SCROLLBACK};
+use crate::settings::{AccentChoice, CursorChoice, Settings, ThemeChoice, MAX_FONT_SIZE, MAX_SCROLLBACK, MIN_FONT_SIZE, MIN_SCROLLBACK};
 use crate::ssh::{HostKeyChange, HostKeyRequest, PromptRequest};
 use crate::store::{Auth, Connection, Forward, ForwardKind, Snippet};
 use crate::theme;
@@ -406,10 +406,17 @@ pub fn error_dialog(ctx: &egui::Context, info: &ErrorInfo) -> ErrorAction {
     }
 }
 
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub enum SettingsTab {
+    #[default]
+    General,
+    Atajos,
+}
+
 pub enum Dialog {
     Error(ErrorInfo),
     HostKeyChanged(HostKeyChange),
-    Settings,
+    Settings(SettingsTab),
     Edit(ConnForm),
     Snippet(SnippetForm),
     SnippetVars(VarsPrompt),
@@ -637,8 +644,8 @@ pub fn show(
     settings: &mut Settings,
 ) -> Outcome {
     match dialog {
-        Dialog::Settings => {
-            let action = shell(ctx, Spec::new("Ajustes").cancel("Cerrar"), |ui| settings_body(ui, settings, master_forced));
+        Dialog::Settings(tab) => {
+            let action = shell(ctx, Spec::new("Ajustes").width(520.0).cancel("Cerrar"), |ui| settings_body(ui, tab, settings, master_forced));
             plain(action, Outcome::None)
         }
         Dialog::Edit(form) => {
@@ -1073,41 +1080,155 @@ fn edit_body(ui: &mut egui::Ui, form: &mut ConnForm, connections: &[Connection])
     false
 }
 
-fn settings_body(ui: &mut egui::Ui, settings: &mut Settings, master_forced: &mut bool) -> bool {
-    let section = |ui: &mut egui::Ui, text: &str| {
-        ui.add_space(6.0);
-        ui.label(RichText::new(text).small().color(theme::subtext()));
-    };
+const SHORTCUTS: [(&str, &[(&str, &str)]); 4] = [
+    (
+        "Pestañas",
+        &[
+            ("Ctrl+Shift+P", "Paleta de comandos"),
+            ("Alt+1 … 9", "Ir a la pestaña 1 … 9 (Alt+9, la última)"),
+            ("Ctrl+Tab / Ctrl+Mayús+Tab", "Pestaña siguiente / anterior"),
+            ("Doble clic en la pestaña", "Renombrarla"),
+        ],
+    ),
+    (
+        "Terminal",
+        &[
+            ("Ctrl+Shift+C / V", "Copiar / pegar"),
+            ("Ctrl+Shift+F", "Buscar en la salida"),
+            ("Ctrl+Shift+D / E", "Dividir a la derecha / hacia abajo"),
+            ("Ctrl+Shift+W", "Cerrar el panel"),
+            ("Ctrl+= / Ctrl+− / Ctrl+0", "Aumentar / reducir / restablecer la letra"),
+        ],
+    ),
+    (
+        "Ventana",
+        &[("Ctrl+Shift+B", "Mostrar u ocultar la barra lateral"), ("Ctrl+Shift+K", "Buscar en la barra lateral")],
+    ),
+    (
+        "Explorador de archivos",
+        &[
+            ("F2", "Renombrar"),
+            ("Supr", "Eliminar"),
+            ("Enter", "Abrir la carpeta"),
+            ("Retroceso", "Subir un nivel"),
+            ("F5", "Actualizar"),
+            ("Ctrl+A", "Seleccionar todo"),
+            ("Ctrl+L", "Escribir una ruta"),
+        ],
+    ),
+];
 
-    section(ui, "Apariencia");
+fn settings_body(ui: &mut egui::Ui, tab: &mut SettingsTab, settings: &mut Settings, master_forced: &mut bool) -> bool {
     ui.horizontal(|ui| {
-        ui.label("Tema");
-        ui.selectable_value(&mut settings.theme, ThemeChoice::Dark, "Oscuro");
-        ui.selectable_value(&mut settings.theme, ThemeChoice::Light, "Claro");
-        ui.selectable_value(&mut settings.theme, ThemeChoice::System, "Sistema");
+        ui.spacing_mut().item_spacing.x = 20.0;
+        ui.spacing_mut().button_padding.x = 0.0;
+        for (choice, label) in [(SettingsTab::General, "General"), (SettingsTab::Atajos, "Atajos")] {
+            let selected = *tab == choice;
+            let color = if selected { theme::text() } else { theme::subtext() };
+            let font = FontId::new(14.0, if selected { crate::ui::strong_family() } else { egui::FontFamily::Proportional });
+            let response = ui.add(egui::Button::new(RichText::new(label).font(font).color(color)).fill(Color32::TRANSPARENT));
+            if selected {
+                let y = response.rect.max.y + 1.0;
+                ui.painter().line_segment([egui::pos2(response.rect.min.x, y), egui::pos2(response.rect.max.x, y)], egui::Stroke::new(2.0, theme::accent()));
+            }
+            if response.clicked() {
+                *tab = choice;
+            }
+        }
     });
-    ui.horizontal(|ui| {
-        ui.label("Tamaño de fuente");
-        ui.add(egui::Slider::new(&mut settings.font_size, MIN_FONT_SIZE..=MAX_FONT_SIZE).step_by(1.0).suffix(" pt"));
-    });
+    ui.add_space(10.0);
 
-    section(ui, "Terminal");
-    ui.horizontal(|ui| {
-        ui.label("Cursor");
-        ui.selectable_value(&mut settings.cursor, CursorChoice::Block, "Bloque");
-        ui.selectable_value(&mut settings.cursor, CursorChoice::Beam, "Barra");
-        ui.selectable_value(&mut settings.cursor, CursorChoice::Underline, "Subrayado");
-    });
-    ui.checkbox(&mut settings.blink, "Cursor parpadeante").hand();
-    ui.horizontal(|ui| {
-        ui.label("Historial");
-        ui.add(egui::DragValue::new(&mut settings.scrollback).range(MIN_SCROLLBACK..=MAX_SCROLLBACK).speed(100.0).suffix(" líneas"));
-    });
-    ui.label(RichText::new("El historial se aplica a las sesiones nuevas.").small().color(theme::subtext()));
+    let height = (ui.ctx().content_rect().height() - 250.0).clamp(220.0, 520.0);
+    egui::ScrollArea::vertical().max_height(height).auto_shrink([false, true]).show(ui, |ui| {
+        let section = |ui: &mut egui::Ui, text: &str| {
+            ui.add_space(6.0);
+            ui.label(RichText::new(text).small().color(theme::subtext()));
+        };
+        if *tab == SettingsTab::Atajos {
+            for (group, entries) in SHORTCUTS {
+                section(ui, group);
+                for (keys, what) in entries.iter() {
+                    ui.horizontal(|ui| {
+                        ui.allocate_ui_with_layout(egui::vec2(200.0, 20.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                            ui.label(RichText::new(*keys).color(theme::text()))
+                        });
+                        ui.label(RichText::new(*what).color(theme::subtext()));
+                    });
+                }
+            }
+            return;
+        }
+        section(ui, "Apariencia");
+        ui.horizontal(|ui| {
+            ui.label("Tema");
+            ui.selectable_value(&mut settings.theme, ThemeChoice::Dark, "Oscuro");
+            ui.selectable_value(&mut settings.theme, ThemeChoice::Light, "Claro");
+            ui.selectable_value(&mut settings.theme, ThemeChoice::System, "Sistema");
+        });
+        ui.horizontal(|ui| {
+            ui.label("Acento");
+            for (choice, label) in AccentChoice::ALL {
+                ui.selectable_value(&mut settings.accent, choice, label);
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.label("Densidad");
+            ui.selectable_value(&mut settings.compact, false, "Cómoda");
+            ui.selectable_value(&mut settings.compact, true, "Compacta");
+        });
 
-    section(ui, "Secretos");
-    ui.checkbox(master_forced, "Usar siempre la clave maestra, aunque haya keyring").hand();
-    ui.label(RichText::new("Este cambio se aplica al reiniciar.").small().color(theme::subtext()));
+        section(ui, "Terminal");
+        ui.horizontal(|ui| {
+            ui.label("Fuente");
+            let name = settings
+                .font_path
+                .as_deref()
+                .and_then(|p| std::path::Path::new(p).file_name())
+                .map_or("JetBrains Mono (incluida)".to_string(), |n| n.to_string_lossy().into_owned());
+            ui.label(RichText::new(name).color(theme::subtext()));
+            if ui.button("Elegir archivo…").clicked() {
+                if let Some(file) = rfd::FileDialog::new().add_filter("Fuentes", &["ttf", "otf"]).pick_file() {
+                    settings.font_path = Some(file.to_string_lossy().into_owned());
+                }
+            }
+            if settings.font_path.is_some() && ui.button("Restaurar").clicked() {
+                settings.font_path = None;
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.label("Tamaño de fuente");
+            ui.add(egui::Slider::new(&mut settings.font_size, MIN_FONT_SIZE..=MAX_FONT_SIZE).step_by(1.0).suffix(" pt"));
+        });
+        ui.horizontal(|ui| {
+            ui.label("Cursor");
+            ui.selectable_value(&mut settings.cursor, CursorChoice::Block, "Bloque");
+            ui.selectable_value(&mut settings.cursor, CursorChoice::Beam, "Barra");
+            ui.selectable_value(&mut settings.cursor, CursorChoice::Underline, "Subrayado");
+        });
+        ui.checkbox(&mut settings.blink, "Cursor parpadeante").hand();
+        ui.horizontal(|ui| {
+            ui.label("Historial");
+            ui.add(egui::DragValue::new(&mut settings.scrollback).range(MIN_SCROLLBACK..=MAX_SCROLLBACK).speed(100.0).suffix(" líneas"));
+        });
+        ui.label(RichText::new("El historial se aplica a las sesiones nuevas.").small().color(theme::subtext()));
+
+        section(ui, "Avisos");
+        let mut notify = settings.notify_after > 0;
+        if ui.checkbox(&mut notify, "Avisar cuando termine la actividad de una pestaña en segundo plano").hand().changed() {
+            settings.notify_after = if notify { 15 } else { 0 };
+        }
+        if notify {
+            ui.horizontal(|ui| {
+                ui.label("Solo si duró al menos");
+                ui.add(egui::DragValue::new(&mut settings.notify_after).range(1..=3600).suffix(" s"));
+            });
+        }
+
+        section(ui, "Secretos");
+        ui.checkbox(master_forced, "Usar siempre la clave maestra, aunque haya keyring").hand();
+        ui.label(RichText::new("Este cambio se aplica al reiniciar.").small().color(theme::subtext()));
+
+    });
     false
 }
 

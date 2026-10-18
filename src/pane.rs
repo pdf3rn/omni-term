@@ -158,7 +158,9 @@ impl Pane {
 
         let id = ui.scope_id().with(("terminal", self.id));
         let response = ui.interact(area, id, Sense::click_and_drag());
-        if self.input_enabled && self.search.is_none() {
+        // El terminal recupera el foco salvo que otro campo de texto de la app lo tenga (búsqueda
+        // del sidebar, renombrar pestaña): un clic fuera de él, o Esc, se lo devuelve.
+        if self.input_enabled && self.search.is_none() && ui.memory(|m| m.focused().is_none_or(|f| f == id)) {
             ui.memory_mut(|m| m.request_focus(id));
         }
         ui.memory_mut(|m| {
@@ -223,7 +225,8 @@ impl Pane {
         let searching = self.search.is_some();
         if self.input_enabled {
             self.handle_scroll(ui, cell_h, reporting);
-            if !searching {
+            let typing_elsewhere = ui.memory(|m| m.focused().is_some_and(|f| f != id));
+            if !searching && !typing_elsewhere {
                 self.handle_input(ui);
             }
         }

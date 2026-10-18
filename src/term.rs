@@ -75,6 +75,46 @@ impl Dimensions for GridSize {
     }
 }
 
+/// Racha de salida: de la primera a la última escritura sin pausas largas.
+#[derive(Default)]
+pub struct Activity {
+    first: Option<std::time::Instant>,
+    last: Option<std::time::Instant>,
+    reported: bool,
+}
+
+/// Una pausa de este tamaño sin salida cierra la racha.
+pub const BURST_GAP: std::time::Duration = std::time::Duration::from_secs(3);
+
+impl Activity {
+    fn record(&mut self) {
+        self.record_at(std::time::Instant::now());
+    }
+
+    fn record_at(&mut self, now: std::time::Instant) {
+        if self.last.is_none_or(|last| now.duration_since(last) > BURST_GAP) {
+            self.first = Some(now);
+        }
+        // Salida nueva: lo ya visto o avisado deja de contar, aunque la racha siga.
+        self.reported = false;
+        self.last = Some(now);
+    }
+
+    /// Duración de la última racha y tiempo desde su última salida, si hay una sin avisar.
+    pub fn pending(&self) -> Option<(std::time::Duration, std::time::Duration)> {
+        self.pending_at(std::time::Instant::now())
+    }
+
+    fn pending_at(&self, now: std::time::Instant) -> Option<(std::time::Duration, std::time::Duration)> {
+        let (first, last) = (self.first?, self.last?);
+        (!self.reported).then(|| (last.duration_since(first), now.duration_since(last)))
+    }
+
+    pub fn mark_reported(&mut self) {
+        self.reported = true;
+    }
+}
+
 /// Entrada de salida del terminal: el backend la llama con los bytes que recibe.
 pub struct Feed {
     term: Arc<Mutex<Term<Proxy>>>,
@@ -82,11 +122,13 @@ pub struct Feed {
     exited: Arc<AtomicBool>,
     disconnected: Arc<AtomicBool>,
     on_output: Arc<dyn Fn() + Send + Sync>,
+    activity: Arc<Mutex<Activity>>,
 }
 
 impl Feed {
     pub fn feed(&mut self, bytes: &[u8]) {
         self.processor.advance(&mut *self.term.lock().unwrap(), bytes);
+        self.activity.lock().unwrap().record();
         (self.on_output)();
     }
 
@@ -106,6 +148,7 @@ impl Feed {
 pub struct Session {
     pub term: Arc<Mutex<Term<Proxy>>>,
     pub title: Arc<Mutex<String>>,
+    pub activity: Arc<Mutex<Activity>>,
     exited: Arc<AtomicBool>,
     disconnected: Arc<AtomicBool>,
     backend: Arc<dyn Backend>,
@@ -127,6 +170,7 @@ impl Session {
         let term = Arc::new(Mutex::new(Term::new(options.config(), &GridSize { cols, rows }, proxy)));
         let exited = Arc::new(AtomicBool::new(false));
         let disconnected = Arc::new(AtomicBool::new(false));
+        let activity = Arc::new(Mutex::new(Activity::default()));
 
         let feed = Feed {
             term: term.clone(),
@@ -134,11 +178,12 @@ impl Session {
             exited: exited.clone(),
             disconnected: disconnected.clone(),
             on_output: Arc::new(on_output),
+            activity: activity.clone(),
         };
         let backend = connect(feed)?;
         let _ = slot.set(Arc::downgrade(&backend));
 
-        Ok(Self { term, title, exited, disconnected, backend, size: (cols, rows) })
+        Ok(Self { term, title, activity, exited, disconnected, backend, size: (cols, rows) })
     }
 
     /// Aplica ajustes nuevos a una sesión ya abierta.
@@ -165,5 +210,38 @@ impl Session {
         self.size = (cols, rows);
         self.term.lock().unwrap().resize(GridSize { cols, rows });
         self.backend.resize(cols, rows);
+    }
+}
+
+#[cfg(test)]
+mod activity_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn output_without_long_pauses_is_one_burst_and_is_reported_once() {
+        let start = Instant::now();
+        let mut activity = Activity::default();
+        assert!(activity.pending_at(start).is_none());
+        for second in 0..10 {
+            activity.record_at(start + Duration::from_secs(second));
+        }
+        let (length, quiet) = activity.pending_at(start + Duration::from_secs(12)).unwrap();
+        assert_eq!(length, Duration::from_secs(9));
+        assert_eq!(quiet, Duration::from_secs(3));
+        activity.mark_reported();
+        assert!(activity.pending_at(start + Duration::from_secs(13)).is_none());
+    }
+
+    #[test]
+    fn a_long_pause_starts_a_new_burst() {
+        let start = Instant::now();
+        let mut activity = Activity::default();
+        activity.record_at(start);
+        activity.record_at(start + Duration::from_secs(1));
+        activity.mark_reported();
+        activity.record_at(start + Duration::from_secs(30));
+        let (length, _) = activity.pending_at(start + Duration::from_secs(31)).unwrap();
+        assert_eq!(length, Duration::ZERO);
     }
 }

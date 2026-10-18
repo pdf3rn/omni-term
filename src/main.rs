@@ -9,6 +9,7 @@ mod keys;
 mod layout;
 mod local;
 mod mouse;
+mod palette;
 mod pane;
 mod search;
 mod settings;

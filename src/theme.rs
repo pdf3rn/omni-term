@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use alacritty_terminal::vte::ansi::{Color, Rgb};
 use eframe::egui::Color32;
@@ -13,7 +13,6 @@ pub struct Palette {
     selection: Color32,
     cursor: Color32,
     red: Color32,
-    accent: Color32,
     ansi: [(u8, u8, u8); 16],
 }
 
@@ -34,7 +33,6 @@ static DARK: Palette = Palette {
     selection: rgb(0x575757),
     cursor: rgb(0xf5e0dc),
     red: rgb(0xf38ba8),
-    accent: rgb(0x89b4fa),
     ansi: [
         triple(0x454545), triple(0xf38ba8), triple(0xa6e3a1), triple(0xf9e2af),
         triple(0x89b4fa), triple(0xf5c2e7), triple(0x94e2d5), triple(0xbababa),
@@ -44,24 +42,49 @@ static DARK: Palette = Palette {
 };
 
 static LIGHT: Palette = Palette {
-    base: rgb(0xeff1f5),
-    mantle: rgb(0xe6e9ef),
-    text: rgb(0x4c4f69),
-    subtext: rgb(0x555870),
-    surface: rgb(0xccd0da),
-    selection: rgb(0xacb0be),
+    base: rgb(0xf5f5f5),
+    mantle: rgb(0xebebeb),
+    text: rgb(0x2e2e2e),
+    subtext: rgb(0x555555),
+    surface: rgb(0xd6d6d6),
+    selection: rgb(0xb0b0b0),
     cursor: rgb(0xdc8a78),
     red: rgb(0xd20f39),
-    accent: rgb(0x1e66f5),
     ansi: [
-        triple(0x5c5f77), triple(0xd20f39), triple(0x40a02b), triple(0xdf8e1d),
-        triple(0x1e66f5), triple(0xea76cb), triple(0x179299), triple(0xacb0be),
-        triple(0x6c6f85), triple(0xd20f39), triple(0x40a02b), triple(0xdf8e1d),
-        triple(0x1e66f5), triple(0xea76cb), triple(0x179299), triple(0xbcc0cc),
+        triple(0x5a5a5a), triple(0xd20f39), triple(0x40a02b), triple(0xdf8e1d),
+        triple(0x1e66f5), triple(0xea76cb), triple(0x179299), triple(0xb0b0b0),
+        triple(0x6e6e6e), triple(0xd20f39), triple(0x40a02b), triple(0xdf8e1d),
+        triple(0x1e66f5), triple(0xea76cb), triple(0x179299), triple(0xbdbdbd),
     ],
 };
 
 static USE_LIGHT: AtomicBool = AtomicBool::new(false);
+static ACCENT: AtomicU8 = AtomicU8::new(0);
+static COMPACT: AtomicBool = AtomicBool::new(false);
+
+/// Colores de acento elegibles: azul, gris, verde y malva (oscuro, claro).
+const ACCENTS: [(u32, u32); 4] = [(0x89b4fa, 0x1e66f5), (0xb9bbc6, 0x5c5c5c), (0xa6e3a1, 0x2d7a1c), (0xcba6f7, 0x8839ef)];
+
+pub fn set_accent(index: u8) {
+    ACCENT.store(index.min(ACCENTS.len() as u8 - 1), Ordering::Relaxed);
+}
+
+pub fn accent_index() -> u8 {
+    ACCENT.load(Ordering::Relaxed)
+}
+
+pub fn set_compact(compact: bool) {
+    COMPACT.store(compact, Ordering::Relaxed);
+}
+
+pub fn is_compact() -> bool {
+    COMPACT.load(Ordering::Relaxed)
+}
+
+/// Altura de una fila de lista: la cómoda tal cual, la compacta algo más baja.
+pub fn row(height: f32) -> f32 {
+    if is_compact() { (height * 0.86).round() } else { height }
+}
 
 pub fn set_light(light: bool) {
     USE_LIGHT.store(light, Ordering::Relaxed);
@@ -100,7 +123,8 @@ pub fn red() -> Color32 {
     palette().red
 }
 pub fn accent() -> Color32 {
-    palette().accent
+    let (dark, light) = ACCENTS[accent_index() as usize];
+    rgb(if is_light() { light } else { dark })
 }
 
 /// Colores con los que se marca una conexión (rojo, naranja, amarillo, verde, azul, violeta).
@@ -180,6 +204,20 @@ mod tests {
                 assert!(contrast(palette.subtext, background) >= 4.5, "texto secundario");
             }
         }
+    }
+
+    #[test]
+    fn every_accent_reads_against_the_base_and_takes_dark_text() {
+        for light in [false, true] {
+            set_light(light);
+            for index in 0..ACCENTS.len() as u8 {
+                set_accent(index);
+                assert!(contrast(accent(), base()) >= 3.0, "acento {index} sobre el fondo (claro: {light})");
+                assert!(contrast(base(), accent()) >= 3.0, "texto del botón sobre el acento {index} (claro: {light})");
+            }
+        }
+        set_light(false);
+        set_accent(0);
     }
 
     #[test]

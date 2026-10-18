@@ -24,3 +24,4 @@ pub const EYE_OFF: &str = "\u{E224}";
 pub const FOLDER_CLOSED: &str = "\u{E25A}";
 pub const FILE: &str = "\u{E230}";
 pub const CARET_UP: &str = "\u{E13C}";
+pub const TERMINAL: &str = "\u{EAE8}";
