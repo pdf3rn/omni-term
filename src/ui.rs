@@ -2950,7 +2950,8 @@ fn tab(
     let (rect, response) = ui.allocate_exact_size(size, Sense::click_and_drag());
     let response = response.hand();
 
-    let hovered = response.hovered();
+    // Por geometría: con la X encima, `response.hovered()` se apagaría y la X desaparecería a fotogramas alternos.
+    let hovered = response.hovered() || ui.rect_contains_pointer(rect);
     let fill = if selected {
         theme::base()
     } else if hovered {
