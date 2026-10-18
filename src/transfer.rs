@@ -47,6 +47,7 @@ pub struct Transfer {
     total: Arc<AtomicU64>,
     state: Arc<Mutex<TransferState>>,
     cancel: Arc<AtomicBool>,
+    started: std::time::Instant,
 }
 
 impl Transfer {
@@ -58,7 +59,19 @@ impl Transfer {
             total: Arc::new(AtomicU64::new(0)),
             state: Arc::new(Mutex::new(TransferState::Running)),
             cancel: Arc::new(AtomicBool::new(false)),
+            started: std::time::Instant::now(),
         }
+    }
+
+    /// Velocidad media en bytes por segundo y segundos que faltan, si ya hay datos suficientes.
+    pub fn rate(&self) -> Option<(f64, u64)> {
+        let (done, total) = self.progress();
+        let elapsed = self.started.elapsed().as_secs_f64();
+        if done == 0 || elapsed < 0.5 {
+            return None;
+        }
+        let speed = done as f64 / elapsed;
+        Some((speed, (total.saturating_sub(done) as f64 / speed).ceil() as u64))
     }
 
     /// Bytes transferidos y total previsto.

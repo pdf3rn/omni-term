@@ -13,6 +13,7 @@ use eframe::egui::{
 use russh_sftp::client::SftpSession;
 
 use crate::cursor::HandExt;
+use crate::icons;
 use crate::dialogs::{error_dialog, shell, Action, ErrorAction, ErrorInfo, Spec};
 use crate::sftp::{self, Entry, Sftp, SortKey};
 use crate::ssh::{Credentials, UiEvent};
@@ -21,7 +22,8 @@ use crate::theme;
 use crate::transfer::{self, Conflict, Resolution, Transfer, TransferEvent, TransferState};
 
 const ROW_HEIGHT: f32 = 26.0;
-const MIDDLE_WIDTH: f32 = 104.0;
+const MIDDLE_WIDTH: f32 = 60.0;
+const COLLAPSED_TRANSFERS: f32 = 34.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Side {
@@ -45,6 +47,9 @@ enum Message {
 struct PaneState {
     path: String,
     path_edit: String,
+    editing_path: bool,
+    focus_path: bool,
+    history: Vec<String>,
     entries: Vec<Entry>,
     selected: BTreeSet<String>,
     anchor: Option<usize>,
@@ -88,6 +93,12 @@ enum PaneAction {
     PickFolder,
     Sort(SortKey),
     CopyAcross,
+    Back,
+    SelectAll,
+    EditPath,
+    OpenSelected,
+    CopyPath,
+    Activate,
 }
 
 enum Dialog {
@@ -117,6 +128,8 @@ pub struct Explorer {
     transfer_inbox: Receiver<TransferEvent>,
     folder_picks: Arc<Mutex<Vec<PathBuf>>>,
     dialog: Option<Dialog>,
+    active_side: Side,
+    transfers_open: bool,
 }
 
 impl Explorer {
@@ -147,6 +160,8 @@ impl Explorer {
             transfer_inbox,
             folder_picks: Arc::new(Mutex::new(Vec::new())),
             dialog: None,
+            active_side: Side::Local,
+            transfers_open: true,
         };
         let start = paths
             .0
@@ -238,6 +253,14 @@ impl Explorer {
     }
 
     fn navigate(&mut self, side: Side, path: String) {
+        let state = if side == Side::Local { &mut self.local } else { &mut self.remote };
+        if path != state.path && !state.path.is_empty() {
+            state.history.push(state.path.clone());
+        }
+        self.go(side, path);
+    }
+
+    fn go(&mut self, side: Side, path: String) {
         match side {
             Side::Local => {
                 self.local.set_path(path);
@@ -338,6 +361,7 @@ impl Explorer {
             self.wake.clone(),
         );
         self.transfers.push(transfer);
+        self.transfers_open = true;
     }
 
     fn download_selected(&mut self) {
@@ -360,6 +384,7 @@ impl Explorer {
             self.wake.clone(),
         );
         self.transfers.push(transfer);
+        self.transfers_open = true;
     }
 
     fn copy_from(&mut self, source: Side) {
@@ -389,6 +414,8 @@ impl Explorer {
 
         let transfers_height = if self.transfers.is_empty() {
             0.0
+        } else if !self.transfers_open {
+            COLLAPSED_TRANSFERS
         } else {
             (self.transfers.len() as f32 * 30.0 + 40.0).min(190.0)
         };
@@ -463,13 +490,15 @@ impl Explorer {
             let mut middle = ui.new_child(UiBuilder::new().max_rect(middle_rect.shrink(6.0)));
             middle.add_space((middle_rect.height() / 2.0 - 56.0).max(40.0));
             let width = middle.available_width();
-            let upload = Button::new("Subir →").min_size(Vec2::new(width, 32.0));
-            if middle.add(upload).on_hover_text("Copia la selección local al directorio remoto actual").clicked() {
-                self.copy_from(Side::Local);
-            }
-            let download = Button::new("← Bajar").min_size(Vec2::new(width, 32.0));
-            if middle.add(download).on_hover_text("Copia la selección remota al directorio local actual").clicked() {
-                self.copy_from(Side::Remote);
+            middle.spacing_mut().item_spacing.y = 8.0;
+            for (glyph, tip, from) in [
+                (icons::ARROW_RIGHT, "Subir: copia la selección local al directorio remoto actual", Side::Local),
+                (icons::ARROW_LEFT, "Bajar: copia la selección remota al directorio local actual", Side::Remote),
+            ] {
+                let button = Button::new(RichText::new(glyph).size(18.0)).min_size(Vec2::new(width, 34.0));
+                if middle.add(button).on_hover_text(tip).hand().clicked() {
+                    self.copy_from(from);
+                }
             }
         }
 
@@ -488,8 +517,39 @@ impl Explorer {
             }
         }
 
+        if self.dialog.is_none() && !ctx.egui_wants_keyboard_input() {
+            let side = self.active_side;
+            let keys = ctx.input_mut(|i| {
+                use egui::{Key, Modifiers};
+                let mut found = Vec::new();
+                if i.consume_key(Modifiers::NONE, Key::F2) {
+                    found.push(PaneAction::Rename);
+                }
+                if i.consume_key(Modifiers::NONE, Key::Delete) {
+                    found.push(PaneAction::Delete);
+                }
+                if i.consume_key(Modifiers::NONE, Key::Enter) {
+                    found.push(PaneAction::OpenSelected);
+                }
+                if i.consume_key(Modifiers::NONE, Key::Backspace) {
+                    found.push(PaneAction::Up);
+                }
+                if i.consume_key(Modifiers::NONE, Key::F5) {
+                    found.push(PaneAction::Refresh);
+                }
+                if i.consume_key(Modifiers::CTRL, Key::A) {
+                    found.push(PaneAction::SelectAll);
+                }
+                if i.consume_key(Modifiers::CTRL, Key::L) {
+                    found.push(PaneAction::EditPath);
+                }
+                found
+            });
+            actions.extend(keys.into_iter().map(|a| (side, a)));
+        }
+
         for (side, action) in actions {
-            self.apply(side, action);
+            self.apply(&ctx, side, action);
         }
 
         if transfers_height > 0.0 {
@@ -501,7 +561,7 @@ impl Explorer {
         self.dialog_ui(&ctx);
     }
 
-    fn apply(&mut self, side: Side, action: PaneAction) {
+    fn apply(&mut self, ctx: &egui::Context, side: Side, action: PaneAction) {
         let state = match side {
             Side::Local => &self.local,
             Side::Remote => &self.remote,
@@ -524,6 +584,44 @@ impl Explorer {
                 self.navigate(side, path);
             }
             PaneAction::Go(path) => self.navigate(side, path),
+            PaneAction::Back => {
+                let pane = if side == Side::Local { &mut self.local } else { &mut self.remote };
+                if let Some(previous) = pane.history.pop() {
+                    self.go(side, previous);
+                }
+            }
+            PaneAction::SelectAll => {
+                let pane = if side == Side::Local { &mut self.local } else { &mut self.remote };
+                pane.selected = pane.visible().iter().map(|e| e.name.clone()).collect();
+            }
+            PaneAction::EditPath => {
+                let pane = if side == Side::Local { &mut self.local } else { &mut self.remote };
+                pane.path_edit = pane.path.clone();
+                pane.editing_path = true;
+                pane.focus_path = true;
+            }
+            PaneAction::OpenSelected => {
+                if let [entry] = state.selected_entries().as_slice() {
+                    if entry.is_dir {
+                        let name = entry.name.clone();
+                        self.apply(ctx, side, PaneAction::Open(name));
+                    }
+                }
+            }
+            PaneAction::CopyPath => {
+                let paths: Vec<String> = state
+                    .selected_entries()
+                    .iter()
+                    .map(|e| match side {
+                        Side::Local => Path::new(&state.path).join(&e.name).to_string_lossy().into_owned(),
+                        Side::Remote => sftp::join(&state.path, &e.name),
+                    })
+                    .collect();
+                if !paths.is_empty() {
+                    ctx.copy_text(paths.join("\n"));
+                }
+            }
+            PaneAction::Activate => self.active_side = side,
             PaneAction::Refresh => match side {
                 Side::Local => self.refresh_local(),
                 Side::Remote => self.refresh_remote(),
@@ -572,29 +670,41 @@ impl Explorer {
     }
 
     fn transfers_ui(&mut self, ui: &mut egui::Ui) {
+        let running = self.transfers.iter().filter(|t| t.state() == TransferState::Running).count();
         ui.horizontal(|ui| {
-            ui.label(RichText::new("Transferencias").small().color(theme::subtext()));
-            if ui.add(Button::new(RichText::new("Quitar terminadas").small()).fill(Color32::TRANSPARENT)).clicked() {
+            let caret = if self.transfers_open { icons::CARET_DOWN } else { icons::CARET_RIGHT };
+            let title = if running > 0 { format!("{caret}  Transferencias · {running} en curso") } else { format!("{caret}  Transferencias") };
+            let header = ui.add(Button::new(RichText::new(title).small().color(theme::subtext())).fill(Color32::TRANSPARENT));
+            if header.on_hover_text("Mostrar u ocultar la lista").hand().clicked() {
+                self.transfers_open = !self.transfers_open;
+            }
+            if ui.add(Button::new(RichText::new("Quitar terminadas").small()).fill(Color32::TRANSPARENT)).hand().clicked() {
                 self.transfers.retain(|t| t.state() == TransferState::Running);
             }
         });
+        if !self.transfers_open {
+            return;
+        }
         ScrollArea::vertical().id_salt("explorer-transfers").show(ui, |ui| {
             for transfer in &self.transfers {
                 ui.horizontal(|ui| {
-                    let arrow = if transfer.upload { "→" } else { "←" };
-                    ui.add_sized([180.0, 22.0], egui::Label::new(format!("{arrow} {}", transfer.label)).truncate());
+                    let arrow = if transfer.upload { icons::ARROW_RIGHT } else { icons::ARROW_LEFT };
+                    ui.add_sized([200.0, 22.0], egui::Label::new(format!("{arrow}  {}", transfer.label)).truncate());
                     let (done, total) = transfer.progress();
                     let fraction = if total == 0 { 0.0 } else { done as f32 / total as f32 };
                     let state = transfer.state();
                     let text = match &state {
-                        TransferState::Running => format!("{} / {}", human_size(done), human_size(total)),
+                        TransferState::Running => match transfer.rate() {
+                            Some((speed, left)) => format!("{} / {}  ·  {}/s  ·  {}", human_size(done), human_size(total), human_size(speed as u64), format_duration(left)),
+                            None => format!("{} / {}", human_size(done), human_size(total)),
+                        },
                         TransferState::Done => "Completada".to_string(),
                         TransferState::Cancelled => "Cancelada".to_string(),
                         TransferState::Failed(reason) => format!("Error: {reason}"),
                     };
                     ui.add(ProgressBar::new(if state == TransferState::Done { 1.0 } else { fraction }).desired_width(180.0));
                     ui.label(RichText::new(text).small().color(theme::subtext()));
-                    if state == TransferState::Running && ui.add(Button::new("Cancelar").fill(Color32::TRANSPARENT)).clicked() {
+                    if state == TransferState::Running && ui.add(Button::new(icons::X).fill(Color32::TRANSPARENT)).on_hover_text("Cancelar").hand().clicked() {
                         transfer.cancel();
                     }
                 });
@@ -814,12 +924,137 @@ pub fn human_size(bytes: u64) -> String {
     }
 }
 
+fn format_duration(seconds: u64) -> String {
+    if seconds >= 3600 {
+        format!("{}:{:02}:{:02}", seconds / 3600, seconds / 60 % 60, seconds % 60)
+    } else {
+        format!("{}:{:02}", seconds / 60, seconds % 60)
+    }
+}
+
 fn format_time(seconds: u64) -> String {
     use chrono::TimeZone;
     chrono::Local
         .timestamp_opt(seconds as i64, 0)
         .single()
         .map_or_else(String::new, |t| t.format("%Y-%m-%d %H:%M").to_string())
+}
+
+/// Botón de icono cuadrado con tooltip; devuelve `true` al pulsarlo (si está habilitado).
+fn tool_button(ui: &mut egui::Ui, glyph: &str, tip: &str, enabled: bool, active: bool) -> bool {
+    let (rect, response) = ui.allocate_exact_size(Vec2::splat(28.0), Sense::click());
+    let response = if enabled { response.hand() } else { response };
+    if active {
+        ui.painter().rect_filled(rect, CornerRadius::same(6), theme::selection());
+    } else if enabled && response.hovered() {
+        ui.painter().rect_filled(rect, CornerRadius::same(6), theme::surface());
+    }
+    let color = if enabled { theme::text() } else { theme::subtext().gamma_multiply(0.45) };
+    ui.painter().text(rect.center(), Align2::CENTER_CENTER, glyph, FontId::proportional(16.0), color);
+    response.on_hover_text(tip).clicked() && enabled
+}
+
+/// Tramos de una ruta con la ruta completa de cada uno.
+fn segments(side: Side, path: &str) -> Vec<(String, String)> {
+    match side {
+        Side::Local => {
+            let mut accumulated = PathBuf::new();
+            let mut out = Vec::new();
+            for component in Path::new(path).components() {
+                accumulated.push(component);
+                let label = match component {
+                    std::path::Component::RootDir => "/".to_string(),
+                    other => other.as_os_str().to_string_lossy().into_owned(),
+                };
+                out.push((label, accumulated.to_string_lossy().into_owned()));
+            }
+            out
+        }
+        Side::Remote => {
+            let mut out = vec![("/".to_string(), "/".to_string())];
+            let mut accumulated = String::new();
+            for part in path.split('/').filter(|p| !p.is_empty()) {
+                accumulated.push('/');
+                accumulated.push_str(part);
+                out.push((part.to_string(), accumulated.clone()));
+            }
+            out
+        }
+    }
+}
+
+/// Barra de ruta: tramos clicables; un doble clic (o `Ctrl+L`) la convierte en campo de texto.
+fn breadcrumb(ui: &mut egui::Ui, side: Side, state: &mut PaneState, actions: &mut Vec<PaneAction>) {
+    let (bar, background) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 30.0), Sense::click());
+    ui.painter().rect_filled(bar, CornerRadius::same(6), theme::mantle());
+
+    if state.editing_path {
+        let mut child = ui.new_child(UiBuilder::new().max_rect(bar.shrink2(Vec2::new(3.0, 2.0))));
+        let field = child.add(TextEdit::singleline(&mut state.path_edit).desired_width(f32::INFINITY).frame(egui::Frame::NONE).align(Align2::LEFT_CENTER));
+        if std::mem::take(&mut state.focus_path) {
+            field.request_focus();
+        }
+        let escape = child.input(|i| i.key_pressed(egui::Key::Escape));
+        if field.lost_focus() && child.input(|i| i.key_pressed(egui::Key::Enter)) {
+            actions.push(PaneAction::Go(state.path_edit.trim().to_string()));
+            state.editing_path = false;
+        } else if escape || field.lost_focus() {
+            state.path_edit = state.path.clone();
+            state.editing_path = false;
+        }
+        return;
+    }
+
+    if background.on_hover_text("Doble clic para escribir una ruta (Ctrl+L)").hand().double_clicked() {
+        actions.push(PaneAction::EditPath);
+    }
+
+    let crumbs = segments(side, &state.path);
+    let font = FontId::new(13.0, FontFamily::Proportional);
+    let width_of = |ui: &egui::Ui, text: &str| ui.painter().layout_no_wrap(text.to_string(), font.clone(), Color32::PLACEHOLDER).size().x + 14.0;
+    let widths: Vec<f32> = crumbs.iter().map(|(label, _)| width_of(ui, label)).collect();
+    let separator = 14.0;
+    // Si no cabe todo, se empieza por el final y los tramos anteriores quedan tras «…».
+    let budget = bar.width() - 16.0 - 30.0;
+    let mut start = crumbs.len();
+    let mut used = 0.0;
+    while start > 0 {
+        let next = widths[start - 1] + if start < crumbs.len() { separator } else { 0.0 };
+        if used + next > budget && start < crumbs.len() {
+            break;
+        }
+        used += next;
+        start -= 1;
+    }
+    let mut x = bar.min.x + 8.0;
+    let y = bar.center().y;
+    let mut draw = |ui: &mut egui::Ui, x: f32, index: usize, label: &str, target: String, width: f32, last: bool| -> f32 {
+        let rect = Rect::from_min_size(Pos2::new(x, bar.min.y + 3.0), Vec2::new(width, bar.height() - 6.0));
+        let id = ui.scope_id().with(("crumb", side == Side::Remote, index));
+        let response = ui.interact(rect, id, Sense::click()).hand();
+        if response.hovered() {
+            ui.painter().rect_filled(rect, CornerRadius::same(4), theme::surface());
+        }
+        let color = if last || response.hovered() { theme::text() } else { theme::subtext() };
+        let family = if last { crate::ui::strong_family() } else { FontFamily::Proportional };
+        ui.painter().text(Pos2::new(rect.center().x, y), Align2::CENTER_CENTER, label, FontId::new(13.0, family), color);
+        if response.clicked() {
+            actions.push(PaneAction::Go(target));
+        }
+        x + width
+    };
+    if start > 0 {
+        let parent = crumbs[start - 1].1.clone();
+        x = draw(ui, x, usize::MAX, "…", parent, 26.0, false);
+    }
+    for index in start..crumbs.len() {
+        if index > start || start > 0 {
+            ui.painter().text(Pos2::new(x + separator / 2.0, y), Align2::CENTER_CENTER, icons::CARET_RIGHT, FontId::proportional(11.0), theme::subtext());
+            x += separator;
+        }
+        let (label, target) = &crumbs[index];
+        x = draw(ui, x, index, label, target.clone(), widths[index], index == crumbs.len() - 1);
+    }
 }
 
 /// Dibuja un panel (cabecera, lista y botones) y devuelve las acciones pedidas.
@@ -834,24 +1069,48 @@ fn pane_ui(
     let show_permissions = side == Side::Remote && ui.available_width() > 440.0;
     let mut actions = Vec::new();
     ui.label(RichText::new(title).font(FontId::new(14.0, crate::ui::strong_family())));
+    ui.add_space(2.0);
     ui.horizontal(|ui| {
-        if ui.add(Button::new("Subir nivel").fill(Color32::TRANSPARENT)).clicked() {
+        ui.spacing_mut().item_spacing.x = 2.0;
+        let one = state.selected.len() == 1;
+        if tool_button(ui, icons::ARROW_LEFT, "Atrás", !state.history.is_empty(), false) {
+            actions.push(PaneAction::Back);
+        }
+        if tool_button(ui, icons::ARROW_UP, "Subir un nivel (Retroceso)", true, false) {
             actions.push(PaneAction::Up);
         }
-        if ui.add(Button::new("Actualizar").fill(Color32::TRANSPARENT)).clicked() {
+        if tool_button(ui, icons::REFRESH, "Actualizar (F5)", true, false) {
             actions.push(PaneAction::Refresh);
         }
-    });
-    let field = ui.add(TextEdit::singleline(&mut state.path_edit).desired_width(f32::INFINITY));
-    if field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-        actions.push(PaneAction::Go(state.path_edit.clone()));
-    }
-    ui.horizontal(|ui| {
-        ui.checkbox(&mut state.show_hidden, RichText::new("Ver ocultos").small()).hand();
-        if side == Side::Local && ui.add(Button::new(RichText::new("Elegir carpeta…").small()).fill(Color32::TRANSPARENT)).clicked() {
-            actions.push(PaneAction::PickFolder);
+        ui.add_space(8.0);
+        if tool_button(ui, icons::FOLDER_PLUS, "Nueva carpeta", true, false) {
+            actions.push(PaneAction::NewFolder);
         }
+        if tool_button(ui, icons::PENCIL, "Renombrar (F2)", one, false) {
+            actions.push(PaneAction::Rename);
+        }
+        if side == Side::Remote && tool_button(ui, icons::LOCK, "Permisos", one, false) {
+            actions.push(PaneAction::Permissions);
+        }
+        let delete_tip = if can_delete { "Eliminar (Supr)" } else { "Mover a la papelera (Supr)" };
+        if tool_button(ui, icons::TRASH, delete_tip, !state.selected.is_empty(), false) {
+            actions.push(PaneAction::Delete);
+        }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            let glyph = if state.show_hidden { icons::EYE } else { icons::EYE_OFF };
+            let tip = if state.show_hidden { "Ocultar los archivos ocultos" } else { "Mostrar los archivos ocultos" };
+            if tool_button(ui, glyph, tip, true, state.show_hidden) {
+                state.show_hidden = !state.show_hidden;
+            }
+            if side == Side::Local && tool_button(ui, icons::FOLDER, "Elegir otra carpeta…", true, false) {
+                actions.push(PaneAction::PickFolder);
+            }
+        });
     });
+    ui.add_space(2.0);
+    breadcrumb(ui, side, state, &mut actions);
+    ui.add_space(6.0);
 
     // Cabecera de columnas: un clic ordena, otro invierte el orden.
     let (head, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 22.0), Sense::hover());
@@ -866,9 +1125,9 @@ fn pane_ui(
         let response = ui.interact(zone, id, Sense::click()).hand();
         let active = current_sort.0 == key;
         let arrow = match (active, current_sort.1) {
-            (true, true) => " ↑",
-            (true, false) => " ↓",
-            _ => "",
+            (true, true) => format!(" {}", icons::CARET_UP),
+            (true, false) => format!(" {}", icons::CARET_DOWN),
+            _ => String::new(),
         };
         let color = if active || response.hovered() { theme::text() } else { theme::subtext() };
         ui.painter().text(Pos2::new(x, head.center().y), align, format!("{label}{arrow}"), FontId::new(12.0, FontFamily::Proportional), color);
@@ -877,7 +1136,7 @@ fn pane_ui(
         }
     }
 
-    let list_height = (ui.available_height() - 74.0).max(60.0);
+    let list_height = (ui.available_height() - 4.0).max(60.0);
     let (list_rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), list_height), Sense::hover());
     ui.painter().rect_filled(list_rect, CornerRadius::same(6), theme::mantle());
     let mut list_ui = ui.new_child(UiBuilder::new().max_rect(list_rect.shrink(2.0)));
@@ -906,9 +1165,10 @@ fn pane_ui(
                     ui.painter().rect_filled(rect, CornerRadius::same(4), theme::surface());
                 }
                 let painter = ui.painter().with_clip_rect(rect);
-                let name = if entry.is_dir { format!("{}/", entry.name) } else { entry.name.clone() };
+                let (glyph, glyph_color) = if entry.is_dir { (icons::FOLDER_CLOSED, theme::text()) } else { (icons::FILE, theme::subtext()) };
+                painter.text(Pos2::new(rect.min.x + 16.0, rect.center().y), Align2::CENTER_CENTER, glyph, FontId::proportional(16.0), glyph_color);
                 let font = FontId::new(14.0, if entry.is_dir { crate::ui::strong_family() } else { FontFamily::Proportional });
-                painter.text(Pos2::new(rect.min.x + 8.0, rect.center().y), Align2::LEFT_CENTER, name, font, theme::text());
+                painter.text(Pos2::new(rect.min.x + 32.0, rect.center().y), Align2::LEFT_CENTER, &entry.name, font, theme::text());
                 if let (true, Some(mode)) = (show_permissions, entry.permissions) {
                     painter.text(
                         Pos2::new(rect.max.x - 250.0, rect.center().y),
@@ -936,6 +1196,9 @@ fn pane_ui(
                     );
                 }
 
+                if response.clicked() || response.drag_started() || response.secondary_clicked() {
+                    actions.push(PaneAction::Activate);
+                }
                 if response.clicked() {
                     let modifiers = ui.input(|i| i.modifiers);
                     if modifiers.shift && state.anchor.is_some() {
@@ -974,8 +1237,12 @@ fn pane_ui(
                         actions.push(PaneAction::CopyAcross);
                         ui.close();
                     }
+                    if ui.button("Copiar ruta").clicked() {
+                        actions.push(PaneAction::CopyPath);
+                        ui.close();
+                    }
                     ui.separator();
-                    if ui.add_enabled(state.selected.len() == 1, Button::new("Renombrar")).clicked() {
+                    if ui.add_enabled(state.selected.len() == 1, Button::new("Renombrar  (F2)")).clicked() {
                         actions.push(PaneAction::Rename);
                         ui.close();
                     }
@@ -983,7 +1250,7 @@ fn pane_ui(
                         actions.push(PaneAction::Permissions);
                         ui.close();
                     }
-                    let delete = if can_delete { "Eliminar" } else { "Mover a la papelera" };
+                    let delete = if can_delete { "Eliminar  (Supr)" } else { "Mover a la papelera  (Supr)" };
                     if ui.button(delete).clicked() {
                         actions.push(PaneAction::Delete);
                         ui.close();
@@ -1000,31 +1267,31 @@ fn pane_ui(
         });
     }
 
-    ui.add_space(6.0);
-    ui.horizontal_wrapped(|ui| {
-        ui.spacing_mut().item_spacing.x = 6.0;
-        ui.spacing_mut().button_padding.x = 8.0;
-        if ui.add(Button::new(RichText::new("Nueva carpeta").small())).clicked() {
-            actions.push(PaneAction::NewFolder);
-        }
-        let one = state.selected.len() == 1;
-        if ui.add_enabled(one, Button::new(RichText::new("Renombrar").small())).clicked() {
-            actions.push(PaneAction::Rename);
-        }
-        if side == Side::Remote && ui.add_enabled(one, Button::new(RichText::new("Permisos").small())).clicked() {
-            actions.push(PaneAction::Permissions);
-        }
-        let delete_label = if can_delete { "Eliminar" } else { "A la papelera" };
-        if ui.add_enabled(!state.selected.is_empty(), Button::new(RichText::new(delete_label).small())).clicked() {
-            actions.push(PaneAction::Delete);
-        }
-    });
     actions
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn breadcrumbs_cover_every_level() {
+        let remote = segments(Side::Remote, "/var/log/nginx");
+        let labels: Vec<_> = remote.iter().map(|(l, _)| l.as_str()).collect();
+        assert_eq!(labels, ["/", "var", "log", "nginx"]);
+        assert_eq!(remote[2].1, "/var/log");
+        assert_eq!(segments(Side::Remote, "/").len(), 1);
+        let local = segments(Side::Local, "/home/pedro");
+        assert_eq!(local.last().unwrap().1, "/home/pedro");
+        assert_eq!(local[0].1, "/");
+    }
+
+    #[test]
+    fn durations_read_as_clock_time() {
+        assert_eq!(format_duration(42), "0:42");
+        assert_eq!(format_duration(754), "12:34");
+        assert_eq!(format_duration(3725), "1:02:05");
+    }
 
     #[test]
     fn sizes_are_human_readable() {
