@@ -14,6 +14,7 @@ use crate::dialogs::{self, CloseAction, CloseConfirm, ConnForm, Dialog, ErrorInf
 use crate::layout::{Dir, Tree};
 use crate::explorer::Explorer;
 use crate::icons;
+use crate::known_hosts;
 use crate::palette::{self, Command, Palette, Target};
 use crate::pane::{self, bold_family, Pane, PaneRequest, PADDING};
 use crate::settings::{CursorChoice, Settings, ThemeChoice, DEFAULT_FONT_SIZE, MAX_FONT_SIZE, MIN_FONT_SIZE};
@@ -42,6 +43,8 @@ enum Undo {
     Snippet(Snippet),
     /// Entorno y color anteriores de una conexión movida de grupo.
     Environment { id: i64, env: Option<String>, color: Option<u8> },
+    /// Líneas de `known_hosts` borradas: posición y texto.
+    KnownHosts(Vec<(usize, String)>),
 }
 
 /// Limpieza que solo se hace si el aviso caduca sin deshacer.
@@ -198,6 +201,7 @@ pub struct App {
     renaming: Option<(usize, String, bool)>,
     palette: Option<Palette>,
     close_confirmed: bool,
+    known_hosts: dialogs::KnownHostsView,
     loaded_font: Option<String>,
     /// Ids de conexión, de la usada más recientemente a la más antigua.
     recent: Vec<(i64, u64)>,
@@ -324,6 +328,7 @@ impl App {
             renaming: None,
             palette: None,
             close_confirmed: false,
+            known_hosts: Default::default(),
             loaded_font: None,
             recent,
             pinned,
@@ -812,6 +817,48 @@ impl App {
         self.push_toast(text, Some(Undo::Environment { id, env: connection.env, color: connection.color }), None);
     }
 
+    /// Borra líneas de `known_hosts` con aviso y deshacer; con `reconnect`, vuelve a conectar al servidor.
+    fn forget_known_hosts(&mut self, entries: Vec<known_hosts::KnownHost>, reconnect: Option<(String, u16)>) {
+        let path = ssh::default_known_hosts();
+        let mut removed: Vec<(usize, String)> = Vec::new();
+        // De la última línea a la primera, para que las posiciones guardadas sigan valiendo.
+        let mut ordered = entries;
+        ordered.sort_by_key(|e| std::cmp::Reverse(e.index));
+        for entry in &ordered {
+            match known_hosts::remove(&path, entry) {
+                Ok(index) => removed.push((index, entry.raw.clone())),
+                Err(error) => {
+                    self.dialog = Some(Dialog::failure("No se pudo olvidar el host", format!("{error:#}")));
+                    break;
+                }
+            }
+        }
+        self.known_hosts.loaded = false;
+        if removed.is_empty() {
+            return;
+        }
+        removed.reverse();
+        let first = ordered.first().map_or_else(String::new, |e| e.display());
+        let text = if removed.len() == 1 { format!("Huella de «{first}» olvidada") } else { format!("{} huellas olvidadas", removed.len()) };
+        self.push_toast(text, Some(Undo::KnownHosts(removed)), None);
+        if let Some((host, port)) = reconnect {
+            self.reconnect_to(&host, port);
+        }
+    }
+
+    /// Vuelve a conectar a `host:port`: la pestaña caída de esa conexión si la hay; si no, una nueva.
+    fn reconnect_to(&mut self, host: &str, port: u16) {
+        let Some(connection) = self.connections.iter().find(|c| c.host.eq_ignore_ascii_case(host) && c.port == port).cloned() else { return };
+        let dropped = self
+            .tabs
+            .iter()
+            .position(|t| t.kind == TabKind::Connection(connection.id.unwrap_or_default()) && t.pane().is_some_and(|p| p.session.is_disconnected()));
+        match dropped {
+            Some(index) => self.reconnect(index),
+            None => self.begin_open(connection, None, Purpose::Terminal),
+        }
+    }
+
     fn delete_snippet(&mut self, snippet: Snippet) {
         let Some(id) = snippet.id else { return };
         if let Err(error) = self.store.lock().unwrap().delete_snippet(id) {
@@ -832,6 +879,10 @@ impl App {
                     .and_then(|_| store.replace_forwards(connection.id.unwrap_or_default(), forwards))
                     .and_then(|_| dependents.iter().try_for_each(|id| store.set_jump(*id, connection.id))),
                 Undo::Snippet(snippet) => store.restore_snippet(snippet),
+                Undo::KnownHosts(lines) => {
+                    let path = ssh::default_known_hosts();
+                    lines.iter().try_for_each(|(index, raw)| known_hosts::insert(&path, *index, raw)).map_err(Into::into)
+                }
                 Undo::Environment { id, env, color } => match self.connections.iter().find(|c| c.id == Some(*id)).cloned() {
                     Some(mut connection) => {
                         connection.env = env.clone();
@@ -843,7 +894,10 @@ impl App {
             }
         };
         match result {
-            Ok(()) => self.refresh_connections(),
+            Ok(()) => {
+                self.known_hosts.loaded = false;
+                self.refresh_connections()
+            }
             Err(error) => self.dialog = Some(Dialog::failure("No se pudo deshacer", format!("{error:#}"))),
         }
     }
@@ -864,7 +918,7 @@ impl App {
 
         egui::Area::new(egui::Id::NULL.with("toasts"))
             .anchor(Align2::RIGHT_BOTTOM, [-16.0, -16.0])
-            .order(egui::Order::Foreground)
+            .order(egui::Order::Tooltip)
             .show(ctx, |ui| {
                 ui.spacing_mut().item_spacing.y = 8.0;
                 for (index, toast) in self.toasts.iter().enumerate().rev() {
@@ -1183,6 +1237,7 @@ impl App {
             Command::NewConnection => self.dialog = Some(Dialog::Edit(ConnForm::new())),
             Command::ImportConfig => self.import_ssh_config(),
             Command::Settings => self.dialog = Some(Dialog::Settings(Default::default())),
+            Command::KnownHosts => self.dialog = Some(Dialog::Settings(dialogs::SettingsTab::Hosts)),
             Command::Shortcuts => self.dialog = Some(Dialog::Settings(dialogs::SettingsTab::Atajos)),
             Command::About => self.dialog = Some(Dialog::About),
             Command::Palette => self.palette = Some(Palette::default()),
@@ -1292,6 +1347,7 @@ impl App {
                         ui.separator();
                         item(ui, "Cerrar pestaña", "", !self.tabs.is_empty(), Command::CloseTab);
                         item(ui, "Ajustes", "", true, Command::Settings);
+                        item(ui, "Hosts conocidos", "", true, Command::KnownHosts);
                         ui.separator();
                         item(ui, "Salir", "", true, Command::Quit);
                     });
@@ -1620,7 +1676,10 @@ impl App {
         let Some(mut dialog) = self.dialog.take() else { return };
         let mut forced = Secrets::is_master_forced(&self.store.lock().unwrap());
         let (forced_before, settings_before) = (forced, self.settings.clone());
-        let outcome = dialogs::show(ctx, &mut dialog, &mut forced, &self.connections, &mut self.settings);
+        let outcome = dialogs::show(ctx, &mut dialog, &mut forced, &self.connections, &mut self.settings, &mut self.known_hosts);
+        if let Some(entry) = self.known_hosts.delete.take() {
+            self.forget_known_hosts(vec![entry], None);
+        }
         if self.settings != settings_before {
             self.apply_settings();
         }
@@ -1715,6 +1774,10 @@ impl App {
             (Outcome::Submit, Dialog::SnippetVars(prompt)) => {
                 let text = prompt.rendered();
                 self.insert_into_active(&text, prompt.run);
+            }
+            (Outcome::Forget, Dialog::HostKeyChanged(change)) => {
+                let entries = known_hosts::load(&ssh::default_known_hosts()).map(|all| known_hosts::entries_for(&all, &change.host, change.port)).unwrap_or_default();
+                self.forget_known_hosts(entries, Some((change.host.clone(), change.port)));
             }
             (Outcome::Delete, Dialog::ConfirmClose(confirm)) => {
                 if confirm.dont_ask {

@@ -411,6 +411,7 @@ pub enum SettingsTab {
     #[default]
     General,
     Atajos,
+    Hosts,
 }
 
 /// Qué se cierra cuando se confirma (las pestañas se identifican por su id, no por su posición).
@@ -426,6 +427,36 @@ pub struct CloseConfirm {
     pub action: CloseAction,
     pub lines: Vec<String>,
     pub dont_ask: bool,
+}
+
+/// Lista de `known_hosts` del diálogo de ajustes, leída una vez y recargada al cambiar.
+#[derive(Default)]
+pub struct KnownHostsView {
+    entries: Vec<crate::known_hosts::KnownHost>,
+    pub query: String,
+    pub loaded: bool,
+    error: Option<String>,
+    /// Entrada que el usuario pidió olvidar; la procesa la aplicación.
+    pub delete: Option<crate::known_hosts::KnownHost>,
+}
+
+impl KnownHostsView {
+    fn ensure_loaded(&mut self) {
+        if self.loaded {
+            return;
+        }
+        self.loaded = true;
+        match crate::known_hosts::load(&crate::ssh::default_known_hosts()) {
+            Ok(entries) => {
+                self.entries = entries;
+                self.error = None;
+            }
+            Err(error) => {
+                self.entries.clear();
+                self.error = Some(format!("No se pudo leer known_hosts: {error}"));
+            }
+        }
+    }
 }
 
 pub enum Dialog {
@@ -452,6 +483,8 @@ pub enum Outcome {
     Submit,
     Trust(bool),
     ResetMasterKey,
+    /// Olvidar la huella antigua de un servidor y volver a conectar.
+    Forget,
     /// «Probar conexión» en el editor de conexión.
     Test,
 }
@@ -657,10 +690,11 @@ pub fn show(
     master_forced: &mut bool,
     connections: &[Connection],
     settings: &mut Settings,
+    hosts: &mut KnownHostsView,
 ) -> Outcome {
     match dialog {
         Dialog::Settings(tab) => {
-            let action = shell(ctx, Spec::new("Ajustes").width(520.0).cancel("Cerrar"), |ui| settings_body(ui, tab, settings, master_forced));
+            let action = shell(ctx, Spec::new("Ajustes").width(520.0).cancel("Cerrar"), |ui| settings_body(ui, tab, settings, master_forced, hosts, connections));
             plain(action, Outcome::None)
         }
         Dialog::ConfirmClose(confirm) => {
@@ -773,13 +807,14 @@ pub fn show(
             }
         }
         Dialog::HostKeyChanged(change) => {
-            let spec = Spec::new("La huella del servidor ha cambiado").cancel("Cerrar").extra("Copiar comando");
+            let spec = Spec::new("La huella del servidor ha cambiado").cancel("Cerrar").extra("Copiar comando").extra("Olvidar y volver a conectar");
             match shell(ctx, spec, |ui| host_key_changed_body(ui, change)) {
                 Action::Cancel => Outcome::Cancel,
-                Action::Extra(_) => {
+                Action::Extra(0) => {
                     ctx.copy_text(change.forget_command());
                     Outcome::None
                 }
+                Action::Extra(_) => Outcome::Forget,
                 _ => Outcome::None,
             }
         }
@@ -1168,11 +1203,11 @@ const SHORTCUTS: [(&str, &[(&str, &str)]); 4] = [
     ),
 ];
 
-fn settings_body(ui: &mut egui::Ui, tab: &mut SettingsTab, settings: &mut Settings, master_forced: &mut bool) -> bool {
+fn settings_body(ui: &mut egui::Ui, tab: &mut SettingsTab, settings: &mut Settings, master_forced: &mut bool, hosts: &mut KnownHostsView, connections: &[Connection]) -> bool {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 20.0;
         ui.spacing_mut().button_padding.x = 0.0;
-        for (choice, label) in [(SettingsTab::General, "General"), (SettingsTab::Atajos, "Atajos")] {
+        for (choice, label) in [(SettingsTab::General, "General"), (SettingsTab::Atajos, "Atajos"), (SettingsTab::Hosts, "Hosts conocidos")] {
             let selected = *tab == choice;
             let color = if selected { theme::text() } else { theme::subtext() };
             let font = FontId::new(14.0, if selected { crate::ui::strong_family() } else { egui::FontFamily::Proportional });
@@ -1183,6 +1218,7 @@ fn settings_body(ui: &mut egui::Ui, tab: &mut SettingsTab, settings: &mut Settin
             }
             if response.clicked() {
                 *tab = choice;
+                hosts.loaded = false;
             }
         }
     });
@@ -1194,6 +1230,10 @@ fn settings_body(ui: &mut egui::Ui, tab: &mut SettingsTab, settings: &mut Settin
             ui.add_space(6.0);
             ui.label(RichText::new(text).small().color(theme::subtext()));
         };
+        if *tab == SettingsTab::Hosts {
+            known_hosts_body(ui, hosts, connections);
+            return;
+        }
         if *tab == SettingsTab::Atajos {
             for (group, entries) in SHORTCUTS {
                 section(ui, group);
@@ -1282,6 +1322,76 @@ fn settings_body(ui: &mut egui::Ui, tab: &mut SettingsTab, settings: &mut Settin
 
     });
     false
+}
+
+fn known_hosts_body(ui: &mut egui::Ui, view: &mut KnownHostsView, connections: &[Connection]) {
+    view.ensure_loaded();
+    ui.add(
+        TextEdit::singleline(&mut view.query)
+            .hint_text("Buscar por host, conexión o huella")
+            .desired_width(f32::INFINITY),
+    );
+    ui.add_space(6.0);
+    if let Some(error) = &view.error {
+        ui.label(RichText::new(error).color(theme::red()));
+        return;
+    }
+    if view.entries.is_empty() {
+        ui.label(RichText::new("Aún no hay hosts conocidos. Aparecen aquí cuando confías en un servidor al conectar.").color(theme::subtext()));
+        return;
+    }
+    let query = view.query.trim().to_lowercase();
+    let mut shown = 0;
+    for entry in &view.entries {
+        let name = entry.display();
+        let endpoints = entry.endpoints();
+        let connection = connections.iter().find(|c| endpoints.iter().any(|(h, p)| h.eq_ignore_ascii_case(&c.host) && *p == c.port));
+        let haystack = format!("{} {} {}", entry.hosts.join(" "), connection.map_or("", |c| c.name.as_str()), entry.fingerprint).to_lowercase();
+        if !query.is_empty() && !haystack.contains(&query) {
+            continue;
+        }
+        shown += 1;
+        let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 48.0), egui::Sense::hover());
+        if response.hovered() {
+            ui.painter().rect_filled(rect, egui::CornerRadius::same(6), theme::surface());
+        }
+        let title = ui.painter().text(
+            rect.min + egui::vec2(10.0, 15.0),
+            egui::Align2::LEFT_CENTER,
+            &name,
+            FontId::new(14.0, crate::ui::strong_family()),
+            if entry.hashed { theme::subtext() } else { theme::text() },
+        );
+        if let Some(connection) = connection {
+            ui.painter().text(egui::pos2(title.max.x + 10.0, rect.min.y + 15.0), egui::Align2::LEFT_CENTER, &connection.name, FontId::proportional(12.0), theme::accent());
+        }
+        let short: String = entry.fingerprint.chars().take(28).collect();
+        ui.painter().text(
+            rect.min + egui::vec2(10.0, 34.0),
+            egui::Align2::LEFT_CENTER,
+            format!("{}  ·  {short}…", entry.key_type),
+            FontId::new(12.0, egui::FontFamily::Monospace),
+            theme::subtext(),
+        );
+        for (offset, glyph, tip) in [(56.0, crate::icons::COPY, "Copiar la huella"), (24.0, crate::icons::TRASH, "Olvidar este host")] {
+            let button = egui::Rect::from_center_size(egui::pos2(rect.max.x - offset, rect.center().y), egui::vec2(28.0, 28.0));
+            let response = ui.interact(button, ui.auto_id_with(("known-host", entry.index, glyph)), egui::Sense::click()).hand();
+            if response.hovered() {
+                ui.painter().rect_filled(button, egui::CornerRadius::same(6), theme::selection());
+            }
+            ui.painter().text(button.center(), egui::Align2::CENTER_CENTER, glyph, FontId::proportional(16.0), theme::text());
+            if response.on_hover_text(tip).clicked() {
+                if glyph == crate::icons::COPY {
+                    ui.ctx().copy_text(entry.fingerprint.clone());
+                } else {
+                    view.delete = Some(entry.clone());
+                }
+            }
+        }
+    }
+    if shown == 0 {
+        ui.label(RichText::new("Ningún host coincide con la búsqueda.").color(theme::subtext()));
+    }
 }
 
 fn snippet_body(ui: &mut egui::Ui, form: &mut SnippetForm) -> bool {

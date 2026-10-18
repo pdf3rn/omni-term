@@ -5,6 +5,7 @@ mod cursor;
 mod dialogs;
 mod explorer;
 mod icons;
+mod known_hosts;
 mod keys;
 mod layout;
 mod local;
