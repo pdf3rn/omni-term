@@ -160,6 +160,10 @@ pub struct App {
     renaming: Option<(usize, String, bool)>,
     palette: Option<Palette>,
     loaded_font: Option<String>,
+    /// Ids de conexión, de la usada más recientemente a la más antigua.
+    recent: Vec<i64>,
+    plus_selected: usize,
+    open_plus_menu: bool,
     sidebar_width: f32,
     focus_search: bool,
     /// Grupos de entorno plegados (en minúsculas).
@@ -197,6 +201,10 @@ impl App {
         let snippets = store.list_snippets().unwrap_or_default();
         let store = Arc::new(Mutex::new(store));
         let secrets = Secrets::select(store.clone());
+        let recent: Vec<i64> = match store.lock().unwrap().meta("recent_connections") {
+            Ok(Some(bytes)) => String::from_utf8_lossy(&bytes).split(',').filter_map(|id| id.trim().parse().ok()).collect(),
+            _ => Vec::new(),
+        };
         let settings = Settings::load(&store.lock().unwrap());
         let font_error = install_fonts(&cc.egui_ctx, settings.font_path.as_deref());
         theme::set_accent(settings.accent.index());
@@ -258,6 +266,9 @@ impl App {
             renaming: None,
             palette: None,
             loaded_font: None,
+            recent,
+            plus_selected: 0,
+            open_plus_menu: false,
             sidebar_width,
             focus_search: false,
             collapsed_groups,
@@ -563,7 +574,21 @@ impl App {
         }
     }
 
+    /// Anota la conexión como la usada más recientemente (solo aperturas nuevas, no reconexiones).
+    fn touch_recent(&mut self, id: i64) {
+        self.recent.retain(|r| *r != id);
+        self.recent.insert(0, id);
+        self.recent.truncate(20);
+        let text = self.recent.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
+        let _ = self.store.lock().unwrap().set_meta("recent_connections", text.as_bytes());
+    }
+
     fn finish_open(&mut self, connection: Connection, credentials: Credentials, slot: Option<u64>, purpose: Purpose) {
+        if slot.is_none() && !matches!(purpose, Purpose::Pane { .. }) {
+            if let Some(id) = connection.id {
+                self.touch_recent(id);
+            }
+        }
         let retry = Retry::Open(connection.clone(), slot, purpose.clone());
         let result = match purpose {
             Purpose::Terminal => self.open_ssh(connection, credentials, slot),
@@ -863,6 +888,22 @@ impl App {
             });
         }
         open
+    }
+
+    /// Hasta 5 conexiones para el menú del «+»: las últimas usadas y, si faltan, las demás por nombre.
+    fn recent_connections(&self) -> Vec<Connection> {
+        let mut list: Vec<Connection> = self
+            .recent
+            .iter()
+            .filter_map(|id| self.connections.iter().find(|c| c.id == Some(*id)).cloned())
+            .take(5)
+            .collect();
+        if list.len() < 5 {
+            let mut rest: Vec<&Connection> = self.connections.iter().filter(|c| !list.iter().any(|l| l.id == c.id)).collect();
+            rest.sort_by_key(|c| c.name.to_lowercase());
+            list.extend(rest.into_iter().take(5 - list.len()).cloned());
+        }
+        list
     }
 
     fn palette_items(&self) -> Vec<palette::Item> {
@@ -1812,6 +1853,112 @@ fn ctx_width(ctx: &egui::Context) -> f32 {
     ctx.content_rect().width()
 }
 
+enum PlusChoice {
+    Local,
+    Connect(Connection),
+    Files(Connection),
+    All,
+}
+
+/// Contenido del menú del «+»: terminal local primero, luego conexiones recientes y «Ver todas».
+fn plus_menu(ui: &mut egui::Ui, recents: &[Connection], selected: &mut usize, choice: &mut Option<PlusChoice>) {
+    ui.set_width(310.0);
+    let rows = recents.len() + 2;
+    let (down, up, enter) = ui.ctx().input_mut(|i| {
+        (
+            i.consume_key(Modifiers::NONE, Key::ArrowDown),
+            i.consume_key(Modifiers::NONE, Key::ArrowUp),
+            i.consume_key(Modifiers::NONE, Key::Enter),
+        )
+    });
+    if down {
+        *selected = (*selected + 1) % rows;
+    }
+    if up {
+        *selected = (*selected + rows - 1) % rows;
+    }
+    *selected = (*selected).min(rows - 1);
+    let mut picked: Option<usize> = enter.then_some(*selected);
+    let mut files_for: Option<usize> = None;
+    ui.spacing_mut().item_spacing.y = 2.0;
+
+    let row = |ui: &mut egui::Ui, index: usize, selected: &mut usize| -> (Rect, bool) {
+        let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 40.0), Sense::click());
+        let response = response.hand();
+        if response.hovered() && ui.input(|i| i.pointer.delta() != Vec2::ZERO) {
+            *selected = index;
+        }
+        if *selected == index {
+            ui.painter().rect_filled(rect, CornerRadius::same(CONTROL_RADIUS), theme::selection());
+        }
+        (rect, response.clicked())
+    };
+
+    let (rect, clicked) = row(ui, 0, selected);
+    ui.painter().text(rect.min + Vec2::new(20.0, 20.0), Align2::CENTER_CENTER, icons::TERMINAL, FontId::proportional(18.0), theme::text());
+    ui.painter().text(rect.min + Vec2::new(42.0, 13.0), Align2::LEFT_CENTER, "Terminal local", FontId::new(14.0, strong_family()), theme::text());
+    ui.painter().text(rect.min + Vec2::new(42.0, 29.0), Align2::LEFT_CENTER, "Este equipo", FontId::new(12.0, FontFamily::Proportional), theme::subtext());
+    if clicked {
+        picked = Some(0);
+    }
+
+    if !recents.is_empty() {
+        ui.add_space(6.0);
+        ui.label(RichText::new("Recientes").small().color(theme::subtext()));
+    }
+    for (offset, connection) in recents.iter().enumerate() {
+        let index = offset + 1;
+        let (rect, clicked) = row(ui, index, selected);
+        let badge = Rect::from_min_size(rect.min + Vec2::new(6.0, 6.0), Vec2::splat(28.0));
+        let fill = connection.color.map_or_else(theme::surface, theme::identity);
+        let ink = if connection.color.is_some() { theme::base() } else { theme::text() };
+        ui.painter().rect_filled(badge, CornerRadius::same(6), fill);
+        let initial = connection.name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default();
+        ui.painter().text(badge.center(), Align2::CENTER_CENTER, initial, FontId::new(14.0, strong_family()), ink);
+        ui.painter().text(rect.min + Vec2::new(44.0, 13.0), Align2::LEFT_CENTER, &connection.name, FontId::new(14.0, strong_family()), theme::text());
+        ui.painter().text(
+            rect.min + Vec2::new(44.0, 29.0),
+            Align2::LEFT_CENTER,
+            format!("{}@{}", connection.user, connection.host),
+            FontId::new(12.0, FontFamily::Proportional),
+            theme::subtext(),
+        );
+        let files = Rect::from_center_size(Pos2::new(rect.max.x - 20.0, rect.center().y), Vec2::splat(28.0));
+        let files_response = ui.interact(files, ui.auto_id_with(("plus-files", index)), Sense::click()).hand();
+        if files_response.hovered() {
+            ui.painter().rect_filled(files, CornerRadius::same(CONTROL_RADIUS), theme::surface());
+        }
+        ui.painter().text(files.center(), Align2::CENTER_CENTER, icons::FOLDER, FontId::proportional(16.0), theme::subtext());
+        if files_response.on_hover_text("Abrir el explorador de archivos").clicked() {
+            files_for = Some(index);
+        } else if clicked {
+            picked = Some(index);
+        }
+    }
+
+    ui.add_space(4.0);
+    let index = rows - 1;
+    let (rect, clicked) = row(ui, index, selected);
+    ui.painter().text(rect.min + Vec2::new(20.0, 20.0), Align2::CENTER_CENTER, icons::SEARCH, FontId::proportional(16.0), theme::subtext());
+    ui.painter().text(rect.min + Vec2::new(42.0, 20.0), Align2::LEFT_CENTER, "Ver todas…", FontId::new(14.0, FontFamily::Proportional), theme::text());
+    ui.painter().text(rect.max - Vec2::new(10.0, 20.0), Align2::RIGHT_CENTER, "Ctrl+Shift+P", FontId::new(12.0, FontFamily::Proportional), theme::subtext());
+    if clicked {
+        picked = Some(index);
+    }
+
+    let result = match (files_for, picked) {
+        (Some(index), _) => recents.get(index - 1).cloned().map(PlusChoice::Files),
+        (None, Some(0)) => Some(PlusChoice::Local),
+        (None, Some(index)) if index == rows - 1 => Some(PlusChoice::All),
+        (None, Some(index)) => recents.get(index - 1).cloned().map(PlusChoice::Connect),
+        (None, None) => None,
+    };
+    if result.is_some() {
+        *choice = result;
+        ui.close();
+    }
+}
+
 /// Una línea por túnel: punto de estado, resumen y número de conexiones atendidas.
 fn tunnel_line(ui: &mut egui::Ui, status: &ssh::TunnelStatus) {
     let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 20.0), Sense::hover());
@@ -2064,6 +2211,9 @@ impl eframe::App for App {
         if ctx.input_mut(|i| i.consume_key(Modifiers::CTRL | Modifiers::SHIFT, Key::P)) && self.dialog.is_none() {
             self.palette = if self.palette.is_some() { None } else { Some(Palette::default()) };
         }
+        if ctx.input_mut(|i| i.consume_key(Modifiers::CTRL | Modifiers::SHIFT, Key::T)) && self.dialog.is_none() {
+            self.open_plus_menu = true;
+        }
         // Alt+1…9 salta a esa pestaña (Alt+9, a la última); Ctrl+Tab y Ctrl+Mayús+Tab recorren.
         let (jump, step) = ctx.input_mut(|i| {
             let digits = [Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5, Key::Num6, Key::Num7, Key::Num8, Key::Num9];
@@ -2094,7 +2244,6 @@ impl eframe::App for App {
 
         let mut activate = None;
         let mut close = None;
-        let mut new_local = false;
         let mut toggle_sidebar_button = false;
         let mut files_tab: Option<i64> = None;
         let mut split: Option<Dir> = None;
@@ -2104,6 +2253,10 @@ impl eframe::App for App {
         let mut rename_done: Option<(usize, Option<String>)> = None;
         let mut tab_menu: Option<(usize, TabAction)> = None;
         let mut tab_rects: Vec<Rect> = Vec::new();
+        let plus_recents = self.recent_connections();
+        let mut plus_selected = self.plus_selected;
+        let mut plus_choice: Option<PlusChoice> = None;
+        let mut open_plus_menu = std::mem::take(&mut self.open_plus_menu);
         let mut dragging: Option<usize> = None;
         Panel::top("tabs")
             .exact_size(TAB_BAR_HEIGHT)
@@ -2153,9 +2306,17 @@ impl eframe::App for App {
                     }
                     ui.add_space(6.0);
                     let plus = ui.add(Button::new(RichText::new(icons::PLUS).size(16.0)).fill(Color32::TRANSPARENT).min_size(Vec2::splat(28.0)));
-                    if plus.on_hover_text("Nueva pestaña").clicked() {
-                        new_local = true;
+                    let plus = plus.on_hover_text("Nueva pestaña (Ctrl+Shift+T)");
+                    let popup_id = egui::Popup::default_response_id(&plus);
+                    if std::mem::take(&mut open_plus_menu) {
+                        egui::Popup::open_id(ui.ctx(), popup_id);
                     }
+                    if !egui::Popup::is_id_open(ui.ctx(), popup_id) {
+                        plus_selected = 0;
+                    }
+                    egui::Popup::menu(&plus).width(330.0).show(|ui| {
+                        plus_menu(ui, &plus_recents, &mut plus_selected, &mut plus_choice);
+                    });
 
                     // Acciones de la pestaña activa, juntas y a la derecha, con el mismo estilo.
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -2191,6 +2352,14 @@ impl eframe::App for App {
             });
 
         self.renaming = renaming;
+        self.plus_selected = plus_selected;
+        match plus_choice {
+            Some(PlusChoice::Local) => self.open_queue.push_back(SavedTab::plain(TabKind::Local)),
+            Some(PlusChoice::Connect(connection)) => self.begin_open(connection, None, Purpose::Terminal),
+            Some(PlusChoice::Files(connection)) => self.begin_open(connection, None, Purpose::Explorer(None, None)),
+            Some(PlusChoice::All) => self.palette = Some(Palette::default()),
+            None => {}
+        }
         if let Some((i, name)) = rename_done {
             self.renaming = None;
             if let (Some(tab), Some(name)) = (self.tabs.get_mut(i), name) {
@@ -2257,9 +2426,6 @@ impl eframe::App for App {
             if let Some(connection) = self.connections.iter().find(|c| c.id == Some(id)).cloned() {
                 self.begin_open(connection, None, Purpose::Explorer(None, None));
             }
-        }
-        if new_local {
-            self.open_queue.push_back(SavedTab::plain(TabKind::Local));
         }
         if let Some(i) = close {
             self.close_tab(i);
