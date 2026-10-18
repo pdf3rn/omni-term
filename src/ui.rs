@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 
@@ -11,8 +11,8 @@ use zeroize::Zeroizing;
 use crate::dialogs::{self, ConnForm, Dialog, Outcome, Pending, SecretPrompt, UnlockPrompt};
 use crate::pane::{self, bold_family, Pane, DEFAULT_FONT_SIZE, MAX_FONT_SIZE, MIN_FONT_SIZE, PADDING};
 use crate::secrets::{account_for, SecretError, SecretKind, SecretStore, Secrets};
-use crate::ssh::{self, Credentials, HostKeyRequest, UiEvent};
-use crate::store::{Auth, Connection, Store, TabKind};
+use crate::ssh::{self, Credentials, HostKeyRequest, TunnelState, Tunnels, UiEvent};
+use crate::store::{Auth, Connection, Forward, Store, TabKind};
 use crate::term::Session;
 use crate::theme;
 
@@ -27,6 +27,7 @@ struct Tab {
     kind: TabKind,
     label: String,
     pane: Pane,
+    tunnels: Option<Tunnels>,
 }
 
 pub struct App {
@@ -42,6 +43,7 @@ pub struct App {
     store: Arc<Mutex<Store>>,
     secrets: Secrets,
     connections: Vec<Connection>,
+    forwards: HashMap<i64, Vec<Forward>>,
     events_tx: Sender<UiEvent>,
     events_rx: Receiver<UiEvent>,
     host_keys: VecDeque<HostKeyRequest>,
@@ -67,6 +69,7 @@ impl App {
         };
         let (layout, active) = store.load_layout().unwrap_or_default();
         let connections = store.list_connections().unwrap_or_default();
+        let forwards = store.all_forwards().unwrap_or_default();
         let store = Arc::new(Mutex::new(store));
         let secrets = Secrets::select(store.clone());
         let font_size = store
@@ -101,6 +104,7 @@ impl App {
             store,
             secrets,
             connections,
+            forwards,
             events_tx,
             events_rx,
             host_keys: VecDeque::new(),
@@ -122,7 +126,7 @@ impl App {
         let (cols, rows) = self.grid;
         let session = Session::start(cols, rows, move || wake(), move |feed| crate::local::spawn(cols, rows, feed))?;
         let id = self.take_tab_id();
-        self.tabs.push(Tab { id, kind: TabKind::Local, label: "Terminal local".into(), pane: Pane::new(session, self.debug_keys) });
+        self.tabs.push(Tab { id, kind: TabKind::Local, label: "Terminal local".into(), pane: Pane::new(session, self.debug_keys), tunnels: None });
         self.active = self.tabs.len() - 1;
         Ok(())
     }
@@ -141,11 +145,14 @@ impl App {
         let events = self.events_tx.clone();
         let label = connection.name.clone();
         let (cols, rows) = self.grid;
+        let forwards = self.forwards.get(&id).cloned().unwrap_or_default();
+        let tunnels = ssh::new_tunnels(&forwards);
+        let tunnels_for_spawn = tunnels.clone();
         let session = Session::start(cols, rows, move || wake(), move |feed| {
-            Ok(ssh::spawn(&handle, connection, credentials, (cols, rows), feed, events, wake_for_ssh, ssh::default_known_hosts()))
+            Ok(ssh::spawn(&handle, connection, credentials, (cols, rows), feed, events, wake_for_ssh, ssh::default_known_hosts(), tunnels_for_spawn))
         })?;
         let tab_id = slot.unwrap_or_else(|| self.take_tab_id());
-        let tab = Tab { id: tab_id, kind: TabKind::Connection(id), label, pane: Pane::new(session, self.debug_keys) };
+        let tab = Tab { id: tab_id, kind: TabKind::Connection(id), label, pane: Pane::new(session, self.debug_keys), tunnels: Some(tunnels) };
         match slot.and_then(|slot| self.tabs.iter().position(|t| t.id == slot)) {
             Some(index) => {
                 self.tabs[index] = tab;
@@ -215,7 +222,9 @@ impl App {
     }
 
     fn refresh_connections(&mut self) {
-        self.connections = self.store.lock().unwrap().list_connections().unwrap_or_default();
+        let store = self.store.lock().unwrap();
+        self.connections = store.list_connections().unwrap_or_default();
+        self.forwards = store.all_forwards().unwrap_or_default();
     }
 
     fn reconnect(&mut self, index: usize) {
@@ -330,12 +339,12 @@ impl App {
             (Outcome::Trust(accepted), Dialog::HostKey(request)) => {
                 let _ = request.reply.send(accepted);
             }
-            (Outcome::Save, Dialog::Edit(mut form)) => match form.to_connection() {
+            (Outcome::Save, Dialog::Edit(mut form)) => match form.to_connection().and_then(|c| form.to_forwards().map(|f| (c, f))) {
                 Err(message) => {
                     form.error = Some(message);
                     self.dialog = Some(Dialog::Edit(form));
                 }
-                Ok(connection) => {
+                Ok((connection, forwards)) => {
                     let saved = self.store.lock().unwrap().save_connection(&connection);
                     match saved {
                         Err(error) => {
@@ -343,6 +352,9 @@ impl App {
                             self.dialog = Some(Dialog::Edit(form));
                         }
                         Ok(id) => {
+                            if let Err(error) = self.store.lock().unwrap().replace_forwards(id, &forwards) {
+                                eprintln!("no se pudieron guardar los túneles: {error:#}");
+                            }
                             self.refresh_connections();
                             if !form.secret.is_empty() && connection.auth != Auth::Agent {
                                 let kind = if connection.auth == Auth::Password { SecretKind::Password } else { SecretKind::Passphrase };
@@ -489,6 +501,25 @@ impl App {
                             ui.close();
                         }
                     });
+
+                    let live = connection
+                        .id
+                        .and_then(|id| self.tabs.iter().find(|t| t.kind == TabKind::Connection(id)))
+                        .and_then(|t| t.tunnels.clone());
+                    match live {
+                        Some(tunnels) => {
+                            for status in tunnels.lock().unwrap().iter() {
+                                tunnel_line(ui, status);
+                            }
+                        }
+                        None => {
+                            let count = connection.id.and_then(|id| self.forwards.get(&id)).map_or(0, Vec::len);
+                            if count > 0 {
+                                let text = if count == 1 { "1 túnel".to_string() } else { format!("{count} túneles") };
+                                ui.label(RichText::new(text).small().color(theme::SUBTEXT));
+                            }
+                        }
+                    }
                 }
 
                 ui.add_space(8.0);
@@ -528,12 +559,41 @@ impl App {
             self.begin_open(connection, None);
         }
         if let Some(connection) = edit {
-            self.dialog = Some(Dialog::Edit(ConnForm::from_connection(&connection)));
+            self.dialog = Some(Dialog::Edit(ConnForm::from_connection(&connection, self.forwards.get(&connection.id.unwrap_or_default()).map_or(&[][..], |f| f.as_slice()))));
         }
         if let Some(connection) = delete {
             self.dialog = connection.id.map(|id| Dialog::ConfirmDelete { id, name: connection.name });
         }
     }
+}
+
+/// Una línea por túnel: punto de estado, resumen y número de conexiones atendidas.
+fn tunnel_line(ui: &mut egui::Ui, status: &ssh::TunnelStatus) {
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 20.0), Sense::hover());
+    let (color, tip) = match &status.state {
+        TunnelState::Starting => (theme::SUBTEXT, "Iniciando".to_string()),
+        TunnelState::Active => (theme::ACCENT, "Activo".to_string()),
+        TunnelState::Failed(reason) => (theme::RED, reason.clone()),
+        TunnelState::Stopped => (theme::SELECTION, "Detenido".to_string()),
+    };
+    ui.painter().circle_filled(Pos2::new(rect.min.x + 14.0, rect.center().y), 3.0, color);
+    ui.painter().text(
+        Pos2::new(rect.min.x + 26.0, rect.center().y),
+        Align2::LEFT_CENTER,
+        status.forward.summary(),
+        FontId::new(12.0, FontFamily::Proportional),
+        theme::SUBTEXT,
+    );
+    if status.served > 0 {
+        ui.painter().text(
+            Pos2::new(rect.max.x - 10.0, rect.center().y),
+            Align2::RIGHT_CENTER,
+            status.served.to_string(),
+            FontId::new(12.0, FontFamily::Proportional),
+            theme::SUBTEXT,
+        );
+    }
+    response.on_hover_text(tip);
 }
 
 fn credentials(kind: SecretKind, secret: Zeroizing<String>) -> Credentials {

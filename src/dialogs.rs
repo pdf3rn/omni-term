@@ -5,10 +5,62 @@ use zeroize::Zeroizing;
 
 use crate::secrets::SecretKind;
 use crate::ssh::HostKeyRequest;
-use crate::store::{Auth, Connection};
+use crate::store::{Auth, Connection, Forward, ForwardKind};
 use crate::theme;
 
+pub struct ForwardRow {
+    pub kind: ForwardKind,
+    pub bind_host: String,
+    pub bind_port: String,
+    pub dest_host: String,
+    pub dest_port: String,
+}
+
+impl ForwardRow {
+    fn new() -> Self {
+        Self {
+            kind: ForwardKind::Local,
+            bind_host: "127.0.0.1".into(),
+            bind_port: String::new(),
+            dest_host: "localhost".into(),
+            dest_port: String::new(),
+        }
+    }
+
+    fn from_forward(forward: &Forward) -> Self {
+        Self {
+            kind: forward.kind,
+            bind_host: forward.bind_host.clone(),
+            bind_port: forward.bind_port.to_string(),
+            dest_host: forward.dest_host.clone(),
+            dest_port: forward.dest_port.to_string(),
+        }
+    }
+
+    fn to_forward(&self) -> Result<Forward, String> {
+        let port = |text: &str, what: &str| -> Result<u16, String> {
+            match text.trim().parse::<u16>() {
+                Ok(port) if port > 0 => Ok(port),
+                _ => Err(format!("El puerto {what} de un túnel debe estar entre 1 y 65535")),
+            }
+        };
+        let bind_host = self.bind_host.trim();
+        let dest_host = self.dest_host.trim();
+        if bind_host.is_empty() || dest_host.is_empty() {
+            return Err("Cada túnel necesita dirección de escucha y de destino".into());
+        }
+        Ok(Forward {
+            kind: self.kind,
+            bind_host: bind_host.into(),
+            bind_port: port(&self.bind_port, "de escucha")?,
+            dest_host: dest_host.into(),
+            dest_port: port(&self.dest_port, "de destino")?,
+        })
+    }
+}
+
 pub struct ConnForm {
+    pub forwards: Vec<ForwardRow>,
     pub id: Option<i64>,
     pub name: String,
     pub host: String,
@@ -34,11 +86,13 @@ impl ConnForm {
             init_command: String::new(),
             secret: String::new(),
             error: None,
+            forwards: Vec::new(),
         }
     }
 
-    pub fn from_connection(connection: &Connection) -> Self {
+    pub fn from_connection(connection: &Connection, forwards: &[Forward]) -> Self {
         Self {
+            forwards: forwards.iter().map(ForwardRow::from_forward).collect(),
             id: connection.id,
             name: connection.name.clone(),
             host: connection.host.clone(),
@@ -50,6 +104,10 @@ impl ConnForm {
             secret: String::new(),
             error: None,
         }
+    }
+
+    pub fn to_forwards(&self) -> Result<Vec<Forward>, String> {
+        self.forwards.iter().map(ForwardRow::to_forward).collect()
     }
 
     /// Valida el formulario y construye la conexión.
@@ -160,7 +218,7 @@ fn enter_pressed(ui: &egui::Ui) -> bool {
 pub fn show(ctx: &egui::Context, dialog: &mut Dialog, master_forced: bool) -> Outcome {
     let mut outcome = Outcome::None;
     let response = Modal::new(id()).show(ctx, |ui| {
-        ui.set_width(400.0);
+        ui.set_width(520.0);
         ui.spacing_mut().item_spacing.y = 8.0;
         match dialog {
             Dialog::Edit(form) => outcome = edit(ui, form),
@@ -250,6 +308,42 @@ fn edit(ui: &mut egui::Ui, form: &mut ConnForm) -> Outcome {
         ui.add(TextEdit::singleline(&mut form.init_command).hint_text("opcional").desired_width(240.0));
         ui.end_row();
     });
+    ui.add_space(4.0);
+    ui.label(RichText::new("Túneles (se activan al conectar)").small().color(theme::SUBTEXT));
+    let mut remove = None;
+    for (index, row) in form.forwards.iter_mut().enumerate() {
+        ui.horizontal(|ui| {
+            ComboBox::from_id_salt(("fwd-kind", index))
+                .width(96.0)
+                .selected_text(match row.kind {
+                    ForwardKind::Local => "Local -L",
+                    ForwardKind::Remote => "Remoto -R",
+                })
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut row.kind, ForwardKind::Local, "Local -L");
+                    ui.selectable_value(&mut row.kind, ForwardKind::Remote, "Remoto -R");
+                });
+            ui.add(TextEdit::singleline(&mut row.bind_host).desired_width(84.0).hint_text("escucha"));
+            ui.add(TextEdit::singleline(&mut row.bind_port).desired_width(48.0).hint_text("puerto"));
+            ui.label("→");
+            ui.add(TextEdit::singleline(&mut row.dest_host).desired_width(84.0).hint_text("destino"));
+            ui.add(TextEdit::singleline(&mut row.dest_port).desired_width(48.0).hint_text("puerto"));
+            if ui.add(egui::Button::new("×").frame(false)).on_hover_text("Quitar túnel").clicked() {
+                remove = Some(index);
+            }
+        });
+    }
+    if let Some(index) = remove {
+        form.forwards.remove(index);
+    }
+    if ui.add(egui::Button::new("+ Añadir túnel").fill(egui::Color32::TRANSPARENT)).clicked() {
+        form.forwards.push(ForwardRow::new());
+    }
+    ui.label(
+        RichText::new("-L: este equipo escucha y reenvía al destino vía el servidor. -R: el servidor escucha y reenvía a un destino alcanzable desde aquí. Los cambios se aplican al reconectar.")
+            .small()
+            .color(theme::SUBTEXT),
+    );
     error_label(ui, &form.error);
     match buttons(ui, "Guardar") {
         Some(true) => Outcome::Save,

@@ -9,11 +9,12 @@ use russh::client::{self, Handle, Handler};
 use russh::keys::agent::client::AgentClient;
 use russh::keys::known_hosts::{check_known_hosts_path, learn_known_hosts_path};
 use russh::keys::{HashAlg, PrivateKeyWithHashAlg, PublicKeyOrCertificate};
-use russh::ChannelMsg;
+use russh::client::{ChannelOpenHandle, Msg, Session as ClientSession};
+use russh::{Channel, ChannelMsg};
 use tokio::sync::{mpsc, oneshot};
 use zeroize::Zeroizing;
 
-use crate::store::{Auth, Connection};
+use crate::store::{Auth, Connection, Forward, ForwardKind};
 use crate::term::{Backend, Feed};
 
 /// Petición de confianza para un servidor que no está en `known_hosts`.
@@ -33,6 +34,70 @@ pub enum UiEvent {
 pub struct Credentials {
     pub password: Option<Zeroizing<String>>,
     pub key_passphrase: Option<Zeroizing<String>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TunnelState {
+    Starting,
+    Active,
+    Failed(String),
+    Stopped,
+}
+
+#[derive(Clone, Debug)]
+pub struct TunnelStatus {
+    pub forward: Forward,
+    pub state: TunnelState,
+    /// Conexiones atendidas desde que arrancó el túnel.
+    pub served: u64,
+}
+
+/// Estado compartido de los túneles de una sesión, en el orden de `forwards`.
+pub type Tunnels = Arc<Mutex<Vec<TunnelStatus>>>;
+
+pub fn new_tunnels(forwards: &[Forward]) -> Tunnels {
+    Arc::new(Mutex::new(
+        forwards
+            .iter()
+            .map(|forward| TunnelStatus { forward: forward.clone(), state: TunnelState::Starting, served: 0 })
+            .collect(),
+    ))
+}
+
+fn set_state(tunnels: &Tunnels, index: usize, state: TunnelState) {
+    if let Some(status) = tunnels.lock().unwrap().get_mut(index) {
+        status.state = state;
+    }
+}
+
+fn count_served(tunnels: &Tunnels, index: usize) {
+    if let Some(status) = tunnels.lock().unwrap().get_mut(index) {
+        status.served += 1;
+    }
+}
+
+fn stop_all(tunnels: &Tunnels) {
+    for status in tunnels.lock().unwrap().iter_mut() {
+        if status.state == TunnelState::Active || status.state == TunnelState::Starting {
+            status.state = TunnelState::Stopped;
+        }
+    }
+}
+
+/// Destino de un reenvío remoto (`-R`) registrado en el servidor.
+struct RemoteTarget {
+    bind_port: u32,
+    dest_host: String,
+    dest_port: u16,
+    index: usize,
+}
+
+async fn pump<A, B>(mut a: A, mut b: B)
+where
+    A: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    B: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let _ = tokio::io::copy_bidirectional(&mut a, &mut b).await;
 }
 
 enum Command {
@@ -69,6 +134,8 @@ struct Client {
     wake: Arc<dyn Fn() + Send + Sync>,
     /// Motivo por el que se rechazó la clave del servidor, para mostrarlo en la terminal.
     rejection: Arc<Mutex<Option<String>>>,
+    remote: Arc<Mutex<Vec<RemoteTarget>>>,
+    tunnels: Tunnels,
 }
 
 impl Handler for Client {
@@ -115,6 +182,39 @@ impl Handler for Client {
             Ok(false)
         }
     }
+
+    async fn server_channel_open_forwarded_tcpip(
+        &mut self,
+        channel: Channel<Msg>,
+        connected_address: &str,
+        connected_port: u32,
+        _originator_address: &str,
+        _originator_port: u32,
+        reply: ChannelOpenHandle,
+        _session: &mut ClientSession,
+    ) -> Result<(), Self::Error> {
+        let target = {
+            let remote = self.remote.lock().unwrap();
+            remote
+                .iter()
+                .find(|t| t.bind_port == connected_port)
+                .map(|t| (t.dest_host.clone(), t.dest_port, t.index))
+        };
+        let Some((dest_host, dest_port, index)) = target else {
+            eprintln!("conexión remota inesperada en {connected_address}:{connected_port}");
+            reply.reject(russh::ChannelOpenFailure::AdministrativelyProhibited).await;
+            return Ok(());
+        };
+        reply.accept().await;
+        let tunnels = self.tunnels.clone();
+        tokio::spawn(async move {
+            if let Ok(local) = tokio::net::TcpStream::connect((dest_host.as_str(), dest_port)).await {
+                count_served(&tunnels, index);
+                pump(local, channel.into_stream()).await;
+            }
+        });
+        Ok(())
+    }
 }
 
 /// `true` si la llave privada necesita passphrase.
@@ -144,10 +244,12 @@ pub fn spawn(
     events: std_mpsc::Sender<UiEvent>,
     wake: Arc<dyn Fn() + Send + Sync>,
     known_hosts: std::path::PathBuf,
+    tunnels: Tunnels,
 ) -> Arc<dyn Backend> {
     let (commands, receiver) = mpsc::unbounded_channel();
     runtime.spawn(async move {
-        let outcome = run(&connection, credentials, size, &mut feed, receiver, events, wake, known_hosts).await;
+        let outcome = run(&connection, credentials, size, &mut feed, receiver, events, wake, known_hosts, tunnels.clone()).await;
+        stop_all(&tunnels);
         match outcome {
             Ok(()) => feed.close(),
             Err(error) => {
@@ -168,6 +270,7 @@ async fn run(
     events: std_mpsc::Sender<UiEvent>,
     wake: Arc<dyn Fn() + Send + Sync>,
     known_hosts: std::path::PathBuf,
+    tunnels: Tunnels,
 ) -> anyhow::Result<()> {
     feed.feed(
         format!("Conectando a {}@{}:{}...\r\n", connection.user, connection.host, connection.port).as_bytes(),
@@ -178,6 +281,7 @@ async fn run(
         ..Default::default()
     });
     let rejection = Arc::new(Mutex::new(None));
+    let remote = Arc::new(Mutex::new(Vec::new()));
     let handler = Client {
         known_hosts,
         host: connection.host.clone(),
@@ -185,6 +289,8 @@ async fn run(
         events,
         wake,
         rejection: rejection.clone(),
+        remote: remote.clone(),
+        tunnels: tunnels.clone(),
     };
 
     let mut session = match client::connect(config, (connection.host.as_str(), connection.port), handler).await {
@@ -200,6 +306,11 @@ async fn run(
 
     authenticate(&mut session, connection, &credentials).await?;
     feed.feed(b"Sesion iniciada.\r\n");
+
+    let session = Arc::new(session);
+    // Al terminar `run`, el JoinSet cancela los oyentes de los túneles.
+    let mut tasks = tokio::task::JoinSet::new();
+    start_forwards(&session, &tunnels, &remote, &mut tasks).await;
 
     let mut channel = session.channel_open_session().await.context("abriendo el canal")?;
     channel
@@ -237,6 +348,68 @@ async fn run(
     }
     let _ = session.disconnect(russh::Disconnect::ByApplication, "", "es").await;
     Ok(())
+}
+
+async fn start_forwards(
+    session: &Arc<Handle<Client>>,
+    tunnels: &Tunnels,
+    remote: &Arc<Mutex<Vec<RemoteTarget>>>,
+    tasks: &mut tokio::task::JoinSet<()>,
+) {
+    let forwards: Vec<Forward> = tunnels.lock().unwrap().iter().map(|t| t.forward.clone()).collect();
+    for (index, forward) in forwards.into_iter().enumerate() {
+        match forward.kind {
+            ForwardKind::Local => {
+                tasks.spawn(local_forward(session.clone(), tunnels.clone(), index, forward));
+            }
+            ForwardKind::Remote => {
+                remote.lock().unwrap().push(RemoteTarget {
+                    bind_port: forward.bind_port as u32,
+                    dest_host: forward.dest_host.clone(),
+                    dest_port: forward.dest_port,
+                    index,
+                });
+                match session.tcpip_forward(forward.bind_host.clone(), forward.bind_port as u32).await {
+                    Ok(_) => set_state(tunnels, index, TunnelState::Active),
+                    Err(error) => {
+                        remote.lock().unwrap().retain(|t| t.index != index);
+                        set_state(
+                            tunnels,
+                            index,
+                            TunnelState::Failed(format!("el servidor rechazó el reenvío remoto: {error}")),
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+async fn local_forward(session: Arc<Handle<Client>>, tunnels: Tunnels, index: usize, forward: Forward) {
+    let listener = match tokio::net::TcpListener::bind((forward.bind_host.as_str(), forward.bind_port)).await {
+        Ok(listener) => listener,
+        Err(error) => {
+            let reason = format!("no se pudo escuchar en {}:{}: {error}", forward.bind_host, forward.bind_port);
+            set_state(&tunnels, index, TunnelState::Failed(reason));
+            return;
+        }
+    };
+    set_state(&tunnels, index, TunnelState::Active);
+    while let Ok((local, peer)) = listener.accept().await {
+        let session = session.clone();
+        let tunnels = tunnels.clone();
+        let dest_host = forward.dest_host.clone();
+        let dest_port = forward.dest_port as u32;
+        tokio::spawn(async move {
+            let opened = session
+                .channel_open_direct_tcpip(dest_host, dest_port, peer.ip().to_string(), peer.port() as u32)
+                .await;
+            if let Ok(channel) = opened {
+                count_served(&tunnels, index);
+                pump(local, channel.into_stream()).await;
+            }
+        });
+    }
 }
 
 async fn authenticate(
@@ -401,10 +574,36 @@ mod tests {
             init_command: None,
         };
         let again = connection.clone();
+
+        // Destino de los túneles: un servidor que saluda al conectar.
+        let hello = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let hello_port = hello.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            use std::io::Write;
+            while let Ok((mut stream, _)) = hello.accept() {
+                let _ = stream.write_all(b"hello-omni\n");
+            }
+        });
+        let free_port = || std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let (local_bind, remote_bind) = (free_port(), free_port());
+        let forward = |kind, bind_port| Forward {
+            kind,
+            bind_host: "127.0.0.1".into(),
+            bind_port,
+            dest_host: "127.0.0.1".into(),
+            dest_port: hello_port,
+        };
+        let forwards = vec![
+            forward(ForwardKind::Local, local_bind),
+            forward(ForwardKind::Remote, remote_bind),
+            forward(ForwardKind::Local, local_bind), // puerto repetido: debe fallar sin tumbar la sesión
+        ];
+        let tunnels = new_tunnels(&forwards);
+        let tunnels_for_spawn = tunnels.clone();
         let handle = runtime.handle().clone();
         let hosts = known_hosts.clone();
         let session = Session::start(80, 24, || {}, move |feed| {
-            Ok(spawn(&handle, connection, Credentials::default(), (80, 24), feed, events, Arc::new(|| {}), hosts))
+            Ok(spawn(&handle, connection, Credentials::default(), (80, 24), feed, events, Arc::new(|| {}), hosts, tunnels_for_spawn))
         })
         .unwrap();
 
@@ -424,6 +623,26 @@ mod tests {
             std::thread::sleep(Duration::from_millis(100));
         }
         assert!(std::fs::read_to_string(&known_hosts).unwrap().contains("127.0.0.1"));
+
+        // Túneles -L y -R atendiendo conexiones reales; el tercero (puerto repetido) falla aislado.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let states: Vec<TunnelState> = tunnels.lock().unwrap().iter().map(|t| t.state.clone()).collect();
+            if states[0] == TunnelState::Active && states[1] == TunnelState::Active && matches!(states[2], TunnelState::Failed(_)) {
+                break;
+            }
+            assert!(Instant::now() < deadline, "estado de túneles inesperado: {states:?}");
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        for port in [local_bind, remote_bind] {
+            use std::io::{BufRead, BufReader};
+            let stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+            let mut line = String::new();
+            BufReader::new(stream).read_line(&mut line).unwrap();
+            assert_eq!(line.trim(), "hello-omni", "túnel en el puerto {port}");
+        }
+        assert!(tunnels.lock().unwrap()[0].served >= 1 && tunnels.lock().unwrap()[1].served >= 1);
 
         // Un `exit` del usuario cierra la pestaña; no cuenta como conexión perdida.
         session.write(b"exit\n");
@@ -447,7 +666,7 @@ mod tests {
         let handle = runtime.handle().clone();
         let hosts = known_hosts.clone();
         let second = Session::start(80, 24, || {}, move |feed| {
-            Ok(spawn(&handle, again, Credentials::default(), (80, 24), feed, events2, Arc::new(|| {}), hosts))
+            Ok(spawn(&handle, again, Credentials::default(), (80, 24), feed, events2, Arc::new(|| {}), hosts, new_tunnels(&[])))
         })
         .unwrap();
         let deadline = Instant::now() + Duration::from_secs(15);

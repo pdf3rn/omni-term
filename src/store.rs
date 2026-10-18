@@ -26,6 +26,16 @@ const MIGRATIONS: &[&str] = &[
         nonce BLOB NOT NULL,
         ciphertext BLOB NOT NULL
     );",
+    "CREATE TABLE forwards (
+        id INTEGER PRIMARY KEY,
+        connection_id INTEGER NOT NULL REFERENCES connections(id) ON DELETE CASCADE,
+        position INTEGER NOT NULL,
+        kind TEXT NOT NULL,
+        bind_host TEXT NOT NULL,
+        bind_port INTEGER NOT NULL,
+        dest_host TEXT NOT NULL,
+        dest_port INTEGER NOT NULL
+    );",
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -64,6 +74,51 @@ pub struct Connection {
     pub auth: Auth,
     pub key_path: Option<String>,
     pub init_command: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ForwardKind {
+    /// `-L`: escucha en este equipo y reenvía al destino a través del servidor.
+    Local,
+    /// `-R`: el servidor escucha y reenvía a un destino alcanzable desde este equipo.
+    Remote,
+}
+
+impl ForwardKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            ForwardKind::Local => "local",
+            ForwardKind::Remote => "remote",
+        }
+    }
+
+    fn parse(value: &str) -> anyhow::Result<Self> {
+        match value {
+            "local" => Ok(ForwardKind::Local),
+            "remote" => Ok(ForwardKind::Remote),
+            other => bail!("tipo de túnel desconocido: {other}"),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Forward {
+    pub kind: ForwardKind,
+    pub bind_host: String,
+    pub bind_port: u16,
+    pub dest_host: String,
+    pub dest_port: u16,
+}
+
+impl Forward {
+    /// Texto corto para la interfaz, por ejemplo `L 8080 → db:5432`.
+    pub fn summary(&self) -> String {
+        let tag = match self.kind {
+            ForwardKind::Local => "L",
+            ForwardKind::Remote => "R",
+        };
+        format!("{tag} {} → {}:{}", self.bind_port, self.dest_host, self.dest_port)
+    }
 }
 
 /// Qué abre cada pestaña al restaurar la sesión.
@@ -182,6 +237,63 @@ impl Store {
 
     pub fn delete_connection(&self, id: i64) -> anyhow::Result<()> {
         self.db.execute("DELETE FROM connections WHERE id=?1", [id])?;
+        Ok(())
+    }
+
+    /// Túneles de todas las conexiones, en el orden en que se definieron.
+    pub fn all_forwards(&self) -> anyhow::Result<std::collections::HashMap<i64, Vec<Forward>>> {
+        let mut statement = self.db.prepare(
+            "SELECT connection_id, kind, bind_host, bind_port, dest_host, dest_port
+             FROM forwards ORDER BY connection_id, position",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, u16>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, u16>(5)?,
+            ))
+        })?;
+        let mut all: std::collections::HashMap<i64, Vec<Forward>> = Default::default();
+        for row in rows {
+            let (connection_id, kind, bind_host, bind_port, dest_host, dest_port) = row?;
+            all.entry(connection_id).or_default().push(Forward {
+                kind: ForwardKind::parse(&kind)?,
+                bind_host,
+                bind_port,
+                dest_host,
+                dest_port,
+            });
+        }
+        Ok(all)
+    }
+
+    #[cfg(test)]
+    pub fn list_forwards(&self, connection_id: i64) -> anyhow::Result<Vec<Forward>> {
+        Ok(self.all_forwards()?.remove(&connection_id).unwrap_or_default())
+    }
+
+    pub fn replace_forwards(&mut self, connection_id: i64, forwards: &[Forward]) -> anyhow::Result<()> {
+        let tx = self.db.transaction()?;
+        tx.execute("DELETE FROM forwards WHERE connection_id=?1", [connection_id])?;
+        for (position, forward) in forwards.iter().enumerate() {
+            tx.execute(
+                "INSERT INTO forwards (connection_id, position, kind, bind_host, bind_port, dest_host, dest_port)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    connection_id,
+                    position as i64,
+                    forward.kind.as_str(),
+                    forward.bind_host,
+                    forward.bind_port,
+                    forward.dest_host,
+                    forward.dest_port
+                ],
+            )?;
+        }
+        tx.commit()?;
         Ok(())
     }
 
@@ -322,6 +434,27 @@ mod tests {
 
         store.delete_connection(a).unwrap();
         assert_eq!(store.load_layout().unwrap().0, vec![TabKind::Local, TabKind::Connection(b)]);
+    }
+
+    #[test]
+    fn forwards_are_kept_in_order_per_connection_and_cascade_on_delete() {
+        let mut store = Store::open_in_memory().unwrap();
+        let a = store.save_connection(&sample("a")).unwrap();
+        let b = store.save_connection(&sample("b")).unwrap();
+        let web = Forward { kind: ForwardKind::Local, bind_host: "127.0.0.1".into(), bind_port: 8080, dest_host: "web".into(), dest_port: 80 };
+        let db = Forward { kind: ForwardKind::Remote, bind_host: "127.0.0.1".into(), bind_port: 5433, dest_host: "localhost".into(), dest_port: 5432 };
+        store.replace_forwards(a, &[web.clone(), db.clone()]).unwrap();
+        store.replace_forwards(b, &[db.clone()]).unwrap();
+
+        assert_eq!(store.list_forwards(a).unwrap(), vec![web.clone(), db.clone()]);
+        assert_eq!(web.summary(), "L 8080 → web:80");
+
+        store.replace_forwards(a, &[db.clone()]).unwrap();
+        assert_eq!(store.list_forwards(a).unwrap(), vec![db.clone()]);
+
+        store.delete_connection(b).unwrap();
+        assert!(store.all_forwards().unwrap().get(&b).is_none());
+        assert_eq!(store.list_forwards(a).unwrap().len(), 1);
     }
 
     #[test]
