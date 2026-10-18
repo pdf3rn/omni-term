@@ -221,13 +221,6 @@ impl Secrets {
         }
     }
 
-    pub fn label(&self) -> &'static str {
-        match self {
-            Secrets::Keyring(_) => "keyring del sistema",
-            Secrets::Master(_) => "clave maestra",
-        }
-    }
-
     pub fn master(&self) -> Option<&Arc<MasterKeyStore>> {
         match self {
             Secrets::Master(master) => Some(master),

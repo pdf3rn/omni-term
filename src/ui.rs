@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::Duration;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
@@ -21,7 +21,11 @@ use crate::store::{Auth, Connection, Forward, SavedTab, Snippet, Store, TabKind}
 use crate::term::{Session, TermOptions};
 use crate::theme;
 
-const SIDEBAR_WIDTH: f32 = 230.0;
+const SIDEBAR_WIDTH: f32 = 240.0;
+const SIDEBAR_MIN: f32 = 200.0;
+const SIDEBAR_MAX: f32 = 360.0;
+/// Grupos con encabezado a partir de este número de conexiones.
+const GROUP_THRESHOLD: usize = 5;
 const TAB_BAR_HEIGHT: f32 = 40.0;
 const TAB_HEIGHT: f32 = 34.0;
 const CONTROL_RADIUS: u8 = 6;
@@ -137,7 +141,13 @@ pub struct App {
     forwards: HashMap<i64, Vec<Forward>>,
     snippets: Vec<Snippet>,
     sidebar_view: SidebarView,
-    snippet_query: String,
+    /// Búsqueda de la barra lateral; filtra conexiones o snippets según la vista.
+    sidebar_query: String,
+    sidebar_collapsed: bool,
+    sidebar_width: f32,
+    focus_search: bool,
+    /// Grupos de entorno plegados (en minúsculas).
+    collapsed_groups: HashSet<String>,
     events_tx: Sender<UiEvent>,
     events_rx: Receiver<UiEvent>,
     pending_ui: VecDeque<UiEvent>,
@@ -184,6 +194,19 @@ impl App {
             Ok(Some(value)) if value == b"snippets" => SidebarView::Snippets,
             _ => SidebarView::Connections,
         };
+        let (sidebar_collapsed, sidebar_width, collapsed_groups) = {
+            let store = store.lock().unwrap();
+            let collapsed = matches!(store.meta("sidebar_collapsed"), Ok(Some(v)) if v == b"1");
+            let width = match store.meta("sidebar_width") {
+                Ok(Some(v)) => String::from_utf8_lossy(&v).parse::<f32>().unwrap_or(SIDEBAR_WIDTH),
+                _ => SIDEBAR_WIDTH,
+            };
+            let groups = match store.meta("collapsed_groups") {
+                Ok(Some(v)) => String::from_utf8_lossy(&v).lines().filter(|l| !l.is_empty()).map(str::to_string).collect(),
+                _ => HashSet::new(),
+            };
+            (collapsed, width.clamp(SIDEBAR_MIN, SIDEBAR_MAX), groups)
+        };
         cc.egui_ctx.options_mut(|options| options.zoom_with_keyboard = false);
         let (events_tx, events_rx) = mpsc::channel();
 
@@ -212,7 +235,11 @@ impl App {
             forwards,
             snippets,
             sidebar_view,
-            snippet_query: String::new(),
+            sidebar_query: String::new(),
+            sidebar_collapsed,
+            sidebar_width,
+            focus_search: false,
+            collapsed_groups,
             events_tx,
             events_rx,
             pending_ui: VecDeque::new(),
@@ -800,6 +827,13 @@ impl App {
         open
     }
 
+    fn set_sidebar_collapsed(&mut self, collapsed: bool) {
+        if self.sidebar_collapsed != collapsed {
+            self.sidebar_collapsed = collapsed;
+            let _ = self.store.lock().unwrap().set_meta("sidebar_collapsed", if collapsed { b"1" } else { b"0" });
+        }
+    }
+
     fn import_ssh_config(&mut self) {
         let path = std::env::home_dir().unwrap_or_default().join(".ssh").join("config");
         let text = match std::fs::read_to_string(&path) {
@@ -1097,270 +1131,371 @@ impl App {
         let mut copy: Option<String> = None;
         let mut edit_snippet: Option<Snippet> = None;
         let mut delete_snippet: Option<Snippet> = None;
-        Panel::left("sidebar")
-            .default_size(SIDEBAR_WIDTH)
-            .min_size(180.0)
-            .frame(Frame::NONE.fill(theme::mantle()).inner_margin(Margin::same(12)))
-            .show(ui, |ui| {
-                ui.label(RichText::new("omni-term").font(FontId::new(15.0, strong_family())).color(theme::text()));
-                ui.add_space(6.0);
-
-                // El terminal local es un sitio más de la lista: misma fila, sin botón destacado.
-                let shell = std::env::var("SHELL")
-                    .ok()
-                    .and_then(|s| s.rsplit('/').next().map(str::to_string))
-                    .unwrap_or_else(|| "shell".into());
-                let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_HEIGHT), Sense::click());
-                if response.hovered() {
-                    ui.painter().rect_filled(rect.expand2(Vec2::new(8.0, 0.0)), CornerRadius::same(CONTROL_RADIUS), theme::surface());
-                }
-                {
-                    let painter = ui.painter().with_clip_rect(rect);
-                    painter.text(Pos2::new(rect.min.x, rect.min.y + 9.0), Align2::LEFT_TOP, "Terminal local", FontId::new(14.0, strong_family()), theme::text());
-                    painter.text(Pos2::new(rect.min.x, rect.min.y + 27.0), Align2::LEFT_TOP, format!("Este equipo · {shell}"), FontId::new(12.0, FontFamily::Proportional), theme::subtext());
-                }
-                if response.hand().on_hover_text("Abrir un terminal local en una pestaña nueva").clicked() {
-                    open_local = true;
-                }
-
-                ui.add_space(10.0);
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().button_padding.x = 0.0;
-                    ui.spacing_mut().item_spacing.x = 18.0;
-                    for (view, label) in [(SidebarView::Connections, "Conexiones"), (SidebarView::Snippets, "Snippets")] {
-                        let selected = self.sidebar_view == view;
-                        let color = if selected { theme::text() } else { theme::subtext() };
-                        let font = FontId::new(13.0, if selected { strong_family() } else { FontFamily::Proportional });
-                        let button = Button::new(RichText::new(label).font(font).color(color)).fill(Color32::TRANSPARENT);
-                        let response = ui.add(button);
-                        if selected {
-                            let y = response.rect.max.y + 1.0;
-                            ui.painter().line_segment(
-                                [Pos2::new(response.rect.min.x, y), Pos2::new(response.rect.max.x, y)],
-                                Stroke::new(2.0, theme::accent()),
-                            );
-                        }
-                        if response.clicked() && self.sidebar_view != view {
-                            self.sidebar_view = view;
-                            let value: &[u8] = if view == SidebarView::Snippets { b"snippets" } else { b"connections" };
-                            let _ = self.store.lock().unwrap().set_meta("sidebar_view", value);
-                        }
+        let mut row_action: Option<(RowAction, Connection)> = None;
+        let mut toggle_group: Option<String> = None;
+        let searching = !self.sidebar_query.trim().is_empty();
+        let headed = self.connections.len() >= GROUP_THRESHOLD;
+        let groups = sidebar_groups(&self.connections, &self.sidebar_query);
+        let keyring_fallback = self.secrets.master().is_some() && !Secrets::is_master_forced(&self.store.lock().unwrap());
+        if !self.sidebar_collapsed {
+            let panel = Panel::left("sidebar")
+                .default_size(self.sidebar_width)
+                .size_range(SIDEBAR_MIN..=SIDEBAR_MAX)
+                .frame(Frame::NONE.fill(theme::mantle()).inner_margin(Margin::same(14)))
+                .show(ui, |ui| {
+                    let connections_view = self.sidebar_view == SidebarView::Connections;
+                    let search_id = ui.make_persistent_id("sidebar_search");
+                    let search = ui.add(
+                        egui::TextEdit::singleline(&mut self.sidebar_query)
+                            .id(search_id)
+                            .hint_text(if connections_view { "Buscar conexiones" } else { "Buscar snippets" })
+                            .desired_width(f32::INFINITY),
+                    );
+                    if self.focus_search {
+                        search.request_focus();
+                        self.focus_search = false;
                     }
-                });
-                ui.add_space(6.0);
+                    if search.has_focus() && ui.input(|i| i.key_pressed(Key::Escape)) {
+                        self.sidebar_query.clear();
+                        search.surrender_focus();
+                    }
+                    ui.add_space(8.0);
 
-                if self.sidebar_view == SidebarView::Connections {
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new("Guardadas").small().color(theme::subtext()));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let add = Button::new(RichText::new("+").size(16.0)).fill(Color32::TRANSPARENT).min_size(Vec2::splat(26.0));
-                        if ui.add(add).on_hover_text("Nueva conexión").clicked() {
-                            new_connection = true;
-                        }
-                    });
-                });
-                ui.add_space(-2.0);
-
-                if self.connections.is_empty() {
-                    ui.label(RichText::new("Aún no hay conexiones. Crea una con + o importa las de ~/.ssh/config.").color(theme::subtext()));
-                }
-                ui.spacing_mut().item_spacing.y = 2.0;
-                for connection in &self.connections {
-                    let state = connection.id.map_or(LinkState::Closed, |id| {
-                        self.tabs
-                            .iter()
-                            .filter(|t| t.kind == TabKind::Connection(id))
-                            .fold(LinkState::Closed, |acc, t| {
-                                if t.pane().is_some_and(|p| p.session.is_disconnected()) {
-                                    acc.max(LinkState::Lost)
-                                } else {
-                                    acc.max(LinkState::Open)
-                                }
-                            })
-                    });
-                    let identity = connection.color.map(theme::identity);
+                    // El terminal local es un sitio más de la lista: misma fila, sin botón destacado.
+                    let shell = std::env::var("SHELL")
+                        .ok()
+                        .and_then(|s| s.rsplit('/').next().map(str::to_string))
+                        .unwrap_or_else(|| "shell".into());
                     let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_HEIGHT), Sense::click());
                     if response.hovered() {
                         ui.painter().rect_filled(rect.expand2(Vec2::new(8.0, 0.0)), CornerRadius::same(CONTROL_RADIUS), theme::surface());
                     }
-                    if let Some(color) = identity {
-                        // Marca de identidad: informa de qué servidor es, no decora.
-                        let bar = Rect::from_min_size(Pos2::new(rect.min.x - 8.0, rect.min.y + 7.0), Vec2::new(3.0, ROW_HEIGHT - 14.0));
-                        ui.painter().rect_filled(bar, CornerRadius::same(2), color);
-                    }
-                    let painter = ui.painter().with_clip_rect(rect);
-                    let name_font = FontId::new(14.0, strong_family());
-                    let name_width = painter.layout_no_wrap(connection.name.clone(), name_font.clone(), Color32::PLACEHOLDER).size().x;
-                    painter.text(Pos2::new(rect.min.x, rect.min.y + 9.0), Align2::LEFT_TOP, &connection.name, name_font, theme::text());
-                    if let Some(env) = &connection.env {
-                        painter.text(
-                            Pos2::new(rect.min.x + name_width + 8.0, rect.min.y + 11.0),
-                            Align2::LEFT_TOP,
-                            env,
-                            FontId::new(12.0, strong_family()),
-                            identity.unwrap_or_else(theme::subtext),
-                        );
-                    }
-                    painter.text(
-                        Pos2::new(rect.min.x, rect.min.y + 27.0),
-                        Align2::LEFT_TOP,
-                        format!("{}@{}", connection.user, connection.host),
-                        FontId::new(12.0, FontFamily::Proportional),
-                        theme::subtext(),
-                    );
-                    match state {
-                        LinkState::Open => {
-                            ui.painter().circle_filled(Pos2::new(rect.max.x - 6.0, rect.center().y), 3.5, theme::accent());
-                        }
-                        LinkState::Lost => {
-                            ui.painter().circle_filled(Pos2::new(rect.max.x - 6.0, rect.center().y), 3.5, theme::red());
-                        }
-                        LinkState::Closed => {}
-                    }
-                    let response = response.hand().on_hover_text(match state {
-                        LinkState::Closed => "Doble clic para conectar",
-                        LinkState::Open => "Sesión abierta. Doble clic para otra pestaña",
-                        LinkState::Lost => "Sesión caída: usa Reconectar en su pestaña",
-                    });
-                    if response.double_clicked() {
-                        connect = Some(connection.clone());
-                    }
-                    response.context_menu(|ui| {
-                        if ui.button("Conectar").clicked() {
-                            connect = Some(connection.clone());
-                            ui.close();
-                        }
-                        if ui.button("Explorador de archivos").clicked() {
-                            files = Some(connection.clone());
-                            ui.close();
-                        }
-                        if ui.button("Editar").clicked() {
-                            edit = Some(connection.clone());
-                            ui.close();
-                        }
-                        if ui.button("Eliminar").clicked() {
-                            delete = Some(connection.clone());
-                            ui.close();
-                        }
-                    });
-
-                    let live = connection
-                        .id
-                        .and_then(|id| self.tabs.iter().find(|t| t.kind == TabKind::Connection(id)))
-                        .and_then(|t| t.tunnels());
-                    match live {
-                        Some(tunnels) => {
-                            for status in tunnels.lock().unwrap().iter() {
-                                tunnel_line(ui, status);
-                            }
-                        }
-                        None => {
-                            let count = connection.id.and_then(|id| self.forwards.get(&id)).map_or(0, Vec::len);
-                            if count > 0 {
-                                let text = if count == 1 { "1 túnel".to_string() } else { format!("{count} túneles") };
-                                ui.label(RichText::new(text).small().color(theme::subtext()));
-                            }
-                        }
-                    }
-                    ui.add_space(4.0);
-                }
-
-                ui.add_space(8.0);
-                let import_button = Button::new(RichText::new("Importar de ~/.ssh/config").small().color(theme::subtext()))
-                    .fill(Color32::TRANSPARENT)
-                    .stroke(Stroke::new(1.0, theme::surface()));
-                if ui.add(import_button).clicked() {
-                    import = true;
-                }
-
-                } else {
-                    ui.horizontal(|ui| {
-                        ui.add(
-                            egui::TextEdit::singleline(&mut self.snippet_query)
-                                .hint_text("Buscar snippets")
-                                .desired_width(150.0),
-                        );
-                        let add = Button::new(RichText::new("+").size(16.0)).fill(Color32::TRANSPARENT).min_size(Vec2::splat(26.0));
-                        if ui.add(add).on_hover_text("Nuevo snippet").clicked() {
-                            new_snippet = true;
-                        }
-                    });
-                    if ui
-                        .add(Button::new(RichText::new("Guardar selección").small().color(theme::subtext())).fill(Color32::TRANSPARENT).stroke(Stroke::new(1.0, theme::surface())))
-                        .clicked()
                     {
-                        snippet_from_selection = true;
+                        let painter = ui.painter().with_clip_rect(rect);
+                        painter.text(Pos2::new(rect.min.x, rect.min.y + 9.0), Align2::LEFT_TOP, "Terminal local", FontId::new(14.0, strong_family()), theme::text());
+                        painter.text(Pos2::new(rect.min.x, rect.min.y + 27.0), Align2::LEFT_TOP, format!("Este equipo · {shell}"), FontId::new(12.0, FontFamily::Proportional), theme::subtext());
                     }
-                    ui.add_space(4.0);
+                    if response.hand().on_hover_text("Abrir un terminal local en una pestaña nueva").clicked() {
+                        open_local = true;
+                    }
 
-                    let query = self.snippet_query.clone();
-                    let visible: Vec<&Snippet> = self.snippets.iter().filter(|s| s.matches(&query)).collect();
-                    if self.snippets.is_empty() {
-                        ui.label(RichText::new("Aún no hay snippets. Crea uno con + o guarda la selección del terminal.").color(theme::subtext()));
-                    } else if visible.is_empty() {
-                        ui.label(RichText::new("Ningún snippet coincide con la búsqueda.").color(theme::subtext()));
-                    }
-                    ui.spacing_mut().item_spacing.y = 2.0;
-                    for snippet in visible {
-                        let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_HEIGHT), Sense::click());
-                        if response.hovered() {
-                            ui.painter().rect_filled(rect, CornerRadius::same(CONTROL_RADIUS), theme::surface());
+                    ui.add_space(12.0);
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().button_padding.x = 0.0;
+                        ui.spacing_mut().item_spacing.x = 18.0;
+                        for (view, label) in [(SidebarView::Connections, "Conexiones"), (SidebarView::Snippets, "Snippets")] {
+                            let selected = self.sidebar_view == view;
+                            let color = if selected { theme::text() } else { theme::subtext() };
+                            let font = FontId::new(13.0, if selected { strong_family() } else { FontFamily::Proportional });
+                            let button = Button::new(RichText::new(label).font(font).color(color)).fill(Color32::TRANSPARENT);
+                            let response = ui.add(button);
+                            if selected {
+                                let y = response.rect.max.y + 1.0;
+                                ui.painter().line_segment(
+                                    [Pos2::new(response.rect.min.x, y), Pos2::new(response.rect.max.x, y)],
+                                    Stroke::new(2.0, theme::accent()),
+                                );
+                            }
+                            if response.clicked() && self.sidebar_view != view {
+                                self.sidebar_view = view;
+                                let value: &[u8] = if view == SidebarView::Snippets { b"snippets" } else { b"connections" };
+                                let _ = self.store.lock().unwrap().set_meta("sidebar_view", value);
+                            }
                         }
-                        let left = rect.min.x + 10.0;
-                        let painter = ui.painter().with_clip_rect(rect.shrink2(Vec2::new(4.0, 0.0)));
-                        painter.text(
-                            Pos2::new(left, rect.min.y + 9.0),
-                            Align2::LEFT_TOP,
-                            &snippet.title,
-                            FontId::new(14.0, strong_family()),
-                            theme::text(),
-                        );
-                        let preview = snippet.body.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
-                        let preview: String = preview.chars().take(80).collect();
-                        let preview = if snippet.tag.is_empty() { preview } else { format!("{}  ·  {}", snippet.tag, preview) };
-                        painter.text(
-                            Pos2::new(left, rect.min.y + 27.0),
-                            Align2::LEFT_TOP,
-                            preview,
-                            FontId::new(12.0, FontFamily::Monospace),
-                            theme::subtext(),
-                        );
-                        let response = response.hand().on_hover_text("Clic para insertar en el terminal activo. Clic derecho: más opciones");
-                        if response.clicked() {
-                            insert = Some((snippet.clone(), false));
-                        }
-                        response.context_menu(|ui| {
-                            if ui.button("Insertar").clicked() {
-                                insert = Some((snippet.clone(), false));
-                                ui.close();
-                            }
-                            if ui.button("Insertar y ejecutar").clicked() {
-                                insert = Some((snippet.clone(), true));
-                                ui.close();
-                            }
-                            if ui.button("Copiar").clicked() {
-                                copy = Some(snippet.body.clone());
-                                ui.close();
-                            }
-                            if ui.button("Editar").clicked() {
-                                edit_snippet = Some(snippet.clone());
-                                ui.close();
-                            }
-                            if ui.button("Eliminar").clicked() {
-                                delete_snippet = Some(snippet.clone());
-                                ui.close();
+                    });
+                    ui.add_space(8.0);
+
+                    ui.horizontal(|ui| {
+                        let title = if connections_view { "Guardadas" } else { "Guardados" };
+                        ui.label(RichText::new(title).small().color(theme::subtext()));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let add = Button::new(RichText::new("+").size(16.0)).fill(Color32::TRANSPARENT).min_size(Vec2::splat(26.0));
+                            if connections_view {
+                                let add = ui.add(add).on_hover_text("Nueva conexión o importar");
+                                egui::Popup::menu(&add).show(|ui| {
+                                    if ui.button("Nueva conexión").clicked() {
+                                        new_connection = true;
+                                        ui.close();
+                                    }
+                                    if ui.button("Importar de ~/.ssh/config").clicked() {
+                                        import = true;
+                                        ui.close();
+                                    }
+                                });
+                            } else if ui.add(add).on_hover_text("Nuevo snippet").clicked() {
+                                new_snippet = true;
                             }
                         });
-                    }
-                }
+                    });
+                    ui.add_space(-2.0);
 
-                ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
-                    if ui.add(Button::new("Ajustes").fill(Color32::TRANSPARENT).stroke(Stroke::new(1.0, theme::surface()))).clicked() {
-                        open_settings = true;
+                    if connections_view {
+                        if self.connections.is_empty() {
+                            ui.label(RichText::new("Aún no hay conexiones. Crea una con + o importa las de ~/.ssh/config.").color(theme::subtext()));
+                            ui.add_space(8.0);
+                            let import_button = Button::new(RichText::new("Importar de ~/.ssh/config").small().color(theme::subtext()))
+                                .fill(Color32::TRANSPARENT)
+                                .stroke(Stroke::new(1.0, theme::surface()));
+                            if ui.add(import_button).clicked() {
+                                import = true;
+                            }
+                        } else if groups.is_empty() {
+                            ui.label(RichText::new("Ninguna conexión coincide con la búsqueda.").color(theme::subtext()));
+                        }
+                        ui.spacing_mut().item_spacing.y = 2.0;
+                        egui::ScrollArea::vertical().id_salt("connections").auto_shrink([false, false]).max_height(ui.available_height() - 64.0).show(ui, |ui| {
+                        for (label, indices) in &groups {
+                            let key = label.to_lowercase();
+                            let folded = headed && !searching && self.collapsed_groups.contains(&key);
+                            if headed {
+                                let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 26.0), Sense::click());
+                                let color = if response.hovered() { theme::text() } else { theme::subtext() };
+                                let c = Pos2::new(rect.min.x + 5.0, rect.center().y);
+                                let points = if folded {
+                                    vec![c + Vec2::new(-2.0, -4.0), c + Vec2::new(-2.0, 4.0), c + Vec2::new(3.0, 0.0)]
+                                } else {
+                                    vec![c + Vec2::new(-4.0, -2.0), c + Vec2::new(4.0, -2.0), c + Vec2::new(0.0, 3.0)]
+                                };
+                                ui.painter().add(egui::Shape::convex_polygon(points, color, Stroke::NONE));
+                                ui.painter().text(
+                                    Pos2::new(rect.min.x + 18.0, rect.center().y),
+                                    Align2::LEFT_CENTER,
+                                    format!("{label}  {}", indices.len()),
+                                    FontId::new(12.0, strong_family()),
+                                    color,
+                                );
+                                if response.hand().on_hover_text(if folded { "Mostrar el grupo" } else { "Plegar el grupo" }).clicked() && !searching {
+                                    toggle_group = Some(key.clone());
+                                }
+                            }
+                            if folded {
+                                continue;
+                            }
+                            for &index in indices {
+                                let connection = &self.connections[index];
+                                let state = connection.id.map_or(LinkState::Closed, |id| {
+                                    self.tabs
+                                        .iter()
+                                        .filter(|t| t.kind == TabKind::Connection(id))
+                                        .fold(LinkState::Closed, |acc, t| {
+                                            if t.pane().is_some_and(|p| p.session.is_disconnected()) {
+                                                acc.max(LinkState::Lost)
+                                            } else {
+                                                acc.max(LinkState::Open)
+                                            }
+                                        })
+                                });
+                                let identity = connection.color.map(theme::identity);
+                                let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_HEIGHT), Sense::click());
+                                let over = ui.rect_contains_pointer(rect);
+                                if response.hovered() || over {
+                                    ui.painter().rect_filled(rect.expand2(Vec2::new(8.0, 0.0)), CornerRadius::same(CONTROL_RADIUS), theme::surface());
+                                }
+                                if let Some(color) = identity {
+                                    // Marca de identidad: informa de qué servidor es, no decora.
+                                    let bar = Rect::from_min_size(Pos2::new(rect.min.x - 8.0, rect.min.y + 7.0), Vec2::new(3.0, ROW_HEIGHT - 14.0));
+                                    ui.painter().rect_filled(bar, CornerRadius::same(2), color);
+                                }
+                                let painter = ui.painter().with_clip_rect(rect);
+                                let name_font = FontId::new(14.0, strong_family());
+                                let name_width = painter.layout_no_wrap(connection.name.clone(), name_font.clone(), Color32::PLACEHOLDER).size().x;
+                                painter.text(Pos2::new(rect.min.x, rect.min.y + 9.0), Align2::LEFT_TOP, &connection.name, name_font, theme::text());
+                                if let Some(env) = connection.env.as_ref().filter(|_| !headed || searching) {
+                                    painter.text(
+                                        Pos2::new(rect.min.x + name_width + 8.0, rect.min.y + 11.0),
+                                        Align2::LEFT_TOP,
+                                        env,
+                                        FontId::new(12.0, strong_family()),
+                                        identity.unwrap_or_else(theme::subtext),
+                                    );
+                                }
+                                painter.text(
+                                    Pos2::new(rect.min.x, rect.min.y + 27.0),
+                                    Align2::LEFT_TOP,
+                                    format!("{}@{}", connection.user, connection.host),
+                                    FontId::new(12.0, FontFamily::Proportional),
+                                    theme::subtext(),
+                                );
+                                let response = response.hand().on_hover_text(match state {
+                                    LinkState::Closed => "Doble clic para conectar",
+                                    LinkState::Open => "Sesión abierta. Doble clic para otra pestaña",
+                                    LinkState::Lost => "Sesión caída: usa Reconectar en su pestaña",
+                                });
+                                if response.double_clicked() {
+                                    connect = Some(connection.clone());
+                                }
+                                response.context_menu(|ui| connection_menu(ui, connection, &mut row_action));
+
+                                // Acciones al pasar el ratón; sin ratón encima se ve el estado de la sesión.
+                                let more_rect = Rect::from_center_size(Pos2::new(rect.max.x - 12.0, rect.center().y), Vec2::splat(24.0));
+                                let edit_rect = Rect::from_center_size(Pos2::new(rect.max.x - 38.0, rect.center().y), Vec2::splat(24.0));
+                                let more = ui.interact(more_rect, response.id.with("more"), Sense::click()).on_hover_text("Más acciones").hand();
+                                let pencil = ui.interact(edit_rect, response.id.with("edit"), Sense::click()).on_hover_text("Editar").hand();
+                                let menu_open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&more));
+                                if over || menu_open {
+                                    for (button, rect) in [(&pencil, edit_rect), (&more, more_rect)] {
+                                        if button.hovered() || (menu_open && rect == more_rect) {
+                                            ui.painter().rect_filled(rect, CornerRadius::same(CONTROL_RADIUS), theme::selection());
+                                        }
+                                    }
+                                    let ink = Stroke::new(1.6, theme::text());
+                                    let c = edit_rect.center();
+                                    ui.painter().line_segment([c + Vec2::new(-4.0, 4.0), c + Vec2::new(4.0, -4.0)], Stroke::new(2.2, theme::text()));
+                                    ui.painter().line_segment([c + Vec2::new(-5.0, 6.0), c + Vec2::new(-1.0, 6.0)], ink);
+                                    let c = more_rect.center();
+                                    for dx in [-5.0, 0.0, 5.0] {
+                                        ui.painter().circle_filled(c + Vec2::new(dx, 0.0), 1.6, theme::text());
+                                    }
+                                } else {
+                                    match state {
+                                        LinkState::Open => {
+                                            ui.painter().circle_filled(Pos2::new(rect.max.x - 6.0, rect.center().y), 3.5, theme::accent());
+                                        }
+                                        LinkState::Lost => {
+                                            ui.painter().circle_filled(Pos2::new(rect.max.x - 6.0, rect.center().y), 3.5, theme::red());
+                                        }
+                                        LinkState::Closed => {}
+                                    }
+                                }
+                                if pencil.clicked() {
+                                    row_action = Some((RowAction::Edit, connection.clone()));
+                                }
+                                egui::Popup::menu(&more).show(|ui| connection_menu(ui, connection, &mut row_action));
+
+                                let live = connection
+                                    .id
+                                    .and_then(|id| self.tabs.iter().find(|t| t.kind == TabKind::Connection(id)))
+                                    .and_then(|t| t.tunnels());
+                                match live {
+                                    Some(tunnels) => {
+                                        for status in tunnels.lock().unwrap().iter() {
+                                            tunnel_line(ui, status);
+                                        }
+                                    }
+                                    None => {
+                                        let count = connection.id.and_then(|id| self.forwards.get(&id)).map_or(0, Vec::len);
+                                        if count > 0 {
+                                            let text = if count == 1 { "1 túnel".to_string() } else { format!("{count} túneles") };
+                                            ui.label(RichText::new(text).small().color(theme::subtext()));
+                                        }
+                                    }
+                                }
+                                ui.add_space(4.0);
+                            }
+                        }
+                        });
+                    } else {
+                        if ui
+                            .add(Button::new(RichText::new("Guardar selección").small().color(theme::subtext())).fill(Color32::TRANSPARENT).stroke(Stroke::new(1.0, theme::surface())))
+                            .clicked()
+                        {
+                            snippet_from_selection = true;
+                        }
+                        ui.add_space(4.0);
+
+                        let query = self.sidebar_query.clone();
+                        let visible: Vec<&Snippet> = self.snippets.iter().filter(|s| s.matches(&query)).collect();
+                        if self.snippets.is_empty() {
+                            ui.label(RichText::new("Aún no hay snippets. Crea uno con + o guarda la selección del terminal.").color(theme::subtext()));
+                        } else if visible.is_empty() {
+                            ui.label(RichText::new("Ningún snippet coincide con la búsqueda.").color(theme::subtext()));
+                        }
+                        ui.spacing_mut().item_spacing.y = 2.0;
+                        egui::ScrollArea::vertical().id_salt("snippets").auto_shrink([false, false]).max_height(ui.available_height() - 64.0).show(ui, |ui| {
+                        for snippet in visible {
+                            let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_HEIGHT), Sense::click());
+                            if response.hovered() {
+                                ui.painter().rect_filled(rect, CornerRadius::same(CONTROL_RADIUS), theme::surface());
+                            }
+                            let left = rect.min.x + 10.0;
+                            let painter = ui.painter().with_clip_rect(rect.shrink2(Vec2::new(4.0, 0.0)));
+                            painter.text(
+                                Pos2::new(left, rect.min.y + 9.0),
+                                Align2::LEFT_TOP,
+                                &snippet.title,
+                                FontId::new(14.0, strong_family()),
+                                theme::text(),
+                            );
+                            let preview = snippet.body.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
+                            let preview: String = preview.chars().take(80).collect();
+                            let preview = if snippet.tag.is_empty() { preview } else { format!("{}  ·  {}", snippet.tag, preview) };
+                            painter.text(
+                                Pos2::new(left, rect.min.y + 27.0),
+                                Align2::LEFT_TOP,
+                                preview,
+                                FontId::new(12.0, FontFamily::Monospace),
+                                theme::subtext(),
+                            );
+                            let response = response.hand().on_hover_text("Clic para insertar en el terminal activo. Clic derecho: más opciones");
+                            if response.clicked() {
+                                insert = Some((snippet.clone(), false));
+                            }
+                            response.context_menu(|ui| {
+                                if ui.button("Insertar").clicked() {
+                                    insert = Some((snippet.clone(), false));
+                                    ui.close();
+                                }
+                                if ui.button("Insertar y ejecutar").clicked() {
+                                    insert = Some((snippet.clone(), true));
+                                    ui.close();
+                                }
+                                if ui.button("Copiar").clicked() {
+                                    copy = Some(snippet.body.clone());
+                                    ui.close();
+                                }
+                                if ui.button("Editar").clicked() {
+                                    edit_snippet = Some(snippet.clone());
+                                    ui.close();
+                                }
+                                if ui.button("Eliminar").clicked() {
+                                    delete_snippet = Some(snippet.clone());
+                                    ui.close();
+                                }
+                            });
+                        }
+                        });
                     }
-                    ui.label(RichText::new(format!("Secretos: {}", self.secrets.label())).small().color(theme::subtext()));
+
+                    // Pie: solo avisos; el estado normal de los secretos no hace falta mostrarlo.
+                    ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
+                        if ui.add(Button::new("Ajustes").fill(Color32::TRANSPARENT).stroke(Stroke::new(1.0, theme::surface()))).clicked() {
+                            open_settings = true;
+                        }
+                        if keyring_fallback {
+                            ui.label(RichText::new("Sin keyring: las contraseñas usan la clave maestra").small().color(theme::subtext()));
+                        }
+                    });
                 });
-            });
+            let width = panel.response.rect.width();
+            if (width - self.sidebar_width).abs() > 0.5 && !ui.input(|i| i.pointer.any_down()) {
+                self.sidebar_width = width;
+                let _ = self.store.lock().unwrap().set_meta("sidebar_width", width.round().to_string().as_bytes());
+            }
+        }
+
+        if let Some(key) = toggle_group {
+            if !self.collapsed_groups.remove(&key) {
+                self.collapsed_groups.insert(key);
+            }
+            let mut keys: Vec<&str> = self.collapsed_groups.iter().map(String::as_str).collect();
+            keys.sort_unstable();
+            let _ = self.store.lock().unwrap().set_meta("collapsed_groups", keys.join("\n").as_bytes());
+        }
+        if let Some((action, connection)) = row_action {
+            match action {
+                RowAction::Connect => connect = Some(connection),
+                RowAction::Files => files = Some(connection),
+                RowAction::Edit => edit = Some(connection),
+                RowAction::Delete => delete = Some(connection),
+                RowAction::Duplicate => {
+                    let forwards = self.forwards.get(&connection.id.unwrap_or_default()).map_or(&[][..], |f| f.as_slice());
+                    let mut form = ConnForm::from_connection(&connection, forwards);
+                    form.id = None;
+                    form.name = format!("{} (copia)", connection.name);
+                    self.dialog = Some(Dialog::Edit(form));
+                }
+            }
+        }
 
         if open_settings {
             self.dialog = Some(Dialog::Settings);
@@ -1409,6 +1544,63 @@ impl App {
             self.delete_connection(connection);
         }
     }
+}
+
+enum RowAction {
+    Connect,
+    Files,
+    Edit,
+    Duplicate,
+    Delete,
+}
+
+fn connection_menu(ui: &mut egui::Ui, connection: &Connection, out: &mut Option<(RowAction, Connection)>) {
+    for (label, action) in [
+        ("Conectar", RowAction::Connect),
+        ("Explorador de archivos", RowAction::Files),
+        ("Editar", RowAction::Edit),
+        ("Duplicar", RowAction::Duplicate),
+        ("Eliminar", RowAction::Delete),
+    ] {
+        if ui.button(label).clicked() {
+            *out = Some((action, connection.clone()));
+            ui.close();
+        }
+    }
+}
+
+/// Conexiones que cumplen la búsqueda, agrupadas por entorno (índices en `connections`).
+/// Orden: entornos conocidos, otros por nombre y al final las que no tienen entorno.
+fn sidebar_groups(connections: &[Connection], query: &str) -> Vec<(String, Vec<usize>)> {
+    let query = query.trim().to_lowercase();
+    let mut groups: Vec<(String, Vec<usize>)> = Vec::new();
+    for (index, c) in connections.iter().enumerate() {
+        let env = c.env.as_deref().map(str::trim).unwrap_or("");
+        let haystack = format!("{} {} {} {}", c.name, c.host, c.user, env).to_lowercase();
+        if !query.is_empty() && !haystack.contains(&query) {
+            continue;
+        }
+        let label = if env.is_empty() {
+            "Sin entorno".to_string()
+        } else {
+            let mut chars = env.chars();
+            chars.next().map(|f| f.to_uppercase().collect::<String>() + chars.as_str()).unwrap_or_default()
+        };
+        match groups.iter_mut().find(|(l, _)| l.to_lowercase() == label.to_lowercase()) {
+            Some((_, members)) => members.push(index),
+            None => groups.push((label, vec![index])),
+        }
+    }
+    let rank = |label: &str| match label.to_lowercase().as_str() {
+        "producción" => (0, String::new()),
+        "staging" => (1, String::new()),
+        "desarrollo" => (2, String::new()),
+        "personal" => (3, String::new()),
+        "sin entorno" => (5, String::new()),
+        other => (4, other.to_string()),
+    };
+    groups.sort_by_key(|(label, _)| rank(label));
+    groups
 }
 
 /// Una línea por túnel: punto de estado, resumen y número de conexiones atendidas.
@@ -1578,11 +1770,25 @@ impl eframe::App for App {
         self.sync_theme(&ctx);
         self.remember_window_size(&ctx);
 
+        // Ctrl+Shift+B pliega la barra lateral y Ctrl+Shift+K salta a su búsqueda: con Ctrl solo
+        // chocarían con tmux (Ctrl+B) y con readline (Ctrl+K).
+        let (toggle_sidebar, search_sidebar) = ctx.input_mut(|i| {
+            let both = Modifiers::CTRL | Modifiers::SHIFT;
+            (i.consume_key(both, Key::B), i.consume_key(both, Key::K))
+        });
+        if toggle_sidebar {
+            self.set_sidebar_collapsed(!self.sidebar_collapsed);
+        }
+        if search_sidebar {
+            self.set_sidebar_collapsed(false);
+            self.focus_search = true;
+        }
         self.sidebar(ui);
 
         let mut activate = None;
         let mut close = None;
         let mut new_local = false;
+        let mut toggle_sidebar_button = false;
         let mut files_tab: Option<i64> = None;
         let mut split: Option<Dir> = None;
         let mut close_pane = false;
@@ -1593,6 +1799,11 @@ impl eframe::App for App {
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 2.0;
+                    let hint = if self.sidebar_collapsed { "Mostrar la barra lateral (Ctrl+Shift+B)" } else { "Ocultar la barra lateral (Ctrl+Shift+B)" };
+                    let toggle = ui.add(Button::new(RichText::new("☰").size(15.0).color(theme::subtext())).fill(Color32::TRANSPARENT).min_size(Vec2::splat(28.0)));
+                    if toggle.on_hover_text(hint).clicked() {
+                        toggle_sidebar_button = true;
+                    }
                     for (i, t) in self.tabs.iter().enumerate() {
                         let identity = self.identity_for(t.kind);
                         let (clicked, closed) = tab(ui, &t.title(), i == self.active, i, identity);
@@ -1641,6 +1852,9 @@ impl eframe::App for App {
                 });
             });
 
+        if toggle_sidebar_button {
+            self.set_sidebar_collapsed(!self.sidebar_collapsed);
+        }
         if let Some(i) = activate {
             self.active = i;
         }
@@ -1705,7 +1919,6 @@ impl eframe::App for App {
             if self.empty_state(ui, text_area) {
                 self.open_queue.push_back(SavedTab::plain(TabKind::Local));
             }
-            return;
         }
 
         let mut reconnect = None;
