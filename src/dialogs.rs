@@ -83,6 +83,8 @@ impl ConnForm {
 
 pub struct SecretPrompt {
     pub connection: Connection,
+    /// Pestaña a reemplazar al reconectar.
+    pub slot: Option<u64>,
     pub kind: SecretKind,
     pub input: String,
     pub save: bool,
@@ -90,7 +92,7 @@ pub struct SecretPrompt {
 
 /// Qué hacer cuando el almacén de secretos queda desbloqueado.
 pub enum Pending {
-    Open(Connection),
+    Open(Connection, Option<u64>),
     Save { account: String, secret: Zeroizing<String> },
 }
 
@@ -127,13 +129,17 @@ fn id() -> Id {
 }
 
 fn buttons(ui: &mut egui::Ui, accept: &str) -> Option<bool> {
+    let destructive = matches!(accept, "Eliminar" | "Borrar todo");
+    let (fill, text) = if destructive { (theme::RED, theme::BASE) } else { (theme::ACCENT, theme::BASE) };
     let mut result = None;
-    ui.add_space(8.0);
+    ui.add_space(12.0);
     ui.horizontal(|ui| {
-        if ui.button(accept).clicked() {
+        let primary = egui::Button::new(RichText::new(accept).color(text)).fill(fill);
+        if ui.add(primary).clicked() {
             result = Some(true);
         }
-        if ui.button("Cancelar").clicked() {
+        let ghost = egui::Button::new("Cancelar").fill(egui::Color32::TRANSPARENT);
+        if ui.add(ghost).clicked() {
             result = Some(false);
         }
     });
@@ -154,7 +160,8 @@ fn enter_pressed(ui: &egui::Ui) -> bool {
 pub fn show(ctx: &egui::Context, dialog: &mut Dialog, master_forced: bool) -> Outcome {
     let mut outcome = Outcome::None;
     let response = Modal::new(id()).show(ctx, |ui| {
-        ui.set_width(380.0);
+        ui.set_width(400.0);
+        ui.spacing_mut().item_spacing.y = 8.0;
         match dialog {
             Dialog::Edit(form) => outcome = edit(ui, form),
             Dialog::Secret(prompt) => outcome = secret(ui, prompt),

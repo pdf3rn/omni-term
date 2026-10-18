@@ -61,6 +61,7 @@ pub struct Feed {
     term: Arc<Mutex<Term<Proxy>>>,
     processor: Processor,
     exited: Arc<AtomicBool>,
+    disconnected: Arc<AtomicBool>,
     on_output: Arc<dyn Fn() + Send + Sync>,
 }
 
@@ -70,8 +71,15 @@ impl Feed {
         (self.on_output)();
     }
 
+    /// La sesión terminó a propósito: la pestaña se cierra.
     pub fn close(&mut self) {
         self.exited.store(true, Ordering::SeqCst);
+        (self.on_output)();
+    }
+
+    /// La conexión se perdió o falló: la pestaña se queda para poder reconectar.
+    pub fn disconnect(&mut self) {
+        self.disconnected.store(true, Ordering::SeqCst);
         (self.on_output)();
     }
 }
@@ -80,6 +88,7 @@ pub struct Session {
     pub term: Arc<Mutex<Term<Proxy>>>,
     pub title: Arc<Mutex<String>>,
     exited: Arc<AtomicBool>,
+    disconnected: Arc<AtomicBool>,
     backend: Arc<dyn Backend>,
     size: (usize, usize),
 }
@@ -98,21 +107,27 @@ impl Session {
         let config = Config { kitty_keyboard: true, ..Config::default() };
         let term = Arc::new(Mutex::new(Term::new(config, &GridSize { cols, rows }, proxy)));
         let exited = Arc::new(AtomicBool::new(false));
+        let disconnected = Arc::new(AtomicBool::new(false));
 
         let feed = Feed {
             term: term.clone(),
             processor: Processor::new(),
             exited: exited.clone(),
+            disconnected: disconnected.clone(),
             on_output: Arc::new(on_output),
         };
         let backend = connect(feed)?;
         let _ = slot.set(Arc::downgrade(&backend));
 
-        Ok(Self { term, title, exited, backend, size: (cols, rows) })
+        Ok(Self { term, title, exited, disconnected, backend, size: (cols, rows) })
     }
 
     pub fn has_exited(&self) -> bool {
         self.exited.load(Ordering::SeqCst)
+    }
+
+    pub fn is_disconnected(&self) -> bool {
+        self.disconnected.load(Ordering::SeqCst)
     }
 
     pub fn write(&self, bytes: &[u8]) {

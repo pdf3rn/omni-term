@@ -1,4 +1,4 @@
-use alacritty_terminal::grid::Scroll;
+use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::index::{Column, Point, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::term::cell::Flags;
@@ -6,7 +6,7 @@ use alacritty_terminal::term::{point_to_viewport, viewport_to_point, TermMode};
 use alacritty_terminal::vte::ansi::CursorShape;
 use eframe::egui::{
     self, Align2, Color32, CornerRadius, Event, EventFilter, FontFamily, FontId, Key, Pos2, Rect, Sense,
-    Stroke, StrokeKind,
+    Stroke, StrokeKind, Vec2,
 };
 
 use crate::keys;
@@ -14,10 +14,26 @@ use crate::term::Session;
 use crate::theme;
 
 pub const PADDING: f32 = 12.0;
-const FONT_SIZE: f32 = 15.0;
+pub const DEFAULT_FONT_SIZE: f32 = 15.0;
+pub const MIN_FONT_SIZE: f32 = 9.0;
+pub const MAX_FONT_SIZE: f32 = 32.0;
 
 pub fn bold_family() -> FontFamily {
     FontFamily::Name("mono-bold".into())
+}
+
+/// Tamaño de celda en puntos, alineado a píxeles físicos.
+fn cell_size(ui: &egui::Ui, font_size: f32) -> (f32, f32) {
+    let font = FontId::new(font_size, FontFamily::Monospace);
+    let ppp = ui.ctx().pixels_per_point();
+    let (glyph_w, row_h) = ui.fonts_mut(|f| (f.glyph_width(&font, 'M'), f.row_height(&font)));
+    ((glyph_w * ppp).round().max(1.0) / ppp, (row_h * ppp).ceil().max(1.0) / ppp)
+}
+
+/// Columnas y filas que caben en `area`.
+pub fn grid_for(ui: &egui::Ui, area: Rect, font_size: f32) -> (usize, usize) {
+    let (cell_w, cell_h) = cell_size(ui, font_size);
+    ((area.width() / cell_w).floor().max(1.0) as usize, (area.height() / cell_h).floor().max(1.0) as usize)
 }
 
 /// Vista de un terminal: pinta la rejilla de una sesión y le envía la entrada.
@@ -37,20 +53,18 @@ impl Pane {
     }
 
     /// `input_enabled` es falso mientras hay un diálogo abierto, para no robarle el foco.
-    pub fn show(&mut self, ui: &mut egui::Ui, area: Rect, input_enabled: bool) {
+    pub fn show(&mut self, ui: &mut egui::Ui, area: Rect, input_enabled: bool, font_size: f32) {
         self.input_enabled = input_enabled;
-        self.terminal(ui, area);
+        self.terminal(ui, area, font_size);
     }
 }
 
 impl Pane {
-    fn terminal(&mut self, ui: &mut egui::Ui, area: Rect) {
-        let font = FontId::new(FONT_SIZE, FontFamily::Monospace);
-        let bold = FontId::new(FONT_SIZE, bold_family());
+    fn terminal(&mut self, ui: &mut egui::Ui, area: Rect, font_size: f32) {
+        let font = FontId::new(font_size, FontFamily::Monospace);
+        let bold = FontId::new(font_size, bold_family());
         let ppp = ui.ctx().pixels_per_point();
-        let (glyph_w, row_h) = ui.fonts_mut(|f| (f.glyph_width(&font, 'M'), f.row_height(&font)));
-        let cell_w = (glyph_w * ppp).round().max(1.0) / ppp;
-        let cell_h = (row_h * ppp).ceil().max(1.0) / ppp;
+        let (cell_w, cell_h) = cell_size(ui, font_size);
         let area = Rect::from_min_size(snap(area.min, ppp), area.size());
 
         let cols = (area.width() / cell_w).floor().max(1.0) as usize;
@@ -103,6 +117,36 @@ impl Pane {
             self.handle_input(ui);
         }
         self.paint_grid(ui, area, &font, &bold, cell_w, cell_h);
+        self.scrollbar(ui, area, rows);
+    }
+
+    /// Barra de scroll sobre el historial; solo aparece si lo hay. Se arrastra con el ratón.
+    fn scrollbar(&mut self, ui: &mut egui::Ui, area: Rect, rows: usize) {
+        let (history, offset) = {
+            let term = self.session.term.lock().unwrap();
+            (term.grid().history_size(), term.grid().display_offset())
+        };
+        if history == 0 {
+            return;
+        }
+        let track = Rect::from_min_max(Pos2::new(area.max.x + 3.0, area.min.y), Pos2::new(area.max.x + 9.0, area.max.y));
+        let thumb_len = (track.height() * rows as f32 / (history + rows) as f32).clamp(28.0, track.height());
+        let travel = (track.height() - thumb_len).max(1.0);
+        let thumb_top = track.min.y + travel * (1.0 - offset as f32 / history as f32);
+
+        let hit = track.expand2(Vec2::new(4.0, 0.0));
+        let response = ui.interact(hit, ui.scope_id().with("scrollbar"), Sense::click_and_drag());
+        if let Some(pos) = response.interact_pointer_pos() {
+            if response.dragged() || response.is_pointer_button_down_on() {
+                let ratio = ((pos.y - track.min.y - thumb_len / 2.0) / travel).clamp(0.0, 1.0);
+                let target = ((1.0 - ratio) * history as f32).round() as i32;
+                self.session.term.lock().unwrap().scroll_display(Scroll::Delta(target - offset as i32));
+            }
+        }
+        let active = response.hovered() || response.dragged();
+        let color = if active { theme::SUBTEXT } else { theme::SELECTION };
+        let thumb = Rect::from_min_size(Pos2::new(track.min.x, thumb_top), Vec2::new(track.width(), thumb_len));
+        ui.painter().rect_filled(thumb, CornerRadius::same(3), color);
     }
 
     fn handle_scroll(&mut self, ui: &egui::Ui, cell_h: f32) {

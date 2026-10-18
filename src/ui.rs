@@ -3,13 +3,13 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 
 use eframe::egui::{
-    self, Button, Color32, CornerRadius, FontData, FontDefinitions, FontFamily, Frame, Margin, Panel,
-    RichText, ViewportCommand,
+    self, Align2, Button, Color32, CornerRadius, FontData, FontDefinitions, FontFamily, FontId, Frame, Margin,
+    Key, Modifiers, Panel, Pos2, Rect, RichText, Sense, Stroke, TextStyle, Vec2, ViewportCommand,
 };
 use zeroize::Zeroizing;
 
 use crate::dialogs::{self, ConnForm, Dialog, Outcome, Pending, SecretPrompt, UnlockPrompt};
-use crate::pane::{bold_family, Pane, PADDING};
+use crate::pane::{self, bold_family, Pane, DEFAULT_FONT_SIZE, MAX_FONT_SIZE, MIN_FONT_SIZE, PADDING};
 use crate::secrets::{account_for, SecretError, SecretKind, SecretStore, Secrets};
 use crate::ssh::{self, Credentials, HostKeyRequest, UiEvent};
 use crate::store::{Auth, Connection, Store, TabKind};
@@ -17,9 +17,13 @@ use crate::term::Session;
 use crate::theme;
 
 const SIDEBAR_WIDTH: f32 = 230.0;
-const TAB_BAR_HEIGHT: f32 = 38.0;
+const TAB_BAR_HEIGHT: f32 = 40.0;
+const TAB_HEIGHT: f32 = 34.0;
+const CONTROL_RADIUS: u8 = 6;
+const ROW_HEIGHT: f32 = 46.0;
 
 struct Tab {
+    id: u64,
     kind: TabKind,
     label: String,
     pane: Pane,
@@ -30,6 +34,9 @@ pub struct App {
     active: usize,
     debug_keys: bool,
     window_title: String,
+    next_tab_id: u64,
+    font_size: f32,
+    grid: (usize, usize),
     ctx: egui::Context,
     runtime: tokio::runtime::Runtime,
     store: Arc<Mutex<Store>>,
@@ -62,6 +69,16 @@ impl App {
         let connections = store.list_connections().unwrap_or_default();
         let store = Arc::new(Mutex::new(store));
         let secrets = Secrets::select(store.clone());
+        let font_size = store
+            .lock()
+            .unwrap()
+            .meta("font_size")
+            .ok()
+            .flatten()
+            .and_then(|bytes| String::from_utf8(bytes).ok())
+            .and_then(|text| text.parse::<f32>().ok())
+            .map_or(DEFAULT_FONT_SIZE, |size| size.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE));
+        cc.egui_ctx.options_mut(|options| options.zoom_with_keyboard = false);
         let (events_tx, events_rx) = mpsc::channel();
 
         let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build()?;
@@ -76,6 +93,9 @@ impl App {
             active: 0,
             debug_keys,
             window_title: String::new(),
+            next_tab_id: 0,
+            font_size,
+            grid: (80, 24),
             ctx: cc.egui_ctx.clone(),
             runtime,
             store,
@@ -99,29 +119,48 @@ impl App {
 
     fn open_local(&mut self) -> anyhow::Result<()> {
         let wake = self.wake();
-        let session = Session::start(80, 24, move || wake(), |feed| crate::local::spawn(80, 24, feed))?;
-        self.tabs.push(Tab { kind: TabKind::Local, label: "Terminal local".into(), pane: Pane::new(session, self.debug_keys) });
+        let (cols, rows) = self.grid;
+        let session = Session::start(cols, rows, move || wake(), move |feed| crate::local::spawn(cols, rows, feed))?;
+        let id = self.take_tab_id();
+        self.tabs.push(Tab { id, kind: TabKind::Local, label: "Terminal local".into(), pane: Pane::new(session, self.debug_keys) });
         self.active = self.tabs.len() - 1;
         Ok(())
     }
 
-    fn open_ssh(&mut self, connection: Connection, credentials: Credentials) -> anyhow::Result<()> {
+    fn take_tab_id(&mut self) -> u64 {
+        self.next_tab_id += 1;
+        self.next_tab_id
+    }
+
+    /// Abre la sesión SSH en una pestaña nueva o, con `slot`, en lugar de una caída.
+    fn open_ssh(&mut self, connection: Connection, credentials: Credentials, slot: Option<u64>) -> anyhow::Result<()> {
         let Some(id) = connection.id else { anyhow::bail!("la conexión no está guardada") };
         let wake = self.wake();
         let wake_for_ssh = wake.clone();
         let handle = self.runtime.handle().clone();
         let events = self.events_tx.clone();
         let label = connection.name.clone();
-        let session = Session::start(80, 24, move || wake(), move |feed| {
-            Ok(ssh::spawn(&handle, connection, credentials, (80, 24), feed, events, wake_for_ssh, ssh::default_known_hosts()))
+        let (cols, rows) = self.grid;
+        let session = Session::start(cols, rows, move || wake(), move |feed| {
+            Ok(ssh::spawn(&handle, connection, credentials, (cols, rows), feed, events, wake_for_ssh, ssh::default_known_hosts()))
         })?;
-        self.tabs.push(Tab { kind: TabKind::Connection(id), label, pane: Pane::new(session, self.debug_keys) });
-        self.active = self.tabs.len() - 1;
+        let tab_id = slot.unwrap_or_else(|| self.take_tab_id());
+        let tab = Tab { id: tab_id, kind: TabKind::Connection(id), label, pane: Pane::new(session, self.debug_keys) };
+        match slot.and_then(|slot| self.tabs.iter().position(|t| t.id == slot)) {
+            Some(index) => {
+                self.tabs[index] = tab;
+                self.active = index;
+            }
+            None => {
+                self.tabs.push(tab);
+                self.active = self.tabs.len() - 1;
+            }
+        }
         Ok(())
     }
 
     /// Reúne los secretos necesarios (pidiéndolos si hace falta) y abre la pestaña SSH.
-    fn begin_open(&mut self, connection: Connection) {
+    fn begin_open(&mut self, connection: Connection, slot: Option<u64>) {
         let kind = match connection.auth {
             Auth::Password => Some(SecretKind::Password),
             Auth::Key => match connection.key_path.as_deref().map(ssh::key_is_encrypted) {
@@ -135,23 +174,23 @@ impl App {
             Auth::Agent => None,
         };
         let Some(kind) = kind else {
-            self.finish_open(connection, Credentials::default());
+            self.finish_open(connection, Credentials::default(), slot);
             return;
         };
 
         let account = account_for(connection.id.unwrap_or_default(), kind);
         match self.secrets.get(&account) {
-            Ok(Some(secret)) => self.finish_open(connection, credentials(kind, secret)),
+            Ok(Some(secret)) => self.finish_open(connection, credentials(kind, secret), slot),
             Ok(None) => {
-                self.dialog = Some(Dialog::Secret(SecretPrompt { connection, kind, input: String::new(), save: true }));
+                self.dialog = Some(Dialog::Secret(SecretPrompt { connection, slot, kind, input: String::new(), save: true }));
             }
-            Err(SecretError::Locked) => self.ask_unlock(Pending::Open(connection)),
+            Err(SecretError::Locked) => self.ask_unlock(Pending::Open(connection, slot)),
             Err(error) => self.dialog = Some(Dialog::Message(format!("Almacén de secretos: {error}"))),
         }
     }
 
-    fn finish_open(&mut self, connection: Connection, credentials: Credentials) {
-        if let Err(error) = self.open_ssh(connection, credentials) {
+    fn finish_open(&mut self, connection: Connection, credentials: Credentials, slot: Option<u64>) {
+        if let Err(error) = self.open_ssh(connection, credentials, slot) {
             self.dialog = Some(Dialog::Message(format!("No se pudo abrir la conexión: {error:#}")));
         }
     }
@@ -177,6 +216,21 @@ impl App {
 
     fn refresh_connections(&mut self) {
         self.connections = self.store.lock().unwrap().list_connections().unwrap_or_default();
+    }
+
+    fn reconnect(&mut self, index: usize) {
+        let (TabKind::Connection(id), tab_id) = (self.tabs[index].kind, self.tabs[index].id) else { return };
+        if let Some(connection) = self.connections.iter().find(|c| c.id == Some(id)).cloned() {
+            self.begin_open(connection, Some(tab_id));
+        }
+    }
+
+    fn set_font_size(&mut self, size: f32) {
+        let size = size.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE);
+        if (size - self.font_size).abs() > f32::EPSILON {
+            self.font_size = size;
+            let _ = self.store.lock().unwrap().set_meta("font_size", size.to_string().as_bytes());
+        }
     }
 
     fn close_tab(&mut self, index: usize) {
@@ -239,7 +293,7 @@ impl App {
                 }
                 TabKind::Connection(id) => {
                     if let Some(connection) = self.connections.iter().find(|c| c.id == Some(id)).cloned() {
-                        self.begin_open(connection);
+                        self.begin_open(connection, None);
                     }
                 }
             }
@@ -317,7 +371,7 @@ impl App {
             (Outcome::Submit, Dialog::Secret(prompt)) => {
                 let secret = Zeroizing::new(prompt.input);
                 let account = account_for(prompt.connection.id.unwrap_or_default(), prompt.kind);
-                self.finish_open(prompt.connection, credentials(prompt.kind, secret.clone()));
+                self.finish_open(prompt.connection, credentials(prompt.kind, secret.clone()), prompt.slot);
                 if prompt.save && !secret.is_empty() {
                     self.save_secret(account, secret);
                 }
@@ -332,7 +386,7 @@ impl App {
                     match master.unlock(&prompt.input) {
                         Ok(()) => {
                             match prompt.then {
-                                Pending::Open(connection) => self.begin_open(connection),
+                                Pending::Open(connection, slot) => self.begin_open(connection, slot),
                                 Pending::Save { account, secret } => self.save_secret(account, secret),
                             }
                             return;
@@ -356,39 +410,68 @@ impl App {
         let mut connect: Option<Connection> = None;
         let mut edit: Option<Connection> = None;
         let mut delete: Option<Connection> = None;
+        let open_ids: Vec<i64> = self
+            .tabs
+            .iter()
+            .filter_map(|t| match t.kind {
+                TabKind::Connection(id) => Some(id),
+                TabKind::Local => None,
+            })
+            .collect();
 
         Panel::left("sidebar")
             .default_size(SIDEBAR_WIDTH)
-            .min_size(170.0)
+            .min_size(180.0)
             .frame(Frame::NONE.fill(theme::MANTLE).inner_margin(Margin::same(12)))
             .show(ui, |ui| {
-                ui.label(RichText::new("OMNITERM").small().color(theme::SUBTEXT));
-                ui.add_space(8.0);
-                let full = egui::vec2(ui.available_width(), 28.0);
-                if ui.add(Button::new("+ Terminal local").corner_radius(6).min_size(full)).clicked() {
+                let primary = Button::new(RichText::new("Terminal local").color(theme::BASE).font(FontId::new(14.0, strong_family())))
+                    .fill(theme::ACCENT)
+                    .min_size(Vec2::new(ui.available_width(), 34.0));
+                if ui.add(primary).clicked() {
                     open_local = true;
                 }
-                ui.add_space(16.0);
+
+                ui.add_space(12.0);
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("CONEXIONES").small().color(theme::SUBTEXT));
+                    ui.label(RichText::new("Conexiones").small().color(theme::SUBTEXT));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.add(Button::new("+").frame(false)).on_hover_text("Nueva conexión").clicked() {
+                        let add = Button::new(RichText::new("+").size(16.0)).fill(Color32::TRANSPARENT).min_size(Vec2::splat(26.0));
+                        if ui.add(add).on_hover_text("Nueva conexión").clicked() {
                             new_connection = true;
                         }
                     });
                 });
-                ui.add_space(4.0);
+                ui.add_space(-2.0);
+
                 if self.connections.is_empty() {
-                    ui.label(RichText::new("Sin conexiones guardadas").color(theme::SUBTEXT));
+                    ui.label(RichText::new("Aún no hay conexiones. Crea una con + o importa las de ~/.ssh/config.").color(theme::SUBTEXT));
                 }
+                ui.spacing_mut().item_spacing.y = 2.0;
                 for connection in &self.connections {
-                    let label = format!("{}\n{}@{}", connection.name, connection.user, connection.host);
-                    let response = ui.add(
-                        Button::new(RichText::new(label).color(theme::TEXT))
-                            .fill(Color32::TRANSPARENT)
-                            .corner_radius(6)
-                            .min_size(egui::vec2(ui.available_width(), 40.0)),
+                    let is_open = connection.id.is_some_and(|id| open_ids.contains(&id));
+                    let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_HEIGHT), Sense::click());
+                    if response.hovered() {
+                        ui.painter().rect_filled(rect, CornerRadius::same(CONTROL_RADIUS), theme::SURFACE);
+                    }
+                    let left = rect.min.x + 10.0;
+                    ui.painter().text(
+                        Pos2::new(left, rect.min.y + 9.0),
+                        Align2::LEFT_TOP,
+                        &connection.name,
+                        FontId::new(14.0, strong_family()),
+                        theme::TEXT,
                     );
+                    ui.painter().text(
+                        Pos2::new(left, rect.min.y + 27.0),
+                        Align2::LEFT_TOP,
+                        format!("{}@{}", connection.user, connection.host),
+                        FontId::new(12.0, FontFamily::Proportional),
+                        theme::SUBTEXT,
+                    );
+                    if is_open {
+                        ui.painter().circle_filled(Pos2::new(rect.max.x - 14.0, rect.center().y), 3.5, theme::ACCENT);
+                    }
+                    let response = response.on_hover_text(if is_open { "Sesión abierta. Doble clic para otra pestaña" } else { "Doble clic para conectar" });
                     if response.double_clicked() {
                         connect = Some(connection.clone());
                     }
@@ -407,20 +490,24 @@ impl App {
                         }
                     });
                 }
-                ui.add_space(12.0);
-                if ui.add(Button::new("Importar ~/.ssh/config").corner_radius(6)).clicked() {
+
+                ui.add_space(8.0);
+                let import_button = Button::new(RichText::new("Importar de ~/.ssh/config").small().color(theme::SUBTEXT))
+                    .fill(Color32::TRANSPARENT)
+                    .stroke(Stroke::new(1.0, theme::SURFACE));
+                if ui.add(import_button).clicked() {
                     import = true;
                 }
                 if let Some(notice) = &self.notice {
-                    ui.add_space(8.0);
                     ui.label(RichText::new(notice).small().color(theme::SUBTEXT));
                 }
+
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
                     let mut forced = Secrets::is_master_forced(&self.store.lock().unwrap());
-                    if ui.checkbox(&mut forced, "Forzar clave maestra").changed() {
+                    if ui.checkbox(&mut forced, RichText::new("Forzar clave maestra").small()).changed() {
                         let result = Secrets::set_master_forced(&self.store.lock().unwrap(), forced);
                         self.notice = Some(match result {
-                            Ok(()) => "Reinicia omniterm para aplicar el cambio de almacén".into(),
+                            Ok(()) => "Reinicia omni-term para aplicar el cambio de almacén".into(),
                             Err(error) => format!("No se pudo guardar el ajuste: {error:#}"),
                         });
                     }
@@ -438,7 +525,7 @@ impl App {
             self.import_ssh_config();
         }
         if let Some(connection) = connect {
-            self.begin_open(connection);
+            self.begin_open(connection, None);
         }
         if let Some(connection) = edit {
             self.dialog = Some(Dialog::Edit(ConnForm::from_connection(&connection)));
@@ -458,40 +545,115 @@ fn credentials(kind: SecretKind, secret: Zeroizing<String>) -> Credentials {
 
 fn install_fonts(ctx: &egui::Context) {
     let mut fonts = FontDefinitions::default();
-    fonts.font_data.insert(
-        "jb-regular".into(),
-        FontData::from_static(include_bytes!("../assets/JetBrainsMono-Regular.ttf")).into(),
-    );
-    fonts.font_data.insert(
-        "jb-bold".into(),
-        FontData::from_static(include_bytes!("../assets/JetBrainsMono-Bold.ttf")).into(),
-    );
+    let load = |name: &str, bytes: &'static [u8], fonts: &mut FontDefinitions| {
+        fonts.font_data.insert(name.into(), FontData::from_static(bytes).into());
+    };
+    load("jb-regular", include_bytes!("../assets/JetBrainsMono-Regular.ttf"), &mut fonts);
+    load("jb-bold", include_bytes!("../assets/JetBrainsMono-Bold.ttf"), &mut fonts);
+    // La interfaz usa una sans neutra con buena cobertura de acentos; el terminal, JetBrains Mono.
+    load("ui-regular", include_bytes!("../assets/NotoSans-Regular.ttf"), &mut fonts);
+    load("ui-semibold", include_bytes!("../assets/NotoSans-SemiBold.ttf"), &mut fonts);
     fonts.families.entry(FontFamily::Monospace).or_default().insert(0, "jb-regular".into());
+    fonts.families.entry(FontFamily::Proportional).or_default().insert(0, "ui-regular".into());
     fonts.families.insert(bold_family(), vec!["jb-bold".into()]);
+    fonts.families.insert(strong_family(), vec!["ui-semibold".into(), "ui-regular".into()]);
     ctx.set_fonts(fonts);
 }
 
+pub fn strong_family() -> FontFamily {
+    FontFamily::Name("ui-strong".into())
+}
+
+/// Escala de espaciado (4/8/12/16) y radios (controles 6, diálogos 10) de toda la interfaz.
 fn install_visuals(ctx: &egui::Context) {
-    let mut visuals = egui::Visuals::dark();
-    visuals.panel_fill = theme::BASE;
-    visuals.window_fill = theme::BASE;
-    visuals.override_text_color = Some(theme::TEXT);
-    visuals.widgets.inactive.weak_bg_fill = theme::SURFACE;
-    visuals.widgets.hovered.weak_bg_fill = theme::SELECTION;
-    visuals.widgets.active.weak_bg_fill = theme::SELECTION;
-    ctx.set_visuals(visuals);
+    let mut style = (*ctx.global_style()).clone();
+    style.text_styles = [
+        (TextStyle::Small, FontId::new(12.0, FontFamily::Proportional)),
+        (TextStyle::Body, FontId::new(14.0, FontFamily::Proportional)),
+        (TextStyle::Button, FontId::new(14.0, FontFamily::Proportional)),
+        (TextStyle::Heading, FontId::new(18.0, strong_family())),
+        (TextStyle::Monospace, FontId::new(14.0, FontFamily::Monospace)),
+    ]
+    .into();
+    style.spacing.item_spacing = Vec2::new(8.0, 8.0);
+    style.spacing.button_padding = Vec2::new(12.0, 6.0);
+    style.spacing.interact_size.y = 30.0;
+
+    let radius = CornerRadius::same(CONTROL_RADIUS);
+    let v = &mut style.visuals;
+    v.panel_fill = theme::BASE;
+    v.window_fill = theme::MANTLE;
+    v.window_corner_radius = CornerRadius::same(10);
+    v.window_stroke = Stroke::new(1.0, theme::SURFACE);
+    v.window_shadow = egui::Shadow { offset: [0, 10], blur: 28, spread: 0, color: Color32::from_black_alpha(110) };
+    v.popup_shadow = egui::Shadow { offset: [0, 6], blur: 16, spread: 0, color: Color32::from_black_alpha(90) };
+    v.menu_corner_radius = CornerRadius::same(8);
+    v.override_text_color = Some(theme::TEXT);
+    v.extreme_bg_color = theme::BASE;
+    v.selection.bg_fill = theme::ACCENT.gamma_multiply(0.35);
+    v.selection.stroke = Stroke::new(1.0, theme::ACCENT);
+
+    v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, theme::SURFACE);
+    for (widget, fill) in [
+        (&mut v.widgets.inactive, theme::SURFACE),
+        (&mut v.widgets.hovered, theme::SELECTION),
+        (&mut v.widgets.active, theme::SELECTION),
+    ] {
+        widget.weak_bg_fill = fill;
+        widget.bg_fill = fill;
+        widget.bg_stroke = Stroke::NONE;
+        widget.corner_radius = radius;
+    }
+    v.widgets.hovered.fg_stroke = Stroke::new(1.0, theme::TEXT);
+    ctx.set_global_style(style);
+}
+
+/// Pestaña con trazo de acento arriba cuando está activa; el cierre aparece al pasar el ratón.
+fn tab(ui: &mut egui::Ui, label: &str, selected: bool, index: usize) -> (bool, bool) {
+    let shown = if label.chars().count() > 24 {
+        format!("{}…", label.chars().take(23).collect::<String>())
+    } else {
+        label.to_string()
+    };
+    let font = FontId::new(14.0, if selected { strong_family() } else { FontFamily::Proportional });
+    let galley = ui.painter().layout_no_wrap(shown, font, Color32::WHITE);
+    let size = Vec2::new(galley.size().x + 12.0 + 8.0 + 20.0 + 8.0, TAB_HEIGHT);
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+
+    let hovered = response.hovered();
+    let fill = if selected {
+        theme::BASE
+    } else if hovered {
+        theme::SURFACE
+    } else {
+        Color32::TRANSPARENT
+    };
+    let corner = CornerRadius { nw: 8, ne: 8, sw: 0, se: 0 };
+    ui.painter().rect_filled(rect, corner, fill);
+    if selected {
+        let line = Rect::from_min_size(rect.min, Vec2::new(rect.width(), 2.0));
+        ui.painter().rect_filled(line, CornerRadius { nw: 8, ne: 8, sw: 0, se: 0 }, theme::ACCENT);
+    }
+
+    let color = if selected { theme::TEXT } else { theme::SUBTEXT };
+    ui.painter().galley(Pos2::new(rect.min.x + 12.0, rect.center().y - galley.size().y / 2.0 + 1.0), galley, color);
+
+    let close_rect = Rect::from_center_size(Pos2::new(rect.max.x - 18.0, rect.center().y + 1.0), Vec2::splat(20.0));
+    let mut close_clicked = false;
+    if selected || hovered {
+        let close = ui.interact(close_rect, ui.auto_id_with(("tab-close", index)), Sense::click());
+        if close.hovered() {
+            ui.painter().rect_filled(close_rect, CornerRadius::same(4), theme::SELECTION);
+        }
+        ui.painter().text(close_rect.center(), Align2::CENTER_CENTER, "×", FontId::proportional(15.0), color);
+        close_clicked = close.on_hover_text("Cerrar pestaña").clicked();
+    }
+    (response.clicked() && !close_clicked, close_clicked)
 }
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
-        self.drive_pending();
-
-        let finished_restoring = self.restore_active.is_none();
-        if self.tabs.is_empty() && finished_restoring && self.open_queue.is_empty() && self.dialog.is_none() {
-            ctx.send_viewport_cmd(ViewportCommand::Close);
-            return;
-        }
 
         self.sidebar(ui);
 
@@ -500,24 +662,25 @@ impl eframe::App for App {
         let mut new_local = false;
         Panel::top("tabs")
             .exact_size(TAB_BAR_HEIGHT)
-            .frame(Frame::NONE.fill(theme::MANTLE).inner_margin(Margin::symmetric(8, 5)))
+            .show_separator_line(false)
+            .frame(Frame::NONE.fill(theme::MANTLE).inner_margin(Margin { left: 8, right: 8, top: 6, bottom: 0 }))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    for (i, tab) in self.tabs.iter().enumerate() {
-                        let selected = i == self.active;
-                        let color = if selected { theme::TEXT } else { theme::SUBTEXT };
-                        let fill = if selected { theme::BASE } else { Color32::TRANSPARENT };
-                        let title = tab.pane.title();
-                        let label = if title.is_empty() { tab.label.clone() } else { title };
-                        if ui.add(Button::new(RichText::new(label).color(color)).fill(fill).corner_radius(6)).clicked() {
+                    ui.spacing_mut().item_spacing.x = 2.0;
+                    for (i, t) in self.tabs.iter().enumerate() {
+                        let title = t.pane.title();
+                        let label = if title.is_empty() { t.label.clone() } else { title };
+                        let (clicked, closed) = tab(ui, &label, i == self.active, i);
+                        if clicked {
                             activate = Some(i);
                         }
-                        if ui.add(Button::new("×").frame(false)).clicked() {
+                        if closed {
                             close = Some(i);
                         }
-                        ui.add_space(4.0);
                     }
-                    if ui.add(Button::new("+").frame(false)).clicked() {
+                    ui.add_space(6.0);
+                    let plus = ui.add(Button::new(RichText::new("+").size(16.0)).fill(Color32::TRANSPARENT).min_size(Vec2::splat(28.0)));
+                    if plus.on_hover_text("Nueva pestaña").clicked() {
                         new_local = true;
                     }
                 });
@@ -535,17 +698,76 @@ impl eframe::App for App {
 
         let area = ui.available_rect_before_wrap();
         ui.painter().rect_filled(area, CornerRadius::ZERO, theme::BASE);
+        let text_area = area.shrink(PADDING);
+
+        // Zoom del terminal: Ctrl+= / Ctrl+- / Ctrl+0, reservados y no enviados a la aplicación.
+        let zoom = ctx.input_mut(|i| {
+            let mut next = self.font_size;
+            if i.consume_key(Modifiers::CTRL, Key::Equals)
+                || i.consume_key(Modifiers::CTRL, Key::Plus)
+                || i.consume_key(Modifiers::CTRL | Modifiers::SHIFT, Key::Equals)
+            {
+                next += 1.0;
+            }
+            if i.consume_key(Modifiers::CTRL, Key::Minus) {
+                next -= 1.0;
+            }
+            if i.consume_key(Modifiers::CTRL, Key::Num0) {
+                next = DEFAULT_FONT_SIZE;
+            }
+            next
+        });
+        self.set_font_size(zoom);
+
+        // Con el tamaño real de la zona de terminal, las sesiones nuevas arrancan sin reajuste.
+        self.grid = pane::grid_for(ui, text_area, self.font_size);
+        let tabs_before = self.tabs.len();
+        self.drive_pending();
+        if self.tabs.len() != tabs_before {
+            ctx.request_repaint();
+        }
+
+        let finished_restoring = self.restore_active.is_none();
+        if self.tabs.is_empty() && finished_restoring && self.open_queue.is_empty() && self.dialog.is_none() {
+            ctx.send_viewport_cmd(ViewportCommand::Close);
+            return;
+        }
+
+        let mut reconnect = None;
         if !self.tabs.is_empty() {
             let active = self.active.min(self.tabs.len() - 1);
             let input_enabled = self.dialog.is_none() && self.host_keys.is_empty();
-            self.tabs[active].pane.show(ui, area.shrink(PADDING), input_enabled);
+            self.tabs[active].pane.show(ui, text_area, input_enabled, self.font_size);
 
             let title = self.tabs[active].pane.title();
-            let title = if title.is_empty() { "omniterm".to_string() } else { title };
+            let title = if title.is_empty() { "omni-term".to_string() } else { title };
             if title != self.window_title {
                 ctx.send_viewport_cmd(ViewportCommand::Title(title.clone()));
                 self.window_title = title;
             }
+
+            if self.tabs[active].pane.session.is_disconnected() {
+                let mut clicked = false;
+                egui::Area::new(egui::Id::NULL.with("reconnect"))
+                    .pivot(Align2::CENTER_BOTTOM)
+                    .fixed_pos(Pos2::new(area.center().x, area.max.y - 24.0))
+                    .show(&ctx, |ui| {
+                        Frame::popup(ui.style()).inner_margin(Margin::symmetric(14, 10)).show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label("Sesión desconectada");
+                                let button = Button::new(RichText::new("Reconectar").color(theme::BASE)).fill(theme::ACCENT);
+                                clicked = ui.add(button).clicked();
+                            });
+                        });
+                    });
+                let enter = input_enabled && ctx.input(|i| i.key_pressed(Key::Enter));
+                if clicked || enter {
+                    reconnect = Some(active);
+                }
+            }
+        }
+        if let Some(index) = reconnect {
+            self.reconnect(index);
         }
 
         self.handle_dialog(&ctx);

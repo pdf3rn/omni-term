@@ -3404,7 +3404,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "omniterm"
+name = "omni-term"
 version = "0.1.0"
 dependencies = [
  "alacritty_terminal",

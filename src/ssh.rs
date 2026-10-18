@@ -151,7 +151,8 @@ pub fn spawn(
         match outcome {
             Ok(()) => feed.close(),
             Err(error) => {
-                feed.feed(format!("\r\n\x1b[31m[omniterm] {error:#}\x1b[0m\r\n").as_bytes());
+                feed.feed(format!("\r\n\x1b[31m[omni-term] {error:#}\x1b[0m\r\n").as_bytes());
+                feed.disconnect();
             }
         }
     });
@@ -210,11 +211,21 @@ async fn run(
         channel.data(format!("{command}\n").as_bytes()).await?;
     }
 
+    let mut shell_exited = false;
     loop {
         tokio::select! {
             message = channel.wait() => match message {
                 Some(ChannelMsg::Data { data }) | Some(ChannelMsg::ExtendedData { data, .. }) => feed.feed(&data),
-                Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) | None => break,
+                Some(ChannelMsg::ExitStatus { .. }) | Some(ChannelMsg::ExitSignal { .. }) => shell_exited = true,
+                // Canal cerrado: ordenado (`exit`, `logout`) si el transporte sigue vivo; si no, caída.
+                Some(ChannelMsg::Close) | None => {
+                    tokio::time::sleep(Duration::from_millis(300)).await;
+                    if shell_exited || !session.is_closed() {
+                        break;
+                    }
+                    bail!("la conexión se cerró de forma inesperada");
+                }
+                Some(ChannelMsg::Eof) => {}
                 Some(_) => {}
             },
             command = commands.recv() => match command {
@@ -297,6 +308,39 @@ mod tests {
         }
     }
 
+    /// Proxy TCP que se puede cortar para simular una caída de red.
+    struct CuttableProxy {
+        port: u16,
+        streams: Arc<Mutex<Vec<std::net::TcpStream>>>,
+    }
+
+    impl CuttableProxy {
+        fn start(target: u16) -> Self {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let streams = Arc::new(Mutex::new(Vec::new()));
+            let kept = streams.clone();
+            std::thread::spawn(move || {
+                while let Ok((client, _)) = listener.accept() {
+                    let Ok(server) = std::net::TcpStream::connect(("127.0.0.1", target)) else { continue };
+                    kept.lock().unwrap().extend([client.try_clone().unwrap(), server.try_clone().unwrap()]);
+                    for (mut from, mut to) in [(client.try_clone().unwrap(), server.try_clone().unwrap()), (server, client)] {
+                        std::thread::spawn(move || {
+                            let _ = std::io::copy(&mut from, &mut to);
+                        });
+                    }
+                }
+            });
+            Self { port, streams }
+        }
+
+        fn cut(&self) {
+            for stream in self.streams.lock().unwrap().iter() {
+                let _ = stream.shutdown(std::net::Shutdown::Both);
+            }
+        }
+    }
+
     fn screen_text(session: &Session) -> String {
         let term = session.term.lock().unwrap();
         term.renderable_content().display_iter.map(|cell| cell.cell.c).collect()
@@ -356,6 +400,7 @@ mod tests {
             key_path: Some(dir.join("client_key").display().to_string()),
             init_command: None,
         };
+        let again = connection.clone();
         let handle = runtime.handle().clone();
         let hosts = known_hosts.clone();
         let session = Session::start(80, 24, || {}, move |feed| {
@@ -379,6 +424,45 @@ mod tests {
             std::thread::sleep(Duration::from_millis(100));
         }
         assert!(std::fs::read_to_string(&known_hosts).unwrap().contains("127.0.0.1"));
+
+        // Un `exit` del usuario cierra la pestaña; no cuenta como conexión perdida.
+        session.write(b"exit\n");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !session.has_exited() {
+            assert!(Instant::now() < deadline, "la sesión no terminó tras exit (desconectada: {}):\n{}", session.is_disconnected(), screen_text(&session).trim());
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        assert!(!session.is_disconnected());
+
+        // Una caída abrupta (aquí, cortando un proxy TCP) deja la pestaña abierta y desconectada.
+        let proxy = CuttableProxy::start(port);
+        let mut again = again;
+        again.port = proxy.port;
+        let (events2, requests2) = std_mpsc::channel();
+        std::thread::spawn(move || {
+            while let Ok(UiEvent::HostKey(request)) = requests2.recv() {
+                let _ = request.reply.send(true);
+            }
+        });
+        let handle = runtime.handle().clone();
+        let hosts = known_hosts.clone();
+        let second = Session::start(80, 24, || {}, move |feed| {
+            Ok(spawn(&handle, again, Credentials::default(), (80, 24), feed, events2, Arc::new(|| {}), hosts))
+        })
+        .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while !screen_text(&second).contains("Sesion iniciada") {
+            assert!(Instant::now() < deadline, "la segunda sesión no conectó:\n{}", screen_text(&second).trim());
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        std::thread::sleep(Duration::from_millis(500));
+        proxy.cut();
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while !second.is_disconnected() {
+            assert!(Instant::now() < deadline, "no se detectó la caída:\n{}", screen_text(&second).trim());
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        assert!(!second.has_exited());
         std::fs::remove_dir_all(&dir).ok();
     }
 }

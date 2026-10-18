@@ -90,6 +90,7 @@ impl Store {
     }
 
     pub fn default_path() -> anyhow::Result<std::path::PathBuf> {
+        // El nombre del directorio y del archivo se mantienen para no perder datos existentes.
         let dirs = directories::ProjectDirs::from("dev", "omniterm", "omniterm")
             .context("no se pudo determinar el directorio de datos")?;
         Ok(dirs.data_dir().join("omniterm.db"))
@@ -105,7 +106,7 @@ impl Store {
     fn migrate(&mut self) -> anyhow::Result<()> {
         let current = self.db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))? as usize;
         if current > MIGRATIONS.len() {
-            bail!("la base de datos es más nueva que esta versión de omniterm");
+            bail!("la base de datos es más nueva que esta versión de omni-term");
         }
         for (index, sql) in MIGRATIONS.iter().enumerate().skip(current) {
             let tx = self.db.transaction()?;

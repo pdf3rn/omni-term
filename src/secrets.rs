@@ -10,6 +10,7 @@ use zeroize::Zeroizing;
 
 use crate::store::Store;
 
+// Identificadores internos estables: cambiarlos dejaría sin acceso a los secretos ya guardados.
 const SERVICE: &str = "omniterm";
 const SALT_KEY: &str = "kdf_salt";
 const CHECK_KEY: &str = "kdf_check";
