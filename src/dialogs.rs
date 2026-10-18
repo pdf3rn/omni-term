@@ -10,6 +10,14 @@ use crate::ssh::{HostKeyChange, HostKeyRequest, PromptRequest};
 use crate::store::{Auth, Connection, Forward, ForwardKind, Snippet};
 use crate::theme;
 
+/// Atajos de entorno: nombre del botón, etiqueta que se guarda y color de identidad.
+const ENVIRONMENTS: [(&str, &str, u8); 4] = [
+    ("Producción", "producción", 0),
+    ("Staging", "staging", 1),
+    ("Desarrollo", "desarrollo", 3),
+    ("Personal", "personal", 4),
+];
+
 pub struct ForwardRow {
     pub kind: ForwardKind,
     pub bind_host: String,
@@ -120,6 +128,10 @@ impl FormErrors {
 }
 
 pub struct ConnForm {
+    /// Pide el foco para «Nombre» la primera vez que se dibuja.
+    pub focus: bool,
+    /// Muestra la etiqueta y los colores a mano en vez de los atajos de entorno.
+    pub custom_env: bool,
     pub tab: EditTab,
     pub errors: FormErrors,
     pub test: Option<TestHandle>,
@@ -150,6 +162,8 @@ impl ConnForm {
             key_path: "~/.ssh/id_ed25519".into(),
             init_command: String::new(),
             secret: String::new(),
+            focus: true,
+            custom_env: false,
             tab: EditTab::General,
             errors: FormErrors::default(),
             test: None,
@@ -161,10 +175,15 @@ impl ConnForm {
     }
 
     pub fn from_connection(connection: &Connection, forwards: &[Forward]) -> Self {
+        let env = connection.env.clone().unwrap_or_default();
+        let known = ENVIRONMENTS.iter().any(|(_, name, color)| env.eq_ignore_ascii_case(name) && connection.color == Some(*color));
+        let custom_env = !known && (!env.is_empty() || connection.color.is_some());
         Self {
+            focus: true,
+            custom_env,
             jump: connection.jump,
             color: connection.color,
-            env: connection.env.clone().unwrap_or_default(),
+            env,
             forwards: forwards.iter().map(ForwardRow::from_forward).collect(),
             id: connection.id,
             name: connection.name.clone(),
@@ -460,7 +479,7 @@ impl Spec {
         self
     }
 
-    /// 380 px para preguntas y confirmaciones, 520 para formularios, 640 para el editor de conexión.
+    /// 380 px para preguntas y confirmaciones, 520 para formularios.
     pub fn width(mut self, width: f32) -> Self {
         self.width = width;
         self
@@ -517,21 +536,25 @@ pub enum Action {
 /// `Esc` cancela; `Enter` confirma cuando el cuerpo lo pide (devolviendo `true`).
 pub fn shell(ctx: &egui::Context, spec: Spec, body: impl FnOnce(&mut egui::Ui) -> bool) -> Action {
     let mut action = Action::None;
-    let response = Modal::new(id()).show(ctx, |ui| {
+    let frame = egui::Frame::popup(&ctx.global_style()).inner_margin(egui::Margin::same(24));
+    let response = Modal::new(id()).frame(frame).show(ctx, |ui| {
         ui.set_width(spec.width);
         ui.spacing_mut().item_spacing.y = 8.0;
         ui.label(RichText::new(&spec.title).font(FontId::new(18.0, crate::ui::strong_family())));
         if let Some(context) = &spec.context {
             ui.label(RichText::new(context).small().color(theme::subtext()));
         }
-        ui.add_space(6.0);
+        ui.add_space(10.0);
 
         let enter = body(ui);
 
-        ui.add_space(10.0);
+        ui.add_space(18.0);
         ui.horizontal(|ui| {
             for (index, label) in spec.extras.iter().enumerate() {
-                if ui.add(egui::Button::new(label.as_str()).fill(Color32::TRANSPARENT)).clicked() {
+                let extra = egui::Button::new(label.as_str())
+                    .fill(Color32::TRANSPARENT)
+                    .stroke(egui::Stroke::new(1.0, theme::surface()));
+                if ui.add(extra).clicked() {
                     action = Action::Extra(index);
                 }
             }
@@ -620,7 +643,7 @@ pub fn show(
         }
         Dialog::Edit(form) => {
             let title = if form.id.is_some() { "Editar conexión" } else { "Nueva conexión" };
-            let spec = Spec::new(title).width(640.0).accept("Guardar").no_enter().extra("Probar conexión");
+            let spec = Spec::new(title).width(520.0).accept("Guardar").no_enter().extra("Probar conexión");
             match shell(ctx, spec, |ui| edit_body(ui, form, connections)) {
                 Action::Accept => Outcome::Save,
                 Action::Cancel => Outcome::Cancel,
@@ -710,88 +733,198 @@ pub fn show(
     }
 }
 
-/// Campo de texto con su error debajo y el borde en rojo mientras lo tiene.
-fn field(ui: &mut egui::Ui, value: &mut String, width: f32, hint: &str, error: &mut Option<String>) -> egui::Response {
-    ui.vertical(|ui| {
-        let has_error = error.is_some();
-        let response = ui
-            .scope(|ui| {
-                if has_error {
-                    let stroke = egui::Stroke::new(1.5, theme::red());
-                    let widgets = &mut ui.visuals_mut().widgets;
-                    widgets.inactive.bg_stroke = stroke;
-                    widgets.hovered.bg_stroke = stroke;
+/// Ancho reservado a las etiquetas del formulario.
+const LABEL_WIDTH: f32 = 112.0;
+const FIELD_HEIGHT: f32 = 28.0;
+/// Espacio entre filas de un mismo grupo y entre grupos distintos.
+const ROW_GAP: f32 = 8.0;
+const GROUP_GAP: f32 = 18.0;
+
+/// Fila de formulario: etiqueta alineada a la izquierda y contenido que ocupa el resto.
+fn form_row(ui: &mut egui::Ui, label: &str, content: impl FnOnce(&mut egui::Ui)) {
+    ui.horizontal_top(|ui| {
+        ui.allocate_ui_with_layout(
+            egui::vec2(LABEL_WIDTH, FIELD_HEIGHT),
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| {
+                ui.label(label);
+            },
+        );
+        ui.vertical(content);
+    });
+}
+
+/// Campo de texto con el borde en rojo mientras tiene un error.
+fn text_input(ui: &mut egui::Ui, value: &mut String, width: f32, hint: &str, error: &mut Option<String>) -> egui::Response {
+    let broken = error.is_some();
+    let response = ui
+        .scope(|ui| {
+            if broken {
+                let stroke = egui::Stroke::new(1.5, theme::red());
+                let widgets = &mut ui.visuals_mut().widgets;
+                widgets.inactive.bg_stroke = stroke;
+                widgets.hovered.bg_stroke = stroke;
+            }
+            ui.add_sized(
+                [width, FIELD_HEIGHT],
+                TextEdit::singleline(value).hint_text(hint).align(egui::Align2::LEFT_CENTER),
+            )
+        })
+        .inner;
+    if response.changed() {
+        *error = None;
+    }
+    response
+}
+
+fn error_line(ui: &mut egui::Ui, error: &Option<String>) {
+    if let Some(message) = error {
+        ui.label(RichText::new(message.as_str()).small().color(theme::red()));
+    }
+}
+
+/// Botón de entorno: punto de color, nombre y fondo si está elegido.
+fn chip(ui: &mut egui::Ui, label: &str, color: Option<Color32>, selected: bool) -> egui::Response {
+    let galley = ui.painter().layout_no_wrap(label.to_string(), FontId::new(13.0, egui::FontFamily::Proportional), Color32::PLACEHOLDER);
+    let dot = if color.is_some() { 14.0 } else { 0.0 };
+    let size = egui::vec2(galley.size().x + dot + 18.0, 28.0);
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+    let response = response.hand();
+    let fill = if selected {
+        theme::selection()
+    } else if response.hovered() {
+        theme::surface()
+    } else {
+        Color32::TRANSPARENT
+    };
+    ui.painter().rect_filled(rect, egui::CornerRadius::same(6), fill);
+    if !selected {
+        ui.painter().rect_stroke(rect, egui::CornerRadius::same(6), egui::Stroke::new(1.0, theme::surface()), egui::StrokeKind::Inside);
+    }
+    let mut x = rect.min.x + 9.0;
+    if let Some(color) = color {
+        ui.painter().circle_filled(egui::pos2(x + 4.0, rect.center().y), 4.5, color);
+        x += dot;
+    }
+    let text_color = if selected { theme::text() } else { theme::subtext() };
+    ui.painter().galley(egui::pos2(x, rect.center().y - galley.size().y / 2.0), galley, text_color);
+    response
+}
+
+fn environment_row(ui: &mut egui::Ui, form: &mut ConnForm) {
+    form_row(ui, "Entorno", |ui| {
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(3.0, 6.0);
+            let none = form.env.trim().is_empty() && form.color.is_none();
+            for (name, env, color) in ENVIRONMENTS {
+                let selected = !form.custom_env && form.env.eq_ignore_ascii_case(env) && form.color == Some(color);
+                if chip(ui, name, Some(theme::identity(color)), selected).on_hover_text(if selected { "Clic para quitarlo" } else { "Pone la etiqueta y el color" }).clicked() {
+                    // Pulsar el elegido lo quita: sin entorno ni color.
+                    if selected {
+                        form.env.clear();
+                        form.color = None;
+                    } else {
+                        form.env = env.to_string();
+                        form.color = Some(color);
+                    }
+                    form.custom_env = false;
                 }
-                ui.add(TextEdit::singleline(value).hint_text(hint).desired_width(width))
-            })
-            .inner;
-        if response.changed() {
-            *error = None;
-        }
-        if let Some(message) = error {
-            ui.label(RichText::new(message.as_str()).small().color(theme::red()));
-        }
-        response
-    })
-    .inner
+            }
+            let custom_selected = form.custom_env || (!none && !ENVIRONMENTS.iter().any(|(_, e, c)| form.env.eq_ignore_ascii_case(e) && form.color == Some(*c)));
+            if chip(ui, "Otro…", None, custom_selected).on_hover_text("Elegir la etiqueta y el color a mano").clicked() {
+                form.custom_env = true;
+            }
+        });
+    });
+    if form.custom_env {
+        ui.add_space(ROW_GAP);
+        form_row(ui, "Etiqueta", |ui| {
+            let width = ui.available_width();
+            ui.add_sized([width, FIELD_HEIGHT], TextEdit::singleline(&mut form.env).hint_text("por ejemplo, pre-producción").align(egui::Align2::LEFT_CENTER));
+        });
+        ui.add_space(ROW_GAP);
+        form_row(ui, "Color", |ui| {
+            ui.horizontal(|ui| {
+                for choice in std::iter::once(None).chain((0..6).map(Some)) {
+                    let (rect, response) = ui.allocate_exact_size(egui::vec2(24.0, 24.0), egui::Sense::click());
+                    let response = response.hand();
+                    match choice.map(theme::identity) {
+                        Some(color) => ui.painter().circle_filled(rect.center(), 8.0, color),
+                        None => ui.painter().circle_stroke(rect.center(), 8.0, egui::Stroke::new(1.5, theme::subtext())),
+                    };
+                    if form.color == choice {
+                        ui.painter().circle_stroke(rect.center(), 11.0, egui::Stroke::new(2.0, theme::text()));
+                    }
+                    let name = choice.map_or("Sin color", |i| theme::IDENTITY_NAMES[i as usize]);
+                    if response.on_hover_text(name).clicked() {
+                        form.color = choice;
+                    }
+                }
+            });
+        });
+    }
 }
 
 fn edit_body(ui: &mut egui::Ui, form: &mut ConnForm, connections: &[Connection]) -> bool {
+    // Pestañas con subrayado, igual que la barra lateral; un punto rojo marca las que tienen errores.
     ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 20.0;
+        ui.spacing_mut().button_padding.x = 0.0;
         for (tab, label) in [(EditTab::General, "General"), (EditTab::Acceso, "Acceso"), (EditTab::Avanzado, "Avanzado")] {
-            let text = if form.errors.in_tab(tab) { format!("{label} ●") } else { label.to_string() };
-            let color = if form.errors.in_tab(tab) { theme::red() } else if form.tab == tab { theme::text() } else { theme::subtext() };
-            if ui.selectable_label(form.tab == tab, RichText::new(text).color(color)).clicked() {
+            let broken = form.errors.in_tab(tab);
+            let selected = form.tab == tab;
+            let text = if broken { format!("{label} ●") } else { label.to_string() };
+            let color = if broken { theme::red() } else if selected { theme::text() } else { theme::subtext() };
+            let font = FontId::new(14.0, if selected { crate::ui::strong_family() } else { egui::FontFamily::Proportional });
+            let response = ui.add(egui::Button::new(RichText::new(text).font(font).color(color)).fill(Color32::TRANSPARENT));
+            if selected {
+                let y = response.rect.max.y + 1.0;
+                let line = if broken { theme::red() } else { theme::accent() };
+                ui.painter().line_segment([egui::pos2(response.rect.min.x, y), egui::pos2(response.rect.max.x, y)], egui::Stroke::new(2.0, line));
+            }
+            if response.clicked() {
                 form.tab = tab;
             }
         }
     });
-    ui.add_space(4.0);
+    ui.add_space(GROUP_GAP);
 
     match form.tab {
         EditTab::General => {
-            egui::Grid::new("conn_general").num_columns(2).spacing([14.0, 10.0]).show(ui, |ui| {
-                ui.label("Nombre");
-                field(ui, &mut form.name, 280.0, "api-staging", &mut form.errors.name);
-                ui.end_row();
-                ui.label("Servidor");
-                field(ui, &mut form.host, 280.0, "host o IP", &mut form.errors.host);
-                ui.end_row();
-                ui.label("Puerto");
-                field(ui, &mut form.port, 80.0, "22", &mut form.errors.port);
-                ui.end_row();
-                ui.label("Usuario");
-                field(ui, &mut form.user, 280.0, "", &mut form.errors.user);
-                ui.end_row();
-                ui.label("Entorno");
-                ui.add(TextEdit::singleline(&mut form.env).hint_text("producción, staging…").desired_width(280.0));
-                ui.end_row();
-                ui.label("Color");
-                ui.horizontal(|ui| {
-                    // Sin color, más los seis de identidad: sirven para reconocer el servidor de un vistazo.
-                    for choice in std::iter::once(None).chain((0..6).map(Some)) {
-                        let (rect, response) = ui.allocate_exact_size(egui::vec2(24.0, 24.0), egui::Sense::click());
-                        let response = response.hand();
-                        match choice.map(theme::identity) {
-                            Some(color) => ui.painter().circle_filled(rect.center(), 8.0, color),
-                            None => ui.painter().circle_stroke(rect.center(), 8.0, egui::Stroke::new(1.5, theme::subtext())),
-                        };
-                        if form.color == choice {
-                            ui.painter().circle_stroke(rect.center(), 11.0, egui::Stroke::new(2.0, theme::text()));
-                        }
-                        let name = choice.map_or("Sin color", |i| theme::IDENTITY_NAMES[i as usize]);
-                        if response.on_hover_text(name).clicked() {
-                            form.color = choice;
-                        }
-                    }
-                });
-                ui.end_row();
+            form_row(ui, "Nombre", |ui| {
+                let width = ui.available_width();
+                let response = text_input(ui, &mut form.name, width, "Nombre de la conexión", &mut form.errors.name);
+                if std::mem::take(&mut form.focus) {
+                    response.request_focus();
+                }
+                error_line(ui, &form.errors.name);
             });
+
+            ui.add_space(GROUP_GAP);
+            form_row(ui, "Servidor", |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    let host_width = (ui.available_width() - 80.0 - 8.0).max(120.0);
+                    text_input(ui, &mut form.host, host_width, "ejemplo.com o 10.0.0.5", &mut form.errors.host);
+                    text_input(ui, &mut form.port, 80.0, "22", &mut form.errors.port);
+                });
+                error_line(ui, &form.errors.host);
+                error_line(ui, &form.errors.port);
+            });
+            ui.add_space(ROW_GAP);
+            form_row(ui, "Usuario", |ui| {
+                let width = ui.available_width();
+                text_input(ui, &mut form.user, width, "usuario del servidor", &mut form.errors.user);
+                error_line(ui, &form.errors.user);
+            });
+
+            ui.add_space(GROUP_GAP);
+            environment_row(ui, form);
         }
         EditTab::Acceso => {
-            egui::Grid::new("conn_access").num_columns(2).spacing([14.0, 10.0]).show(ui, |ui| {
-                ui.label("Autenticación");
+            form_row(ui, "Autenticación", |ui| {
                 ComboBox::from_id_salt("auth")
+                    .width(ui.available_width())
                     .selected_text(match form.auth {
                         Auth::Password => "Contraseña",
                         Auth::Key => "Llave privada",
@@ -806,28 +939,37 @@ fn edit_body(ui: &mut egui::Ui, form: &mut ConnForm, connections: &[Connection])
                     })
                     .response
                     .hand();
-                ui.end_row();
-                if form.auth == Auth::Key {
-                    ui.label("Llave privada");
-                    field(ui, &mut form.key_path, 280.0, "~/.ssh/id_ed25519", &mut form.errors.key_path);
-                    ui.end_row();
-                }
-                if matches!(form.auth, Auth::Password | Auth::Key) {
-                    ui.label(if form.auth == Auth::Password { "Contraseña" } else { "Passphrase" });
-                    ui.add(
+            });
+            if form.auth == Auth::Key {
+                ui.add_space(ROW_GAP);
+                form_row(ui, "Llave privada", |ui| {
+                    let width = ui.available_width();
+                    text_input(ui, &mut form.key_path, width, "~/.ssh/id_ed25519", &mut form.errors.key_path);
+                    error_line(ui, &form.errors.key_path);
+                });
+            }
+            if matches!(form.auth, Auth::Password | Auth::Key) {
+                ui.add_space(ROW_GAP);
+                form_row(ui, if form.auth == Auth::Password { "Contraseña" } else { "Passphrase" }, |ui| {
+                    let width = ui.available_width();
+                    ui.add_sized(
+                        [width, FIELD_HEIGHT],
                         TextEdit::singleline(&mut form.secret)
                             .password(true)
                             .hint_text("opcional: se guarda en el almacén")
-                            .desired_width(280.0),
+                            .align(egui::Align2::LEFT_CENTER),
                     );
-                    ui.end_row();
-                }
-                ui.label("Saltar mediante");
+                });
+            }
+
+            ui.add_space(GROUP_GAP);
+            form_row(ui, "Saltar mediante", |ui| {
                 let current = form
                     .jump
                     .and_then(|id| connections.iter().find(|c| c.id == Some(id)))
                     .map_or("Directo".to_string(), |c| c.name.clone());
                 ComboBox::from_id_salt("jump")
+                    .width(ui.available_width())
                     .selected_text(current)
                     .show_ui(ui, |ui| {
                         ui.selectable_value(&mut form.jump, None, "Directo");
@@ -837,20 +979,27 @@ fn edit_body(ui: &mut egui::Ui, form: &mut ConnForm, connections: &[Connection])
                     })
                     .response
                     .hand();
-                ui.end_row();
             });
         }
         EditTab::Avanzado => {
-            ui.label("Comando inicial");
-            ui.add(TextEdit::singleline(&mut form.init_command).hint_text("opcional, se ejecuta al abrir la sesión").desired_width(f32::INFINITY));
-            ui.add_space(8.0);
+            form_row(ui, "Comando inicial", |ui| {
+                let width = ui.available_width();
+                ui.add_sized(
+                    [width, FIELD_HEIGHT],
+                    TextEdit::singleline(&mut form.init_command)
+                        .hint_text("opcional, se ejecuta al abrir la sesión")
+                        .align(egui::Align2::LEFT_CENTER),
+                );
+            });
+            ui.add_space(GROUP_GAP);
             ui.label(RichText::new("Túneles (se activan al conectar)").small().color(theme::subtext()));
             let mut remove = None;
             form.errors.forwards.resize(form.forwards.len(), None);
             for (index, row) in form.forwards.iter_mut().enumerate() {
                 ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
                     ComboBox::from_id_salt(("fwd-kind", index))
-                        .width(96.0)
+                        .width(92.0)
                         .selected_text(match row.kind {
                             ForwardKind::Local => "Local -L",
                             ForwardKind::Remote => "Remoto -R",
@@ -871,14 +1020,14 @@ fn edit_body(ui: &mut egui::Ui, form: &mut ConnForm, connections: &[Connection])
                             widgets.inactive.bg_stroke = stroke;
                             widgets.hovered.bg_stroke = stroke;
                         }
-                        ui.add(TextEdit::singleline(&mut row.bind_host).desired_width(96.0).hint_text("escucha"));
-                        ui.add(TextEdit::singleline(&mut row.bind_port).desired_width(56.0).hint_text("puerto"));
+                        ui.add(TextEdit::singleline(&mut row.bind_host).desired_width(86.0).hint_text("escucha"));
+                        ui.add(TextEdit::singleline(&mut row.bind_port).desired_width(54.0).hint_text("puerto"));
                         if row.kind == ForwardKind::Dynamic {
                             ui.label(RichText::new("proxy SOCKS5").small().color(theme::subtext()));
                         } else {
                             ui.label("→");
-                            ui.add(TextEdit::singleline(&mut row.dest_host).desired_width(96.0).hint_text("destino"));
-                            ui.add(TextEdit::singleline(&mut row.dest_port).desired_width(56.0).hint_text("puerto"));
+                            ui.add(TextEdit::singleline(&mut row.dest_host).desired_width(86.0).hint_text("destino"));
+                            ui.add(TextEdit::singleline(&mut row.dest_port).desired_width(54.0).hint_text("puerto"));
                         }
                     });
                     if ui.add(egui::Button::new("×").frame(false)).on_hover_text("Quitar túnel").clicked() {
@@ -893,7 +1042,7 @@ fn edit_body(ui: &mut egui::Ui, form: &mut ConnForm, connections: &[Connection])
                 form.forwards.remove(index);
                 form.errors.forwards.remove(index);
             }
-            if ui.add(egui::Button::new("+ Añadir túnel").fill(Color32::TRANSPARENT)).clicked() {
+            if ui.add(egui::Button::new("+ Añadir túnel").fill(Color32::TRANSPARENT).stroke(egui::Stroke::new(1.0, theme::surface()))).clicked() {
                 form.forwards.push(ForwardRow::new());
                 form.errors.forwards.push(None);
             }
@@ -907,7 +1056,7 @@ fn edit_body(ui: &mut egui::Ui, form: &mut ConnForm, connections: &[Connection])
 
     // Resultado de «Probar conexión» y error al guardar, siempre visibles.
     if let Some(test) = &form.test {
-        ui.add_space(6.0);
+        ui.add_space(ROW_GAP);
         match &*test.lock().unwrap() {
             TestState::Running => {
                 ui.label(RichText::new("Probando la conexión…").color(theme::subtext()));
