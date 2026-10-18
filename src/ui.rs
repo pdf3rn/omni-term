@@ -29,6 +29,8 @@ const SIDEBAR_MIN: f32 = 200.0;
 const SIDEBAR_MAX: f32 = 360.0;
 /// Grupos con encabezado a partir de este número de conexiones.
 const GROUP_THRESHOLD: usize = 5;
+/// Ancho mínimo de una pestaña antes de que la tira empiece a desplazarse.
+const MIN_TAB_WIDTH: f32 = 110.0;
 /// Por debajo de este ancho de ventana la barra lateral se reduce a una tira de iconos.
 const NARROW_WINDOW: f32 = 760.0;
 const STRIP_WIDTH: f32 = 54.0;
@@ -213,6 +215,8 @@ pub struct App {
     sidebar_epoch: u32,
     plus_selected: usize,
     open_plus_menu: bool,
+    /// Última pestaña a la que se desplazó la tira de pestañas.
+    tab_strip_seen: u64,
     /// La barra de menú oculta se muestra de paso (tras pulsar Alt).
     menu_peek: bool,
     /// Alt pulsado: `true` si ya se pulsó otra tecla mientras tanto.
@@ -338,6 +342,7 @@ impl App {
             sidebar_epoch: 0,
             plus_selected: 0,
             open_plus_menu: false,
+            tab_strip_seen: 0,
             menu_peek: false,
             alt_state: None,
             sidebar_width,
@@ -2880,16 +2885,17 @@ fn tab(
     attention: bool,
     count: usize,
     can_duplicate: bool,
+    max_width: f32,
     menu: &mut Option<(usize, TabAction)>,
 ) -> TabOutcome {
-    let shown = if label.chars().count() > 24 {
-        format!("{}…", label.chars().take(23).collect::<String>())
-    } else {
-        label.to_string()
-    };
     let font = FontId::new(14.0, if selected { strong_family() } else { FontFamily::Proportional });
-    let galley = ui.painter().layout_no_wrap(shown, font, Color32::PLACEHOLDER);
-    let size = Vec2::new(galley.size().x + 12.0 + 8.0 + 20.0 + 8.0, TAB_HEIGHT);
+    let chrome = 12.0 + 8.0 + 20.0 + 8.0;
+    // Hasta 24 caracteres de ancho natural; si no caben todas las pestañas, el texto se corta con «…».
+    let natural: String = label.chars().take(24).collect();
+    let mut job = egui::text::LayoutJob::simple_singleline(natural, font, Color32::PLACEHOLDER);
+    job.wrap = egui::text::TextWrapping::truncate_at_width((max_width - chrome).max(24.0));
+    let galley = ui.painter().layout_job(job);
+    let size = Vec2::new(galley.size().x + chrome, TAB_HEIGHT);
     let (rect, response) = ui.allocate_exact_size(size, Sense::click_and_drag());
     let response = response.hand();
 
@@ -2983,6 +2989,10 @@ impl eframe::App for App {
         let (jump, step) = ctx.input_mut(|i| {
             let digits = [Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5, Key::Num6, Key::Num7, Key::Num8, Key::Num9];
             let jump = digits.iter().position(|k| i.consume_key(Modifiers::ALT, *k));
+            if jump.is_some() {
+                // El dígito también llega como texto: no debe escribirse en el terminal.
+                i.events.retain(|e| !matches!(e, egui::Event::Text(_)));
+            }
             let step = if i.consume_key(Modifiers::CTRL | Modifiers::SHIFT, Key::Tab) {
                 -1
             } else if i.consume_key(Modifiers::CTRL, Key::Tab) {
@@ -3037,6 +3047,8 @@ impl eframe::App for App {
         let mut rename_done: Option<(usize, Option<String>)> = None;
         let mut tab_menu: Option<(usize, TabAction)> = None;
         let mut tab_rects: Vec<Rect> = Vec::new();
+        let mut overflowing = false;
+        let mut strip_scrolled_to: Option<u64> = None;
         let plus_recents = self.recent_connections();
         let mut plus_selected = self.plus_selected;
         let mut plus_choice: Option<PlusChoice> = None;
@@ -3054,6 +3066,25 @@ impl eframe::App for App {
                     if toggle.on_hover_text(hint).clicked() {
                         toggle_sidebar_button = true;
                     }
+                    // Reserva sitio para «+», el menú de pestañas y las acciones de la derecha.
+                    let strip_width = (ui.available_width() - 150.0).max(120.0);
+                    let tab_cap = (strip_width / tab_labels.len().max(1) as f32).max(MIN_TAB_WIDTH);
+                    overflowing = tab_labels.len() as f32 * (MIN_TAB_WIDTH + 2.0) > strip_width;
+                    egui::ScrollArea::horizontal()
+                        .id_salt("tab-strip")
+                        .max_width(strip_width)
+                        .auto_shrink([true, false])
+                        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                        .show(ui, |ui| {
+                    // La rueda del ratón sobre las pestañas las desplaza de lado.
+                    if ui.rect_contains_pointer(ui.clip_rect()) {
+                        let delta = ui.input(|i| i.smooth_scroll_delta.y);
+                        if delta != 0.0 {
+                            ui.scroll_with_delta(Vec2::new(delta, 0.0));
+                        }
+                    }
+                    ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 2.0;
                     for (i, (title, identity, attention)) in tab_labels.iter().enumerate() {
                         if let Some((index, text, focus)) = renaming.as_mut().filter(|(index, _, _)| *index == i) {
                             let _ = index;
@@ -3073,8 +3104,12 @@ impl eframe::App for App {
                             continue;
                         }
                         let can_duplicate = !matches!(self.tabs[i].kind, TabKind::Explorer(_));
-                        let outcome = tab(ui, title, i == self.active, i, *identity, *attention, self.tabs.len(), can_duplicate, &mut tab_menu);
+                        let outcome = tab(ui, title, i == self.active, i, *identity, *attention, self.tabs.len(), can_duplicate, tab_cap, &mut tab_menu);
                         tab_rects.push(outcome.rect);
+                        if i == self.active && self.tabs.get(i).is_some_and(|t| t.id != self.tab_strip_seen) {
+                            ui.scroll_to_rect(outcome.rect.expand2(Vec2::new(24.0, 0.0)), None);
+                            strip_scrolled_to = self.tabs.get(i).map(|t| t.id);
+                        }
                         if outcome.clicked {
                             activate = Some(i);
                         }
@@ -3088,6 +3123,8 @@ impl eframe::App for App {
                             tab_menu = Some((i, TabAction::Rename));
                         }
                     }
+                    });
+                        });
                     ui.add_space(6.0);
                     let plus = ui.add(Button::new(RichText::new(icons::PLUS).size(16.0)).fill(Color32::TRANSPARENT).min_size(Vec2::splat(28.0)));
                     let plus = plus.on_hover_text("Nueva pestaña (Ctrl+Shift+T)");
@@ -3101,6 +3138,19 @@ impl eframe::App for App {
                     egui::Popup::menu(&plus).width(330.0).show(|ui| {
                         plus_menu(ui, &plus_recents, &mut plus_selected, &mut plus_choice);
                     });
+                    if overflowing {
+                        let list = ui.add(Button::new(RichText::new(icons::CARET_DOWN).size(14.0).color(theme::subtext())).fill(Color32::TRANSPARENT).min_size(Vec2::splat(28.0)));
+                        let list = list.on_hover_text("Todas las pestañas");
+                        egui::Popup::menu(&list).width(260.0).show(|ui| {
+                            for (i, (title, _, _)) in tab_labels.iter().enumerate() {
+                                let shown: String = title.chars().take(32).collect();
+                                if ui.selectable_label(i == self.active, shown).clicked() {
+                                    activate = Some(i);
+                                    ui.close();
+                                }
+                            }
+                        });
+                    }
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.spacing_mut().item_spacing.x = 4.0;
@@ -3134,6 +3184,9 @@ impl eframe::App for App {
                 });
             });
 
+        if let Some(id) = strip_scrolled_to {
+            self.tab_strip_seen = id;
+        }
         self.renaming = renaming;
         self.plus_selected = plus_selected;
         match plus_choice {
