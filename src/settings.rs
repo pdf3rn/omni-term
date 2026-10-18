@@ -53,6 +53,8 @@ impl AccentChoice {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Settings {
     pub accent: AccentChoice,
+    /// Barra de menú siempre visible; si no, `Alt` la muestra un momento.
+    pub menu_bar: bool,
     /// Filas de las listas más bajas.
     pub compact: bool,
     /// Segundos de actividad en una pestaña en segundo plano a partir de los cuales se avisa; 0 lo apaga.
@@ -77,6 +79,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             accent: AccentChoice::Blue,
+            menu_bar: true,
             compact: false,
             notify_after: 15,
             font_path: None,
@@ -98,6 +101,7 @@ impl Settings {
         let defaults = Self::default();
         Self {
             accent: text(store, "setting.accent").and_then(|k| AccentChoice::from_key(&k)).unwrap_or(defaults.accent),
+            menu_bar: text(store, "setting.menu_bar").map_or(defaults.menu_bar, |t| t == "1"),
             compact: text(store, "setting.compact").map_or(defaults.compact, |t| t == "1"),
             notify_after: text(store, "setting.notify_after")
                 .and_then(|t| t.parse::<u32>().ok())
@@ -138,6 +142,7 @@ impl Settings {
             CursorChoice::Underline => "underline",
         };
         store.set_meta("setting.accent", self.accent.key().as_bytes())?;
+        store.set_meta("setting.menu_bar", if self.menu_bar { b"1" } else { b"0" })?;
         store.set_meta("setting.compact", if self.compact { b"1" } else { b"0" })?;
         store.set_meta("setting.notify_after", self.notify_after.to_string().as_bytes())?;
         store.set_meta("setting.font_path", self.font_path.as_deref().unwrap_or("").as_bytes())?;
@@ -165,6 +170,7 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         let settings = Settings {
             accent: AccentChoice::Mauve,
+            menu_bar: false,
             compact: true,
             notify_after: 45,
             font_path: Some("/usr/share/fonts/mono.ttf".into()),

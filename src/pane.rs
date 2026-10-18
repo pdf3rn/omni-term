@@ -129,6 +129,32 @@ impl Pane {
         self.session.term.lock().unwrap().selection_to_string().filter(|t| !t.is_empty())
     }
 
+    /// Copia la selección al portapapeles, si la hay.
+    pub fn copy_selection_to(&self, ctx: &egui::Context) {
+        if let Some(text) = self.selection_text() {
+            ctx.copy_text(text);
+        }
+    }
+
+    /// Pega el portapapeles en el terminal.
+    pub fn paste_clipboard(&self) {
+        if let Some(text) = clipboard_text() {
+            let mode = *self.session.term.lock().unwrap().mode();
+            self.session.term.lock().unwrap().scroll_display(Scroll::Bottom);
+            self.session.write(&paste_bytes(&text, mode));
+        }
+    }
+
+    /// Selecciona todo el historial y la pantalla.
+    pub fn select_all(&self) {
+        let mut term = self.session.term.lock().unwrap();
+        let start = Point::new(term.topmost_line(), Column(0));
+        let end = Point::new(term.bottommost_line(), term.last_column());
+        let mut selection = Selection::new(SelectionType::Simple, start, Side::Left);
+        selection.update(end, Side::Right);
+        term.selection = Some(selection);
+    }
+
     pub fn take_request(&mut self) -> Option<PaneRequest> {
         self.request.take()
     }

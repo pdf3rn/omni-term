@@ -25,3 +25,4 @@ pub const FOLDER_CLOSED: &str = "\u{E25A}";
 pub const FILE: &str = "\u{E230}";
 pub const CARET_UP: &str = "\u{E13C}";
 pub const TERMINAL: &str = "\u{EAE8}";
+pub const PLAY: &str = "\u{E3D0}";

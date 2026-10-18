@@ -417,6 +417,7 @@ pub enum Dialog {
     Error(ErrorInfo),
     HostKeyChanged(HostKeyChange),
     Settings(SettingsTab),
+    About,
     Edit(ConnForm),
     Snippet(SnippetForm),
     SnippetVars(VarsPrompt),
@@ -646,6 +647,19 @@ pub fn show(
     match dialog {
         Dialog::Settings(tab) => {
             let action = shell(ctx, Spec::new("Ajustes").width(520.0).cancel("Cerrar"), |ui| settings_body(ui, tab, settings, master_forced));
+            plain(action, Outcome::None)
+        }
+        Dialog::About => {
+            let action = shell(ctx, Spec::new("Acerca de omni-term").width(420.0).cancel("Cerrar"), |ui| {
+                ui.label(RichText::new(format!("omni-term {}", env!("CARGO_PKG_VERSION"))).font(FontId::new(16.0, crate::ui::strong_family())));
+                ui.label(RichText::new("Terminal con SSH, SFTP, túneles y snippets, hecho con Rust y egui.").color(theme::subtext()));
+                ui.add_space(8.0);
+                ui.label(RichText::new("Fuentes").small().color(theme::subtext()));
+                ui.label("JetBrains Mono y Noto Sans, bajo la licencia SIL Open Font License.");
+                ui.label(RichText::new("Iconos").small().color(theme::subtext()));
+                ui.label("Phosphor Icons, bajo la licencia MIT.");
+                false
+            });
             plain(action, Outcome::None)
         }
         Dialog::Edit(form) => {
@@ -1176,6 +1190,7 @@ fn settings_body(ui: &mut egui::Ui, tab: &mut SettingsTab, settings: &mut Settin
             ui.selectable_value(&mut settings.compact, false, "Cómoda");
             ui.selectable_value(&mut settings.compact, true, "Compacta");
         });
+        ui.checkbox(&mut settings.menu_bar, "Mostrar la barra de menú (si está oculta, Alt la muestra)").hand();
 
         section(ui, "Terminal");
         ui.horizontal(|ui| {

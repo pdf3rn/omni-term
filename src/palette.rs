@@ -20,9 +20,24 @@ pub enum Command {
     ThemeDark,
     ThemeLight,
     ThemeSystem,
+    Copy,
+    Paste,
+    SelectAll,
+    Search,
+    SaveSnippet,
+    Quit,
+    ZoomIn,
+    ZoomOut,
+    ZoomReset,
+    NextTab,
+    PrevTab,
+    Files,
+    Shortcuts,
+    About,
+    Palette,
 }
 
-pub const COMMANDS: [(Command, &str); 11] = [
+pub const COMMANDS: [(Command, &str); 24] = [
     (Command::NewTab, "Nueva pestaña de terminal local"),
     (Command::NewConnection, "Nueva conexión"),
     (Command::ImportConfig, "Importar conexiones de ~/.ssh/config"),
@@ -34,6 +49,19 @@ pub const COMMANDS: [(Command, &str); 11] = [
     (Command::ThemeDark, "Tema oscuro"),
     (Command::ThemeLight, "Tema claro"),
     (Command::ThemeSystem, "Tema del sistema"),
+    (Command::Copy, "Copiar la selección"),
+    (Command::Paste, "Pegar"),
+    (Command::SelectAll, "Seleccionar todo el terminal"),
+    (Command::Search, "Buscar en la salida"),
+    (Command::SaveSnippet, "Guardar la selección como snippet"),
+    (Command::ZoomIn, "Aumentar la letra"),
+    (Command::ZoomOut, "Reducir la letra"),
+    (Command::ZoomReset, "Restablecer la letra"),
+    (Command::NextTab, "Pestaña siguiente"),
+    (Command::PrevTab, "Pestaña anterior"),
+    (Command::Files, "Explorador de archivos de la conexión actual"),
+    (Command::Shortcuts, "Atajos de teclado"),
+    (Command::About, "Acerca de omni-term"),
 ];
 
 pub enum Target {
