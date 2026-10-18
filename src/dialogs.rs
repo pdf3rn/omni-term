@@ -1030,7 +1030,7 @@ fn edit_body(ui: &mut egui::Ui, form: &mut ConnForm, connections: &[Connection])
                             ui.add(TextEdit::singleline(&mut row.dest_port).desired_width(54.0).hint_text("puerto"));
                         }
                     });
-                    if ui.add(egui::Button::new("×").frame(false)).on_hover_text("Quitar túnel").clicked() {
+                    if ui.add(egui::Button::new(crate::icons::X).frame(false)).on_hover_text("Quitar túnel").clicked() {
                         remove = Some(index);
                     }
                 });

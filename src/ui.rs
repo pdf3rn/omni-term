@@ -13,6 +13,7 @@ use crate::cursor::HandExt;
 use crate::dialogs::{self, ConnForm, Dialog, ErrorInfo, Outcome, PaneTarget, Pending, Purpose, Retry, SecretPrompt, SnippetForm, TestState, UnlockPrompt, VarsPrompt};
 use crate::layout::{Dir, Tree};
 use crate::explorer::Explorer;
+use crate::icons;
 use crate::pane::{self, bold_family, Pane, PaneRequest, PADDING};
 use crate::settings::{CursorChoice, Settings, ThemeChoice, DEFAULT_FONT_SIZE, MAX_FONT_SIZE, MIN_FONT_SIZE};
 use crate::secrets::{account_for, SecretError, SecretKind, SecretStore, Secrets};
@@ -706,7 +707,7 @@ impl App {
                                 if toast.undo.is_some() && ui.add(Button::new(RichText::new("Deshacer").color(theme::accent())).fill(Color32::TRANSPARENT)).clicked() {
                                     undone = Some(index);
                                 }
-                                if ui.add(Button::new("×").frame(false)).on_hover_text("Cerrar").clicked() {
+                                if ui.add(Button::new(icons::X).frame(false)).on_hover_text("Cerrar").clicked() {
                                     dismissed = Some(index);
                                 }
                             });
@@ -1149,7 +1150,15 @@ impl App {
                         egui::TextEdit::singleline(&mut self.sidebar_query)
                             .id(search_id)
                             .hint_text(if connections_view { "Buscar conexiones" } else { "Buscar snippets" })
+                            .margin(Margin { left: 30, right: 8, top: 5, bottom: 5 })
                             .desired_width(f32::INFINITY),
+                    );
+                    ui.painter().text(
+                        Pos2::new(search.rect.min.x + 15.0, search.rect.center().y),
+                        Align2::CENTER_CENTER,
+                        icons::SEARCH,
+                        FontId::proportional(15.0),
+                        theme::subtext(),
                     );
                     if self.focus_search {
                         search.request_focus();
@@ -1209,7 +1218,7 @@ impl App {
                         let title = if connections_view { "Guardadas" } else { "Guardados" };
                         ui.label(RichText::new(title).small().color(theme::subtext()));
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            let add = Button::new(RichText::new("+").size(16.0)).fill(Color32::TRANSPARENT).min_size(Vec2::splat(26.0));
+                            let add = Button::new(RichText::new(icons::PLUS).size(16.0)).fill(Color32::TRANSPARENT).min_size(Vec2::splat(26.0));
                             if connections_view {
                                 let add = ui.add(add).on_hover_text("Nueva conexión o importar");
                                 egui::Popup::menu(&add).show(|ui| {
@@ -1250,13 +1259,13 @@ impl App {
                             if headed {
                                 let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 26.0), Sense::click());
                                 let color = if response.hovered() { theme::text() } else { theme::subtext() };
-                                let c = Pos2::new(rect.min.x + 5.0, rect.center().y);
-                                let points = if folded {
-                                    vec![c + Vec2::new(-2.0, -4.0), c + Vec2::new(-2.0, 4.0), c + Vec2::new(3.0, 0.0)]
-                                } else {
-                                    vec![c + Vec2::new(-4.0, -2.0), c + Vec2::new(4.0, -2.0), c + Vec2::new(0.0, 3.0)]
-                                };
-                                ui.painter().add(egui::Shape::convex_polygon(points, color, Stroke::NONE));
+                                ui.painter().text(
+                                    Pos2::new(rect.min.x + 6.0, rect.center().y),
+                                    Align2::CENTER_CENTER,
+                                    if folded { icons::CARET_RIGHT } else { icons::CARET_DOWN },
+                                    FontId::proportional(12.0),
+                                    color,
+                                );
                                 ui.painter().text(
                                     Pos2::new(rect.min.x + 18.0, rect.center().y),
                                     Align2::LEFT_CENTER,
@@ -1338,13 +1347,8 @@ impl App {
                                             ui.painter().rect_filled(rect, CornerRadius::same(CONTROL_RADIUS), theme::selection());
                                         }
                                     }
-                                    let ink = Stroke::new(1.6, theme::text());
-                                    let c = edit_rect.center();
-                                    ui.painter().line_segment([c + Vec2::new(-4.0, 4.0), c + Vec2::new(4.0, -4.0)], Stroke::new(2.2, theme::text()));
-                                    ui.painter().line_segment([c + Vec2::new(-5.0, 6.0), c + Vec2::new(-1.0, 6.0)], ink);
-                                    let c = more_rect.center();
-                                    for dx in [-5.0, 0.0, 5.0] {
-                                        ui.painter().circle_filled(c + Vec2::new(dx, 0.0), 1.6, theme::text());
+                                    for (glyph, rect, size) in [(icons::PENCIL, edit_rect, 16.0), (icons::DOTS, more_rect, 20.0)] {
+                                        ui.painter().text(rect.center(), Align2::CENTER_CENTER, glyph, FontId::proportional(size), theme::text());
                                     }
                                 } else {
                                     match state {
@@ -1458,7 +1462,7 @@ impl App {
 
                     // Pie: solo avisos; el estado normal de los secretos no hace falta mostrarlo.
                     ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
-                        if ui.add(Button::new("Ajustes").fill(Color32::TRANSPARENT).stroke(Stroke::new(1.0, theme::surface()))).clicked() {
+                        if ui.add(Button::new(format!("{}  Ajustes", icons::GEAR)).fill(Color32::TRANSPARENT).stroke(Stroke::new(1.0, theme::surface()))).clicked() {
                             open_settings = true;
                         }
                         if keyring_fallback {
@@ -1656,10 +1660,15 @@ fn install_fonts(ctx: &egui::Context) {
     // La interfaz usa una sans neutra con buena cobertura de acentos; el terminal, JetBrains Mono.
     load("ui-regular", include_bytes!("../assets/NotoSans-Regular.ttf"), &mut fonts);
     load("ui-semibold", include_bytes!("../assets/NotoSans-SemiBold.ttf"), &mut fonts);
+    load("icons", include_bytes!("../assets/Phosphor.ttf"), &mut fonts);
     fonts.families.entry(FontFamily::Monospace).or_default().insert(0, "jb-regular".into());
     fonts.families.entry(FontFamily::Proportional).or_default().insert(0, "ui-regular".into());
     fonts.families.insert(bold_family(), vec!["jb-bold".into()]);
     fonts.families.insert(strong_family(), vec!["ui-semibold".into(), "ui-regular".into()]);
+    // Los iconos van de último recurso: cualquier texto puede llevar uno sin cambiar de familia.
+    for family in [FontFamily::Proportional, strong_family()] {
+        fonts.families.entry(family).or_default().push("icons".into());
+    }
     ctx.set_fonts(fonts);
 }
 
@@ -1758,7 +1767,7 @@ fn tab(ui: &mut egui::Ui, label: &str, selected: bool, index: usize, identity: O
         if close.hovered() {
             ui.painter().rect_filled(close_rect, CornerRadius::same(4), theme::selection());
         }
-        ui.painter().text(close_rect.center(), Align2::CENTER_CENTER, "×", FontId::proportional(15.0), color);
+        ui.painter().text(close_rect.center(), Align2::CENTER_CENTER, icons::X, FontId::proportional(13.0), color);
         close_clicked = close.on_hover_text("Cerrar pestaña").clicked();
     }
     (response.clicked() && !close_clicked, close_clicked)
@@ -1800,7 +1809,7 @@ impl eframe::App for App {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 2.0;
                     let hint = if self.sidebar_collapsed { "Mostrar la barra lateral (Ctrl+Shift+B)" } else { "Ocultar la barra lateral (Ctrl+Shift+B)" };
-                    let toggle = ui.add(Button::new(RichText::new("☰").size(15.0).color(theme::subtext())).fill(Color32::TRANSPARENT).min_size(Vec2::splat(28.0)));
+                    let toggle = ui.add(Button::new(RichText::new(icons::SIDEBAR).size(17.0).color(theme::subtext())).fill(Color32::TRANSPARENT).min_size(Vec2::splat(28.0)));
                     if toggle.on_hover_text(hint).clicked() {
                         toggle_sidebar_button = true;
                     }
@@ -1815,7 +1824,7 @@ impl eframe::App for App {
                         }
                     }
                     ui.add_space(6.0);
-                    let plus = ui.add(Button::new(RichText::new("+").size(16.0)).fill(Color32::TRANSPARENT).min_size(Vec2::splat(28.0)));
+                    let plus = ui.add(Button::new(RichText::new(icons::PLUS).size(16.0)).fill(Color32::TRANSPARENT).min_size(Vec2::splat(28.0)));
                     if plus.on_hover_text("Nueva pestaña").clicked() {
                         new_local = true;
                     }
@@ -1826,7 +1835,7 @@ impl eframe::App for App {
                         if self.tabs.get(self.active).is_some_and(|t| matches!(t.body, Body::Terminal { .. })) {
                             ui.scope(|ui| {
                                 ui.visuals_mut().widgets.inactive.weak_bg_fill = Color32::TRANSPARENT;
-                                ui.menu_button(RichText::new("Dividir").small(), |ui| {
+                                let split_menu = ui.menu_button(RichText::new(icons::SPLIT).size(17.0).color(theme::subtext()), |ui| {
                                     if ui.button("A la derecha  (Ctrl+Shift+D)").clicked() {
                                         split = Some(Dir::Horizontal);
                                         ui.close();
@@ -1840,10 +1849,11 @@ impl eframe::App for App {
                                         ui.close();
                                     }
                                 });
+                                split_menu.response.on_hover_text("Dividir el panel");
                             });
                         }
                         if let Some(TabKind::Connection(id)) = self.tabs.get(self.active).map(|t| t.kind) {
-                            let files = Button::new(RichText::new("Archivos").small()).fill(Color32::TRANSPARENT);
+                            let files = Button::new(RichText::new(icons::FOLDER).size(17.0).color(theme::subtext())).fill(Color32::TRANSPARENT);
                             if ui.add(files).on_hover_text("Abrir el explorador de archivos de esta conexión").clicked() {
                                 files_tab = Some(id);
                             }

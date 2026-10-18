@@ -4,6 +4,7 @@
 mod cursor;
 mod dialogs;
 mod explorer;
+mod icons;
 mod keys;
 mod layout;
 mod local;
