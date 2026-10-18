@@ -27,3 +27,6 @@ pub const CARET_UP: &str = "\u{E13C}";
 pub const TERMINAL: &str = "\u{EAE8}";
 pub const PLAY: &str = "\u{E3D0}";
 pub const COPY: &str = "\u{E1CA}";
+pub const WARNING: &str = "\u{E4E0}";
+pub const INFO: &str = "\u{E2CE}";
+pub const ERROR: &str = "\u{E4E2}";

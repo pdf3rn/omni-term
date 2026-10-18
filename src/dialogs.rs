@@ -386,7 +386,7 @@ pub enum ErrorAction {
 
 /// Diálogo de error común a toda la app: detalle seleccionable, «Copiar detalle» y «Reintentar».
 pub fn error_dialog(ctx: &egui::Context, info: &ErrorInfo) -> ErrorAction {
-    let mut spec = Spec::new(info.title.clone()).width(440.0).cancel("Cerrar").extra("Copiar detalle");
+    let mut spec = Spec::new(info.title.clone()).width(440.0).cancel("Cerrar").extra("Copiar detalle").icon(DialogIcon::Error);
     if info.retry.is_some() {
         spec = spec.accept("Reintentar");
     }
@@ -502,7 +502,16 @@ pub enum Tone {
 }
 
 /// Lo que cada diálogo declara de sí mismo; el marco común dibuja el resto.
+/// Icono de estado a la izquierda del cuerpo en confirmaciones, errores y avisos.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum DialogIcon {
+    Warning,
+    Error,
+    Info,
+}
+
 pub struct Spec {
+    icon: Option<DialogIcon>,
     title: String,
     context: Option<String>,
     width: f32,
@@ -518,6 +527,7 @@ pub struct Spec {
 impl Spec {
     pub fn new(title: impl Into<String>) -> Self {
         Self {
+            icon: None,
             title: title.into(),
             context: None,
             width: 520.0,
@@ -529,6 +539,11 @@ impl Spec {
             enter_submits: true,
             backdrop_cancels: false,
         }
+    }
+
+    pub fn icon(mut self, icon: DialogIcon) -> Self {
+        self.icon = Some(icon);
+        self
     }
 
     pub fn context(mut self, text: impl Into<String>) -> Self {
@@ -593,47 +608,85 @@ pub enum Action {
 /// `Esc` cancela; `Enter` confirma cuando el cuerpo lo pide (devolviendo `true`).
 pub fn shell(ctx: &egui::Context, spec: Spec, body: impl FnOnce(&mut egui::Ui) -> bool) -> Action {
     let mut action = Action::None;
-    let frame = egui::Frame::popup(&ctx.global_style()).inner_margin(egui::Margin::same(24));
+    let strip = if theme::is_light() { theme::surface() } else { theme::base() };
+    let frame = egui::Frame::popup(&ctx.global_style())
+        .inner_margin(egui::Margin::ZERO)
+        .corner_radius(egui::CornerRadius::same(6));
+    let icon = spec.icon.or((spec.tone == Tone::Danger).then_some(DialogIcon::Warning));
     let response = Modal::new(id()).frame(frame).show(ctx, |ui| {
         ui.set_width(spec.width);
-        ui.spacing_mut().item_spacing.y = 8.0;
-        ui.label(RichText::new(&spec.title).font(FontId::new(18.0, crate::ui::strong_family())));
-        if let Some(context) = &spec.context {
-            ui.label(RichText::new(context).small().color(theme::subtext()));
+        ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+
+        // Franja del título, con la X para cerrar.
+        let (title_rect, _) = ui.allocate_exact_size(egui::vec2(spec.width, 38.0), egui::Sense::hover());
+        ui.painter().rect_filled(title_rect, egui::CornerRadius { nw: 6, ne: 6, sw: 0, se: 0 }, strip);
+        ui.painter().line_segment([title_rect.left_bottom(), title_rect.right_bottom()], egui::Stroke::new(1.0, theme::surface()));
+        ui.painter().text(title_rect.center(), egui::Align2::CENTER_CENTER, &spec.title, FontId::new(14.0, crate::ui::strong_family()), theme::text());
+        let close_rect = egui::Rect::from_center_size(egui::pos2(title_rect.max.x - 22.0, title_rect.center().y), egui::vec2(26.0, 26.0));
+        let close = ui.interact(close_rect, ui.auto_id_with("dialog-close"), egui::Sense::click()).hand();
+        if close.hovered() {
+            ui.painter().rect_filled(close_rect, egui::CornerRadius::same(6), theme::selection());
         }
-        ui.add_space(10.0);
+        ui.painter().text(close_rect.center(), egui::Align2::CENTER_CENTER, crate::icons::X, FontId::proportional(14.0), theme::text());
+        if close.on_hover_text("Cerrar").clicked() {
+            action = Action::Cancel;
+        }
 
-        let enter = body(ui);
+        let mut enter = false;
+        egui::Frame::NONE.inner_margin(egui::Margin { left: 18, right: 18, top: 16, bottom: 18 }).show(ui, |ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
+            if let Some(context) = &spec.context {
+                ui.label(RichText::new(context).small().color(theme::subtext()));
+            }
+            match icon {
+                Some(icon) => {
+                    ui.horizontal_top(|ui| {
+                        ui.spacing_mut().item_spacing.x = 12.0;
+                        let (glyph, color) = match icon {
+                            DialogIcon::Warning => (crate::icons::WARNING, theme::identity(1)),
+                            DialogIcon::Error => (crate::icons::ERROR, theme::red()),
+                            DialogIcon::Info => (crate::icons::INFO, theme::accent()),
+                        };
+                        ui.add_sized([26.0, 26.0], egui::Label::new(RichText::new(glyph).size(24.0).color(color)));
+                        ui.vertical(|ui| enter = body(ui));
+                    });
+                }
+                None => enter = body(ui),
+            }
+        });
 
-        ui.add_space(18.0);
-        ui.horizontal(|ui| {
-            for (index, label) in spec.extras.iter().enumerate() {
-                let extra = egui::Button::new(label.as_str())
-                    .fill(Color32::TRANSPARENT)
-                    .stroke(egui::Stroke::new(1.0, theme::surface()));
-                if ui.add(extra).clicked() {
-                    action = Action::Extra(index);
+        // Franja de botones.
+        let (foot_rect, _) = ui.allocate_exact_size(egui::vec2(spec.width, 56.0), egui::Sense::hover());
+        ui.painter().rect_filled(foot_rect, egui::CornerRadius { nw: 0, ne: 0, sw: 6, se: 6 }, strip);
+        ui.painter().line_segment([foot_rect.left_top(), foot_rect.right_top()], egui::Stroke::new(1.0, theme::surface()));
+        let mut foot = ui.new_child(egui::UiBuilder::new().max_rect(foot_rect.shrink2(egui::vec2(14.0, 0.0))).layout(egui::Layout::left_to_right(egui::Align::Center)));
+        foot.spacing_mut().item_spacing.x = 8.0;
+        let size = egui::vec2(0.0, 30.0);
+        for (index, label) in spec.extras.iter().enumerate() {
+            let extra = egui::Button::new(label.as_str()).min_size(size).fill(Color32::TRANSPARENT).stroke(egui::Stroke::new(1.0, theme::selection()));
+            if foot.add(extra).clicked() {
+                action = Action::Extra(index);
+            }
+        }
+        foot.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let fill = if spec.tone == Tone::Danger { theme::red() } else { theme::accent() };
+            let primary = |label: &str| egui::Button::new(RichText::new(label).color(theme::base())).min_size(size).fill(fill);
+            match &spec.accept {
+                Some(label) => {
+                    if ui.add_enabled(spec.accept_enabled, primary(label)).clicked() {
+                        action = Action::Accept;
+                    }
+                    let cancel = egui::Button::new(spec.cancel.as_str()).min_size(size).fill(Color32::TRANSPARENT).stroke(egui::Stroke::new(1.0, theme::selection()));
+                    if ui.add(cancel).clicked() {
+                        action = Action::Cancel;
+                    }
+                }
+                None => {
+                    if ui.add(primary(&spec.cancel)).clicked() {
+                        action = Action::Cancel;
+                    }
                 }
             }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let fill = if spec.tone == Tone::Danger { theme::red() } else { theme::accent() };
-                let primary = |label: &str| egui::Button::new(RichText::new(label).color(theme::base())).fill(fill);
-                match &spec.accept {
-                    Some(label) => {
-                        if ui.add_enabled(spec.accept_enabled, primary(label)).clicked() {
-                            action = Action::Accept;
-                        }
-                        if ui.add(egui::Button::new(spec.cancel.as_str()).fill(Color32::TRANSPARENT)).clicked() {
-                            action = Action::Cancel;
-                        }
-                    }
-                    None => {
-                        if ui.add(primary(&spec.cancel)).clicked() {
-                            action = Action::Cancel;
-                        }
-                    }
-                }
-            });
         });
         if enter && spec.enter_submits && spec.accept.is_some() && spec.accept_enabled && matches!(action, Action::None) {
             action = Action::Accept;
@@ -735,7 +788,7 @@ pub fn show(
         }
         Dialog::Edit(form) => {
             let title = if form.id.is_some() { "Editar conexión" } else { "Nueva conexión" };
-            let spec = Spec::new(title).width(520.0).accept("Guardar").no_enter().extra("Probar conexión");
+            let spec = Spec::new(title).width(544.0).accept("Guardar").no_enter().extra("Probar conexión");
             match shell(ctx, spec, |ui| edit_body(ui, form, connections)) {
                 Action::Accept => Outcome::Save,
                 Action::Cancel => Outcome::Cancel,
@@ -799,7 +852,7 @@ pub fn show(
             plain(action, Outcome::Submit)
         }
         Dialog::HostKey(request) => {
-            let spec = Spec::new("Servidor desconocido").accept("Confiar y conectar").no_enter();
+            let spec = Spec::new("Servidor desconocido").icon(DialogIcon::Info).accept("Confiar y conectar").no_enter();
             match shell(ctx, spec, |ui| host_key_body(ui, request)) {
                 Action::Accept => Outcome::Trust(true),
                 Action::Cancel => Outcome::Trust(false),
@@ -807,7 +860,7 @@ pub fn show(
             }
         }
         Dialog::HostKeyChanged(change) => {
-            let spec = Spec::new("La huella del servidor ha cambiado").cancel("Cerrar").extra("Copiar comando").extra("Olvidar y volver a conectar");
+            let spec = Spec::new("La huella del servidor ha cambiado").icon(DialogIcon::Error).cancel("Cerrar").extra("Copiar comando").extra("Olvidar y volver a conectar");
             match shell(ctx, spec, |ui| host_key_changed_body(ui, change)) {
                 Action::Cancel => Outcome::Cancel,
                 Action::Extra(0) => {
