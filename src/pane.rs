@@ -24,18 +24,21 @@ pub fn bold_family() -> FontFamily {
 pub struct Pane {
     pub session: Session,
     debug_keys: bool,
+    input_enabled: bool,
 }
 
 impl Pane {
     pub fn new(session: Session, debug_keys: bool) -> Self {
-        Self { session, debug_keys }
+        Self { session, debug_keys, input_enabled: true }
     }
 
     pub fn title(&self) -> String {
         self.session.title.lock().unwrap().clone()
     }
 
-    pub fn show(&mut self, ui: &mut egui::Ui, area: Rect) {
+    /// `input_enabled` es falso mientras hay un diálogo abierto, para no robarle el foco.
+    pub fn show(&mut self, ui: &mut egui::Ui, area: Rect, input_enabled: bool) {
+        self.input_enabled = input_enabled;
         self.terminal(ui, area);
     }
 }
@@ -56,8 +59,10 @@ impl Pane {
 
         let id = ui.scope_id().with("terminal");
         let response = ui.interact(area, id, Sense::click_and_drag());
+        if self.input_enabled {
+            ui.memory_mut(|m| m.request_focus(id));
+        }
         ui.memory_mut(|m| {
-            m.request_focus(id);
             m.set_focus_lock_filter(
                 id,
                 EventFilter { tab: true, horizontal_arrows: true, vertical_arrows: true, escape: true },
@@ -93,8 +98,10 @@ impl Pane {
             }
         }
 
-        self.handle_scroll(ui, cell_h);
-        self.handle_input(ui);
+        if self.input_enabled {
+            self.handle_scroll(ui, cell_h);
+            self.handle_input(ui);
+        }
         self.paint_grid(ui, area, &font, &bold, cell_w, cell_h);
     }
 

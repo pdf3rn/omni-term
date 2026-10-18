@@ -85,7 +85,6 @@ impl Store {
         Self::init(Db::open(path).with_context(|| format!("abriendo {}", path.display()))?)
     }
 
-    #[cfg(test)]
     pub fn open_in_memory() -> anyhow::Result<Self> {
         Self::init(Db::open_in_memory()?)
     }
@@ -139,10 +138,6 @@ impl Store {
             Ok(Connection { id: Some(id), name, host, port, user, auth: Auth::parse(&auth)?, key_path, init_command })
         })
         .collect()
-    }
-
-    pub fn get_connection(&self, id: i64) -> anyhow::Result<Option<Connection>> {
-        Ok(self.list_connections()?.into_iter().find(|c| c.id == Some(id)))
     }
 
     /// Inserta o actualiza y devuelve el id.
@@ -301,7 +296,7 @@ mod tests {
         let b = store.save_connection(&sample("beta")).unwrap();
         store.save_connection(&sample("Alpha")).unwrap();
 
-        let mut updated = store.get_connection(b).unwrap().unwrap();
+        let mut updated = store.list_connections().unwrap().into_iter().find(|c| c.id == Some(b)).unwrap();
         updated.host = "other.test".into();
         updated.port = 2222;
         store.save_connection(&updated).unwrap();

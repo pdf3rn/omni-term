@@ -7,7 +7,7 @@ use std::time::Duration;
 use anyhow::{anyhow, bail, Context};
 use russh::client::{self, Handle, Handler};
 use russh::keys::agent::client::AgentClient;
-use russh::keys::known_hosts::{check_known_hosts, learn_known_hosts};
+use russh::keys::known_hosts::{check_known_hosts_path, learn_known_hosts_path};
 use russh::keys::{HashAlg, PrivateKeyWithHashAlg, PublicKeyOrCertificate};
 use russh::ChannelMsg;
 use tokio::sync::{mpsc, oneshot};
@@ -62,6 +62,7 @@ impl Drop for SshBackend {
 }
 
 struct Client {
+    known_hosts: std::path::PathBuf,
     host: String,
     port: u16,
     events: std_mpsc::Sender<UiEvent>,
@@ -79,7 +80,7 @@ impl Handler for Client {
             return Ok(false);
         };
 
-        match check_known_hosts(&self.host, self.port, key) {
+        match check_known_hosts_path(&self.host, self.port, key, &self.known_hosts) {
             Ok(true) => return Ok(true),
             Err(russh::keys::Error::KeyChanged { line }) => {
                 *self.rejection.lock().unwrap() = Some(format!(
@@ -105,7 +106,7 @@ impl Handler for Client {
         (self.wake)();
 
         if answer.await.unwrap_or(false) {
-            if let Err(error) = learn_known_hosts(&self.host, self.port, key) {
+            if let Err(error) = learn_known_hosts_path(&self.host, self.port, key, &self.known_hosts) {
                 eprintln!("no se pudo escribir known_hosts: {error}");
             }
             Ok(true)
@@ -142,10 +143,11 @@ pub fn spawn(
     mut feed: Feed,
     events: std_mpsc::Sender<UiEvent>,
     wake: Arc<dyn Fn() + Send + Sync>,
+    known_hosts: std::path::PathBuf,
 ) -> Arc<dyn Backend> {
     let (commands, receiver) = mpsc::unbounded_channel();
     runtime.spawn(async move {
-        let outcome = run(&connection, credentials, size, &mut feed, receiver, events, wake).await;
+        let outcome = run(&connection, credentials, size, &mut feed, receiver, events, wake, known_hosts).await;
         match outcome {
             Ok(()) => feed.close(),
             Err(error) => {
@@ -164,6 +166,7 @@ async fn run(
     mut commands: mpsc::UnboundedReceiver<Command>,
     events: std_mpsc::Sender<UiEvent>,
     wake: Arc<dyn Fn() + Send + Sync>,
+    known_hosts: std::path::PathBuf,
 ) -> anyhow::Result<()> {
     feed.feed(
         format!("Conectando a {}@{}:{}...\r\n", connection.user, connection.host, connection.port).as_bytes(),
@@ -175,6 +178,7 @@ async fn run(
     });
     let rejection = Arc::new(Mutex::new(None));
     let handler = Client {
+        known_hosts,
         host: connection.host.clone(),
         port: connection.port,
         events,
@@ -269,4 +273,112 @@ async fn authenticate(
         bail!("autenticación rechazada por el servidor");
     }
     Ok(())
+}
+
+/// Ruta estándar de `known_hosts` del usuario.
+pub fn default_known_hosts() -> std::path::PathBuf {
+    std::env::home_dir().unwrap_or_default().join(".ssh").join("known_hosts")
+}
+
+#[cfg(test)]
+mod tests {
+    use std::process::{Command as Process, Stdio};
+    use std::time::Instant;
+
+    use super::*;
+    use crate::term::Session;
+
+    struct Sshd(std::process::Child);
+
+    impl Drop for Sshd {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    fn screen_text(session: &Session) -> String {
+        let term = session.term.lock().unwrap();
+        term.renderable_content().display_iter.map(|cell| cell.cell.c).collect()
+    }
+
+    /// Prueba de extremo a extremo contra un sshd privado. Se omite si no hay sshd/ssh-keygen.
+    #[test]
+    fn interactive_shell_over_a_private_sshd() {
+        let sshd_path = std::path::Path::new("/usr/sbin/sshd");
+        if !sshd_path.exists() || Process::new("ssh-keygen").arg("-?").stderr(Stdio::null()).output().is_err() {
+            eprintln!("sshd o ssh-keygen no disponibles; prueba omitida");
+            return;
+        }
+
+        let dir = std::env::temp_dir().join(format!("omniterm-sshd-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let keygen = |name: &str| {
+            let status = Process::new("ssh-keygen")
+                .args(["-q", "-t", "ed25519", "-N", "", "-f"])
+                .arg(dir.join(name))
+                .status()
+                .unwrap();
+            assert!(status.success());
+        };
+        keygen("host_key");
+        keygen("client_key");
+        std::fs::copy(dir.join("client_key.pub"), dir.join("authorized_keys")).unwrap();
+
+        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let sshd = Process::new(sshd_path)
+            .args(["-D", "-e", "-f", "/dev/null", "-p", &port.to_string()])
+            .arg("-h")
+            .arg(dir.join("host_key"))
+            .args(["-o", "ListenAddress=127.0.0.1", "-o", "PidFile=none", "-o", "UsePAM=no"])
+            .args(["-o", "StrictModes=no", "-o"])
+            .arg(format!("AuthorizedKeysFile={}", dir.join("authorized_keys").display()))
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let _sshd = Sshd(sshd);
+        let started = Instant::now();
+        while std::net::TcpStream::connect(("127.0.0.1", port)).is_err() {
+            assert!(started.elapsed() < Duration::from_secs(5), "sshd no arrancó");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+
+        let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+        let (events, requests) = std_mpsc::channel();
+        let known_hosts = dir.join("known_hosts");
+        let connection = Connection {
+            id: None,
+            name: "test".into(),
+            host: "127.0.0.1".into(),
+            port,
+            user: std::env::var("USER").unwrap_or_else(|_| "root".into()),
+            auth: Auth::Key,
+            key_path: Some(dir.join("client_key").display().to_string()),
+            init_command: None,
+        };
+        let handle = runtime.handle().clone();
+        let hosts = known_hosts.clone();
+        let session = Session::start(80, 24, || {}, move |feed| {
+            Ok(spawn(&handle, connection, Credentials::default(), (80, 24), feed, events, Arc::new(|| {}), hosts))
+        })
+        .unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let request = requests.recv_timeout(Duration::from_secs(10)).expect("sin petición de huella");
+        let UiEvent::HostKey(request) = request;
+        assert!(request.fingerprint.starts_with("SHA256:"));
+        request.reply.send(true).unwrap();
+
+        std::thread::sleep(Duration::from_millis(1500));
+        session.write(b"echo omni_$((20+22))\n");
+        loop {
+            if screen_text(&session).contains("omni_42") {
+                break;
+            }
+            assert!(Instant::now() < deadline, "sin salida del shell remoto:\n{}", screen_text(&session).trim());
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        assert!(std::fs::read_to_string(&known_hosts).unwrap().contains("127.0.0.1"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }

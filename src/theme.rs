@@ -5,6 +5,7 @@ pub const BASE: Color32 = Color32::from_rgb(0x1e, 0x1e, 0x2e);
 pub const MANTLE: Color32 = Color32::from_rgb(0x18, 0x18, 0x25);
 pub const SUBTEXT: Color32 = Color32::from_rgb(0xa6, 0xad, 0xc8);
 pub const SURFACE: Color32 = Color32::from_rgb(0x31, 0x32, 0x44);
+pub const RED: Color32 = Color32::from_rgb(0xf3, 0x8b, 0xa8);
 pub const TEXT: Color32 = Color32::from_rgb(0xcd, 0xd6, 0xf4);
 pub const SELECTION: Color32 = Color32::from_rgb(0x58, 0x5b, 0x70);
 pub const CURSOR: Color32 = Color32::from_rgb(0xf5, 0xe0, 0xdc);

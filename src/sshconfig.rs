@@ -1,0 +1,129 @@
+//! Importación única de hosts desde `~/.ssh/config`.
+
+use crate::store::{Auth, Connection};
+
+/// Lee las entradas `Host` concretas (sin comodines). Una entrada con `IdentityFile`
+/// usa autenticación por llave; las demás, ssh-agent.
+pub fn parse(text: &str, default_user: &str) -> Vec<Connection> {
+    struct Entry {
+        alias: String,
+        host: Option<String>,
+        user: Option<String>,
+        port: Option<u16>,
+        identity: Option<String>,
+    }
+
+    let mut entries: Vec<Entry> = Vec::new();
+    let mut current: Vec<Entry> = Vec::new();
+
+    let flush = |current: &mut Vec<Entry>, entries: &mut Vec<Entry>| entries.append(current);
+
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let (key, value) = match line.split_once(|c: char| c.is_whitespace() || c == '=') {
+            Some((key, value)) => (key.to_ascii_lowercase(), value.trim().trim_start_matches('=').trim()),
+            None => continue,
+        };
+        let value = value.trim_matches('"');
+
+        match key.as_str() {
+            "host" => {
+                flush(&mut current, &mut entries);
+                current = value
+                    .split_whitespace()
+                    .filter(|alias| !alias.contains(['*', '?', '!']))
+                    .map(|alias| Entry { alias: alias.into(), host: None, user: None, port: None, identity: None })
+                    .collect();
+            }
+            "match" => {
+                flush(&mut current, &mut entries);
+            }
+            "hostname" => current.iter_mut().for_each(|e| e.host = Some(value.into())),
+            "user" => current.iter_mut().for_each(|e| e.user = Some(value.into())),
+            "port" => {
+                if let Ok(port) = value.parse() {
+                    current.iter_mut().for_each(|e| e.port = Some(port));
+                }
+            }
+            "identityfile" => current.iter_mut().for_each(|e| {
+                e.identity.get_or_insert_with(|| value.into());
+            }),
+            _ => {}
+        }
+    }
+    flush(&mut current, &mut entries);
+
+    entries
+        .into_iter()
+        .map(|entry| Connection {
+            id: None,
+            name: entry.alias.clone(),
+            host: entry.host.unwrap_or(entry.alias),
+            port: entry.port.unwrap_or(22),
+            user: entry.user.unwrap_or_else(|| default_user.into()),
+            auth: if entry.identity.is_some() { Auth::Key } else { Auth::Agent },
+            key_path: entry.identity,
+            init_command: None,
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_concrete_hosts_and_skips_wildcards() {
+        let text = "
+# comentario
+Host *
+    ServerAliveInterval 30
+
+Host web prod
+    HostName 10.0.0.5
+    User deploy
+    Port 2200
+    IdentityFile ~/.ssh/id_prod
+
+Host db
+    HostName db.example.com
+
+Host *.internal
+    User nobody
+";
+        let found = parse(text, "me");
+        assert_eq!(found.len(), 3);
+
+        assert_eq!(found[0].name, "web");
+        assert_eq!(found[0].host, "10.0.0.5");
+        assert_eq!(found[0].user, "deploy");
+        assert_eq!(found[0].port, 2200);
+        assert_eq!(found[0].auth, Auth::Key);
+        assert_eq!(found[0].key_path.as_deref(), Some("~/.ssh/id_prod"));
+        assert_eq!(found[1].name, "prod");
+
+        assert_eq!(found[2].name, "db");
+        assert_eq!(found[2].host, "db.example.com");
+        assert_eq!(found[2].user, "me");
+        assert_eq!(found[2].port, 22);
+        assert_eq!(found[2].auth, Auth::Agent);
+    }
+
+    #[test]
+    fn host_without_hostname_uses_alias_and_equals_syntax_works() {
+        let found = parse("Host=box\n  User=root\n", "me");
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].host, "box");
+        assert_eq!(found[0].user, "root");
+    }
+
+    #[test]
+    fn match_blocks_do_not_leak_settings_into_previous_hosts() {
+        let found = parse("Host a\n  HostName a.test\nMatch host b\n  HostName wrong\n", "me");
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].host, "a.test");
+    }
+}

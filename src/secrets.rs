@@ -49,8 +49,17 @@ pub trait SecretStore {
 }
 
 /// Cuenta bajo la que se guarda la contraseña (o passphrase) de una conexión.
-pub fn account_for(connection_id: i64) -> String {
-    format!("connection:{connection_id}")
+pub fn account_for(connection_id: i64, kind: SecretKind) -> String {
+    match kind {
+        SecretKind::Password => format!("connection:{connection_id}:password"),
+        SecretKind::Passphrase => format!("connection:{connection_id}:passphrase"),
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SecretKind {
+    Password,
+    Passphrase,
 }
 
 pub struct KeyringStore;
@@ -116,6 +125,7 @@ impl MasterKeyStore {
         Ok(self.store.lock().unwrap().meta(SALT_KEY)?.is_some())
     }
 
+    #[cfg(test)]
     pub fn is_unlocked(&self) -> bool {
         self.key.lock().unwrap().is_some()
     }
@@ -192,6 +202,68 @@ impl SecretStore for MasterKeyStore {
     }
 }
 
+/// Almacén elegido en el arranque: keyring del sistema si funciona, clave maestra si no.
+pub enum Secrets {
+    Keyring(KeyringStore),
+    Master(Arc<MasterKeyStore>),
+}
+
+const FORCE_MASTER_KEY: &str = "force_master_key";
+
+impl Secrets {
+    pub fn select(store: Arc<Mutex<Store>>) -> Self {
+        let forced = matches!(store.lock().unwrap().meta(FORCE_MASTER_KEY), Ok(Some(v)) if v == b"1");
+        if !forced && KeyringStore::probe() {
+            Secrets::Keyring(KeyringStore)
+        } else {
+            Secrets::Master(Arc::new(MasterKeyStore::new(store)))
+        }
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            Secrets::Keyring(_) => "keyring del sistema",
+            Secrets::Master(_) => "clave maestra",
+        }
+    }
+
+    pub fn master(&self) -> Option<&Arc<MasterKeyStore>> {
+        match self {
+            Secrets::Master(master) => Some(master),
+            Secrets::Keyring(_) => None,
+        }
+    }
+
+    pub fn is_master_forced(store: &Store) -> bool {
+        matches!(store.meta(FORCE_MASTER_KEY), Ok(Some(v)) if v == b"1")
+    }
+
+    pub fn set_master_forced(store: &Store, forced: bool) -> anyhow::Result<()> {
+        store.set_meta(FORCE_MASTER_KEY, if forced { b"1" } else { b"0" })
+    }
+
+    fn inner(&self) -> &dyn SecretStore {
+        match self {
+            Secrets::Keyring(store) => store,
+            Secrets::Master(store) => store.as_ref(),
+        }
+    }
+}
+
+impl SecretStore for Secrets {
+    fn get(&self, account: &str) -> Result<Option<Zeroizing<String>>, SecretError> {
+        self.inner().get(account)
+    }
+
+    fn set(&self, account: &str, secret: &str) -> Result<(), SecretError> {
+        self.inner().set(account, secret)
+    }
+
+    fn delete(&self, account: &str) -> Result<(), SecretError> {
+        self.inner().delete(account)
+    }
+}
+
 fn fill_random(buf: &mut [u8]) -> Result<(), SecretError> {
     getrandom::fill(buf).map_err(|e| SecretError::Other(anyhow::anyhow!("sin fuente de aleatoriedad: {e}")))
 }
@@ -202,7 +274,7 @@ fn seal(key: &[u8; 32], account: &str, plain: &[u8]) -> Result<(Vec<u8>, Vec<u8>
     fill_random(&mut nonce)?;
     let cipher = XChaCha20Poly1305::new(key.into());
     let ciphertext = cipher
-        .encrypt(XNonce::from_slice(&nonce), Payload { msg: plain, aad: account.as_bytes() })
+        .encrypt(&XNonce::from(nonce), Payload { msg: plain, aad: account.as_bytes() })
         .map_err(|_| SecretError::Other(anyhow::anyhow!("fallo al cifrar")))?;
     Ok((nonce.to_vec(), ciphertext))
 }
@@ -211,9 +283,10 @@ fn open(key: &[u8; 32], account: &str, nonce: &[u8], ciphertext: &[u8]) -> Resul
     if nonce.len() != NONCE_LEN {
         return Err(SecretError::Other(anyhow::anyhow!("nonce con tamaño inválido")));
     }
+    let nonce = XNonce::try_from(nonce).map_err(|_| SecretError::Other(anyhow::anyhow!("nonce con tamaño inválido")))?;
     let cipher = XChaCha20Poly1305::new(key.into());
     cipher
-        .decrypt(XNonce::from_slice(nonce), Payload { msg: ciphertext, aad: account.as_bytes() })
+        .decrypt(&nonce, Payload { msg: ciphertext, aad: account.as_bytes() })
         .map(Zeroizing::new)
         .map_err(|_| SecretError::Other(anyhow::anyhow!("no se pudo descifrar el secreto")))
 }

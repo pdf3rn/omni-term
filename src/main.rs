@@ -1,8 +1,10 @@
+mod dialogs;
 mod keys;
 mod local;
 mod pane;
 mod secrets;
 mod ssh;
+mod sshconfig;
 mod store;
 mod term;
 mod theme;
