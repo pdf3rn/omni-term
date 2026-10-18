@@ -204,6 +204,8 @@ pub struct App {
     palette: Option<Palette>,
     close_confirmed: bool,
     known_hosts: dialogs::KnownHostsView,
+    /// Hosts de `~/.ssh/config` que aún no están guardados.
+    ssh_config_hosts: usize,
     loaded_font: Option<String>,
     /// Ids de conexión, de la usada más recientemente a la más antigua.
     recent: Vec<(i64, u64)>,
@@ -333,6 +335,7 @@ impl App {
             palette: None,
             close_confirmed: false,
             known_hosts: Default::default(),
+            ssh_config_hosts: 0,
             loaded_font: None,
             recent,
             pinned,
@@ -361,6 +364,7 @@ impl App {
             toasts: Vec::new(),
             next_toast: 0,
         };
+        app.ssh_config_hosts = pending_ssh_config_hosts(&app.connections);
         app.loaded_font = app.settings.font_path.clone();
         if let Some(problem) = font_error {
             app.settings.font_path = None;
@@ -705,6 +709,8 @@ impl App {
         self.connections = store.list_connections().unwrap_or_default();
         self.forwards = store.all_forwards().unwrap_or_default();
         self.snippets = store.list_snippets().unwrap_or_default();
+        drop(store);
+        self.ssh_config_hosts = pending_ssh_config_hosts(&self.connections);
     }
 
     /// Inserta el snippet; si tiene variables, primero pide sus valores.
@@ -2035,6 +2041,8 @@ impl App {
                         ui.add_space(8.0);
                         ui.spacing_mut().item_spacing.y = 8.0;
                     }
+                    let list_empty = if connections_view { self.connections.is_empty() } else { self.snippets.is_empty() };
+                    if !list_empty {
                     ui.horizontal(|ui| {
                         let title = if connections_view { "Guardadas" } else { "Guardados" };
                         ui.label(RichText::new(title).small().color(theme::subtext()));
@@ -2058,17 +2066,20 @@ impl App {
                         });
                     });
                     ui.add_space(-2.0);
+                    }
 
                     if connections_view {
                         if self.connections.is_empty() {
-                            ui.label(RichText::new("Aún no hay conexiones. Crea una con + o importa las de ~/.ssh/config.").color(theme::subtext()));
-                            ui.add_space(8.0);
-                            let import_button = Button::new(RichText::new("Importar de ~/.ssh/config").small().color(theme::subtext()))
-                                .fill(Color32::TRANSPARENT)
-                                .stroke(Stroke::new(1.0, theme::surface()));
-                            if ui.add(import_button).clicked() {
-                                import = true;
-                            }
+                            let secondary = (self.ssh_config_hosts > 0).then(|| format!("Importar {} de ~/.ssh/config", self.ssh_config_hosts));
+                            let (create, import_clicked) = empty_state(
+                                ui,
+                                "Aún no hay conexiones",
+                                "Guarda los servidores a los que te conectas y ábrelos con un doble clic.",
+                                "Nueva conexión",
+                                secondary.as_deref(),
+                            );
+                            new_connection |= create;
+                            import |= import_clicked;
                         } else if groups.is_empty() {
                             ui.label(RichText::new("Ninguna conexión coincide con la búsqueda.").color(theme::subtext()));
                         }
@@ -2261,18 +2272,27 @@ impl App {
                         }
                         });
                     } else {
-                        if ui
-                            .add(Button::new(RichText::new("Guardar selección").small().color(theme::subtext())).fill(Color32::TRANSPARENT).stroke(Stroke::new(1.0, theme::surface())))
-                            .clicked()
-                        {
-                            snippet_from_selection = true;
+                        if !self.snippets.is_empty() {
+                            if ui
+                                .add(Button::new(RichText::new("Guardar selección").small().color(theme::subtext())).fill(Color32::TRANSPARENT).stroke(Stroke::new(1.0, theme::surface())))
+                                .clicked()
+                            {
+                                snippet_from_selection = true;
+                            }
+                            ui.add_space(4.0);
                         }
-                        ui.add_space(4.0);
 
                         let query = self.sidebar_query.clone();
                         let visible: Vec<&Snippet> = self.snippets.iter().filter(|s| s.matches(&query)).collect();
                         if self.snippets.is_empty() {
-                            ui.label(RichText::new("Aún no hay snippets. Crea uno con + o guarda la selección del terminal.").color(theme::subtext()));
+                            let (create, _) = empty_state(
+                                ui,
+                                "Aún no hay snippets",
+                                "Guarda los comandos que repites y pégalos en el terminal con un clic. También puedes seleccionar texto en el terminal y guardarlo desde el menú del clic derecho.",
+                                "Nuevo snippet",
+                                None,
+                            );
+                            new_snippet |= create;
                         } else if visible.is_empty() {
                             ui.label(RichText::new("Ningún snippet coincide con la búsqueda.").color(theme::subtext()));
                         }
@@ -2584,6 +2604,37 @@ fn parse_window_position(text: &str, monitor: Vec2, size: Vec2) -> Option<Pos2> 
     let margin = 50.0;
     let visible = x + size.x > margin && x < monitor.x - margin && y >= 0.0 && y < monitor.y - margin;
     visible.then(|| Pos2::new(x, y))
+}
+
+/// Estado vacío de una lista: título, explicación y una acción principal (y otra opcional).
+fn empty_state(ui: &mut egui::Ui, title: &str, body: &str, primary: &str, secondary: Option<&str>) -> (bool, bool) {
+    ui.add_space(18.0);
+    ui.label(RichText::new(title).font(FontId::new(15.0, strong_family())).color(theme::text()));
+    ui.add_space(2.0);
+    ui.label(RichText::new(body).small().color(theme::subtext()));
+    ui.add_space(14.0);
+    let width = ui.available_width();
+    let create = ui
+        .add(Button::new(RichText::new(primary).color(theme::base())).fill(theme::accent()).min_size(Vec2::new(width, 32.0)))
+        .clicked();
+    let mut other = false;
+    if let Some(label) = secondary {
+        ui.add_space(4.0);
+        let button = Button::new(RichText::new(label).color(theme::text()))
+            .fill(Color32::TRANSPARENT)
+            .stroke(Stroke::new(1.0, theme::selection()))
+            .min_size(Vec2::new(width, 32.0));
+        other = ui.add(button).clicked();
+    }
+    (create, other)
+}
+
+/// Cuántos hosts de `~/.ssh/config` aún no están guardados.
+fn pending_ssh_config_hosts(saved: &[Connection]) -> usize {
+    let path = std::env::home_dir().unwrap_or_default().join(".ssh").join("config");
+    let Ok(text) = std::fs::read_to_string(path) else { return 0 };
+    let user = std::env::var("USER").unwrap_or_default();
+    crate::sshconfig::parse(&text, &user).iter().filter(|h| !saved.iter().any(|c| c.name == h.connection.name)).count()
 }
 
 fn now_secs() -> u64 {
