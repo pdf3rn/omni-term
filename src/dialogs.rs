@@ -413,11 +413,27 @@ pub enum SettingsTab {
     Atajos,
 }
 
+/// Qué se cierra cuando se confirma (las pestañas se identifican por su id, no por su posición).
+#[derive(Clone, Copy)]
+pub enum CloseAction {
+    Tab(u64),
+    Others(u64),
+    Right(u64),
+    Window,
+}
+
+pub struct CloseConfirm {
+    pub action: CloseAction,
+    pub lines: Vec<String>,
+    pub dont_ask: bool,
+}
+
 pub enum Dialog {
     Error(ErrorInfo),
     HostKeyChanged(HostKeyChange),
     Settings(SettingsTab),
     About,
+    ConfirmClose(CloseConfirm),
     Edit(ConnForm),
     Snippet(SnippetForm),
     SnippetVars(VarsPrompt),
@@ -600,7 +616,6 @@ pub fn shell(ctx: &egui::Context, spec: Spec, body: impl FnOnce(&mut egui::Ui) -
     action
 }
 
-/// Mínimo de caracteres de la clave maestra.
 pub const MIN_MASTER_KEY: usize = 8;
 
 /// Campo de contraseña con botón para mostrar u ocultar lo escrito.
@@ -617,7 +632,6 @@ fn secret_field(ui: &mut egui::Ui, value: &mut String, reveal: &mut bool, hint: 
     .inner
 }
 
-/// ¿Se pulsó Enter dentro de este campo?
 fn entered(ui: &egui::Ui, field: &egui::Response) -> bool {
     field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))
 }
@@ -648,6 +662,29 @@ pub fn show(
         Dialog::Settings(tab) => {
             let action = shell(ctx, Spec::new("Ajustes").width(520.0).cancel("Cerrar"), |ui| settings_body(ui, tab, settings, master_forced));
             plain(action, Outcome::None)
+        }
+        Dialog::ConfirmClose(confirm) => {
+            let title = match confirm.action {
+                CloseAction::Window => "Cerrar omni-term",
+                CloseAction::Tab(_) => "Cerrar la pestaña",
+                _ => "Cerrar pestañas",
+            };
+            let spec = Spec::new(title).width(420.0).accept("Cerrar").danger();
+            let action = shell(ctx, spec, |ui| {
+                let many = confirm.lines.len() > 1;
+                ui.label(if many { format!("{} pestañas tienen algo en ejecución:", confirm.lines.len()) } else { "Esta pestaña tiene algo en ejecución:".to_string() });
+                for line in confirm.lines.iter().take(6) {
+                    ui.label(RichText::new(line).color(theme::subtext()));
+                }
+                if confirm.lines.len() > 6 {
+                    ui.label(RichText::new(format!("… y {} más", confirm.lines.len() - 6)).color(theme::subtext()));
+                }
+                ui.label("Se perderá lo que esté en curso.");
+                ui.add_space(4.0);
+                ui.checkbox(&mut confirm.dont_ask, "No volver a preguntar").hand();
+                false
+            });
+            plain(action, Outcome::Delete)
         }
         Dialog::About => {
             let action = shell(ctx, Spec::new("Acerca de omni-term").width(420.0).cancel("Cerrar"), |ui| {
@@ -754,7 +791,6 @@ pub fn show(
     }
 }
 
-/// Ancho reservado a las etiquetas del formulario.
 const LABEL_WIDTH: f32 = 112.0;
 const FIELD_HEIGHT: f32 = 28.0;
 /// Espacio entre filas de un mismo grupo y entre grupos distintos.
@@ -1191,6 +1227,7 @@ fn settings_body(ui: &mut egui::Ui, tab: &mut SettingsTab, settings: &mut Settin
             ui.selectable_value(&mut settings.compact, true, "Compacta");
         });
         ui.checkbox(&mut settings.menu_bar, "Mostrar la barra de menú (si está oculta, Alt la muestra)").hand();
+        ui.checkbox(&mut settings.confirm_close, "Confirmar al cerrar pestañas con algo en ejecución").hand();
 
         section(ui, "Terminal");
         ui.horizontal(|ui| {

@@ -10,7 +10,7 @@ use eframe::egui::{
 use zeroize::Zeroizing;
 
 use crate::cursor::HandExt;
-use crate::dialogs::{self, ConnForm, Dialog, ErrorInfo, Outcome, PaneTarget, Pending, Purpose, Retry, SecretPrompt, SnippetForm, TestState, UnlockPrompt, VarsPrompt};
+use crate::dialogs::{self, CloseAction, CloseConfirm, ConnForm, Dialog, ErrorInfo, Outcome, PaneTarget, Pending, Purpose, Retry, SecretPrompt, SnippetForm, TestState, UnlockPrompt, VarsPrompt};
 use crate::layout::{Dir, Tree};
 use crate::explorer::Explorer;
 use crate::icons;
@@ -107,6 +107,31 @@ impl Body {
 }
 
 impl Tab {
+    /// Qué está haciendo la pestaña que se perdería al cerrarla, si algo.
+    fn busy_reason(&self) -> Option<String> {
+        match &self.body {
+            Body::Explorer(explorer) => {
+                let n = explorer.running_transfers();
+                (n > 0).then(|| if n == 1 { "1 transferencia en curso".to_string() } else { format!("{n} transferencias en curso") })
+            }
+            Body::Terminal { panes, .. } => {
+                let mut busy = false;
+                panes.for_each(&mut |_, pane| {
+                    let session = &pane.session;
+                    if session.has_exited() || session.is_disconnected() {
+                        return;
+                    }
+                    busy |= match session.is_busy() {
+                        Some(busy) => busy,
+                        // SSH: no hay forma de saberlo; salida reciente se toma como «ocupado».
+                        None => session.activity.lock().unwrap().recent(Duration::from_secs(3)),
+                    };
+                });
+                busy.then(|| "proceso en ejecución".to_string())
+            }
+        }
+    }
+
     fn pane_mut(&mut self) -> Option<&mut Pane> {
         match &mut self.body {
             Body::Terminal { panes, focused, .. } => panes.get_mut(*focused),
@@ -172,6 +197,7 @@ pub struct App {
     /// Pestaña que se está renombrando: índice, texto y si falta darle el foco.
     renaming: Option<(usize, String, bool)>,
     palette: Option<Palette>,
+    close_confirmed: bool,
     loaded_font: Option<String>,
     /// Ids de conexión, de la usada más recientemente a la más antigua.
     recent: Vec<(i64, u64)>,
@@ -297,6 +323,7 @@ impl App {
             sidebar_collapsed,
             renaming: None,
             palette: None,
+            close_confirmed: false,
             loaded_font: None,
             recent,
             pinned,
@@ -958,8 +985,7 @@ impl App {
 
     /// Devuelve la ventana a donde estaba, solo si esa posición cae en el monitor actual.
     fn restore_window_position(&mut self, ctx: &egui::Context) {
-        // Algunos gestores de ventanas ignoran la petición de maximizar hecha demasiado pronto: se repite
-        // durante los primeros segundos hasta que la ventana lo confirma.
+        // Algunos gestores ignoran maximizar si llega pronto: se repite hasta que la ventana lo confirma.
         if self.window_maximized && self.window_boot.elapsed() < Duration::from_secs(2) {
             let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
             if !maximized {
@@ -997,6 +1023,63 @@ impl App {
         if (size - self.settings.font_size).abs() > f32::EPSILON {
             self.settings.font_size = size;
             let _ = self.settings.save(&self.store.lock().unwrap());
+        }
+    }
+
+    /// Pestañas afectadas por una acción de cierre, y entre ellas las que tienen algo en marcha.
+    fn close_busy_lines(&self, action: CloseAction) -> Vec<String> {
+        let affected: Vec<usize> = match action {
+            CloseAction::Tab(id) => self.tabs.iter().position(|t| t.id == id).into_iter().collect(),
+            CloseAction::Others(id) => (0..self.tabs.len()).filter(|i| self.tabs[*i].id != id).collect(),
+            CloseAction::Right(id) => match self.tabs.iter().position(|t| t.id == id) {
+                Some(position) => ((position + 1)..self.tabs.len()).collect(),
+                None => Vec::new(),
+            },
+            CloseAction::Window => (0..self.tabs.len()).collect(),
+        };
+        affected
+            .into_iter()
+            .filter_map(|i| self.tabs[i].busy_reason().map(|reason| format!("«{}»: {reason}", self.tabs[i].title())))
+            .collect()
+    }
+
+    /// Cierra directamente o, si hay algo en ejecución y no se ha desactivado, pide confirmación.
+    fn request_close(&mut self, action: CloseAction) {
+        let lines = if self.settings.confirm_close { self.close_busy_lines(action) } else { Vec::new() };
+        if lines.is_empty() {
+            self.perform_close(action);
+        } else if self.dialog.is_none() {
+            self.dialog = Some(Dialog::ConfirmClose(CloseConfirm { action, lines, dont_ask: false }));
+        }
+    }
+
+    fn perform_close(&mut self, action: CloseAction) {
+        match action {
+            CloseAction::Tab(id) => {
+                if let Some(position) = self.tabs.iter().position(|t| t.id == id) {
+                    self.close_tab(position);
+                }
+            }
+            CloseAction::Others(id) => {
+                for index in (0..self.tabs.len()).rev() {
+                    if self.tabs[index].id != id {
+                        self.close_tab(index);
+                    }
+                }
+                self.active = 0;
+            }
+            CloseAction::Right(id) => {
+                if let Some(position) = self.tabs.iter().position(|t| t.id == id) {
+                    for index in ((position + 1)..self.tabs.len()).rev() {
+                        self.close_tab(index);
+                    }
+                    self.active = self.active.min(self.tabs.len().saturating_sub(1));
+                }
+            }
+            CloseAction::Window => {
+                self.close_confirmed = true;
+                self.ctx.send_viewport_cmd(ViewportCommand::Close);
+            }
         }
     }
 
@@ -1110,11 +1193,11 @@ impl App {
             Command::SplitRight => self.split_active(Dir::Horizontal),
             Command::SplitDown => self.split_active(Dir::Vertical),
             Command::CloseTab => {
-                if !self.tabs.is_empty() {
-                    self.close_tab(self.active);
+                if let Some(id) = self.tabs.get(self.active).map(|t| t.id) {
+                    self.request_close(CloseAction::Tab(id));
                 }
             }
-            Command::Quit => self.ctx.send_viewport_cmd(ViewportCommand::Close),
+            Command::Quit => self.request_close(CloseAction::Window),
             Command::ToggleSidebar => self.set_sidebar_collapsed(!self.sidebar_collapsed),
             Command::ThemeDark | Command::ThemeLight | Command::ThemeSystem => {
                 self.settings.theme = match command {
@@ -1557,7 +1640,7 @@ impl App {
             (Outcome::Cancel, Dialog::Prompt(request, _)) => {
                 let _ = request.reply.send(None);
             }
-            (Outcome::Cancel, Dialog::Secret(_) | Dialog::Unlock(_) | Dialog::Edit(_) | Dialog::Error(_) | Dialog::HostKeyChanged(_) | Dialog::Settings(_) | Dialog::About | Dialog::Snippet(_) | Dialog::SnippetVars(_) | Dialog::ConfirmReset(_)) => {}
+            (Outcome::Cancel, Dialog::Secret(_) | Dialog::Unlock(_) | Dialog::Edit(_) | Dialog::Error(_) | Dialog::HostKeyChanged(_) | Dialog::Settings(_) | Dialog::About | Dialog::ConfirmClose(_) | Dialog::Snippet(_) | Dialog::SnippetVars(_) | Dialog::ConfirmReset(_)) => {}
             (Outcome::Cancel, dialog) => self.dialog = Some(dialog),
             (Outcome::Submit, Dialog::Prompt(request, answers)) => {
                 let _ = request.reply.send(Some(answers));
@@ -1632,6 +1715,13 @@ impl App {
             (Outcome::Submit, Dialog::SnippetVars(prompt)) => {
                 let text = prompt.rendered();
                 self.insert_into_active(&text, prompt.run);
+            }
+            (Outcome::Delete, Dialog::ConfirmClose(confirm)) => {
+                if confirm.dont_ask {
+                    self.settings.confirm_close = false;
+                    let _ = self.settings.save(&self.store.lock().unwrap());
+                }
+                self.perform_close(confirm.action);
             }
             (Outcome::Delete, Dialog::ConfirmReset(then)) => {
                 if let Some(master) = self.secrets.master() {
@@ -2170,7 +2260,6 @@ impl App {
                                 let preview: String = preview.chars().take(80).collect();
                                 painter.text(Pos2::new(left, rect.min.y + 27.0), Align2::LEFT_TOP, preview, FontId::new(12.0, FontFamily::Monospace), theme::subtext());
 
-                                // Ejecutar directamente, sin pasar por el menú de clic derecho.
                                 let run_rect = Rect::from_center_size(Pos2::new(rect.max.x - 18.0, rect.center().y), Vec2::splat(26.0));
                                 let run = ui.interact(run_rect, response.id.with("run"), Sense::click()).hand();
                                 if over {
@@ -2810,8 +2899,7 @@ impl eframe::App for App {
         self.restore_window_position(&ctx);
         self.remember_window_size(&ctx);
 
-        // Ctrl+Shift+B pliega la barra lateral y Ctrl+Shift+K salta a su búsqueda: con Ctrl solo
-        // chocarían con tmux (Ctrl+B) y con readline (Ctrl+K).
+        // Con Ctrl solo (B, K) chocarían con tmux y readline.
         let (toggle_sidebar, search_sidebar) = ctx.input_mut(|i| {
             let both = Modifiers::CTRL | Modifiers::SHIFT;
             (i.consume_key(both, Key::B), i.consume_key(both, Key::K))
@@ -2853,6 +2941,10 @@ impl eframe::App for App {
         if search_sidebar {
             self.set_sidebar_collapsed(false);
             self.focus_search = true;
+        }
+        if ctx.input(|i| i.viewport().close_requested()) && !self.close_confirmed {
+            ctx.send_viewport_cmd(ViewportCommand::CancelClose);
+            self.request_close(CloseAction::Window);
         }
         self.track_alt(&ctx);
         let (menu_command, menu_connection) = self.menu_bar(ui);
@@ -2947,7 +3039,6 @@ impl eframe::App for App {
                         plus_menu(ui, &plus_recents, &mut plus_selected, &mut plus_choice);
                     });
 
-                    // Acciones de la pestaña activa, juntas y a la derecha, con el mismo estilo.
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.spacing_mut().item_spacing.x = 4.0;
                         if self.tabs.get(self.active).is_some_and(|t| matches!(t.body, Body::Terminal { .. })) {
@@ -3021,20 +3112,14 @@ impl eframe::App for App {
                     _ => {}
                 },
                 TabAction::CloseOthers => {
-                    if let Some(keep) = self.tabs.get(i).map(|t| t.id) {
-                        for index in (0..self.tabs.len()).rev() {
-                            if self.tabs[index].id != keep {
-                                self.close_tab(index);
-                            }
-                        }
-                        self.active = 0;
+                    if let Some(id) = self.tabs.get(i).map(|t| t.id) {
+                        self.request_close(CloseAction::Others(id));
                     }
                 }
                 TabAction::CloseRight => {
-                    for index in ((i + 1)..self.tabs.len()).rev() {
-                        self.close_tab(index);
+                    if let Some(id) = self.tabs.get(i).map(|t| t.id) {
+                        self.request_close(CloseAction::Right(id));
                     }
-                    self.active = self.active.min(self.tabs.len().saturating_sub(1));
                 }
                 TabAction::Close => close = Some(i),
             }
@@ -3057,7 +3142,9 @@ impl eframe::App for App {
             }
         }
         if let Some(i) = close {
-            self.close_tab(i);
+            if let Some(id) = self.tabs.get(i).map(|t| t.id) {
+                self.request_close(CloseAction::Tab(id));
+            }
         }
 
         let area = ui.available_rect_before_wrap();
@@ -3117,7 +3204,6 @@ impl eframe::App for App {
                     let gap = if panes.len() > 1 { SPLIT_GAP } else { 0.0 };
                     let (leaves, handles) = panes.layout(text_area, gap);
 
-                    // Arrastrar las asas redimensiona las divisiones.
                     let mut ratios = Vec::new();
                     for (index, handle) in handles.iter().enumerate() {
                         let id = ui.scope_id().with(("split-handle", active, index));
@@ -3143,7 +3229,6 @@ impl eframe::App for App {
                         panes.set_ratio(&path, ratio);
                     }
 
-                    // Un clic en un panel le da el foco.
                     let pressed = ctx.input(|i| i.pointer.primary_pressed().then(|| i.pointer.interact_pos()).flatten());
                     if let Some(position) = pressed {
                         if let Some((id, _)) = leaves.iter().find(|(_, rect)| rect.contains(position)) {

@@ -129,14 +129,12 @@ impl Pane {
         self.session.term.lock().unwrap().selection_to_string().filter(|t| !t.is_empty())
     }
 
-    /// Copia la selección al portapapeles, si la hay.
     pub fn copy_selection_to(&self, ctx: &egui::Context) {
         if let Some(text) = self.selection_text() {
             ctx.copy_text(text);
         }
     }
 
-    /// Pega el portapapeles en el terminal.
     pub fn paste_clipboard(&self) {
         if let Some(text) = clipboard_text() {
             let mode = *self.session.term.lock().unwrap().mode();
@@ -145,7 +143,6 @@ impl Pane {
         }
     }
 
-    /// Selecciona todo el historial y la pantalla.
     pub fn select_all(&self) {
         let mut term = self.session.term.lock().unwrap();
         let start = Point::new(term.topmost_line(), Column(0));
@@ -184,8 +181,7 @@ impl Pane {
 
         let id = ui.scope_id().with(("terminal", self.id));
         let response = ui.interact(area, id, Sense::click_and_drag());
-        // El terminal recupera el foco salvo que otro campo de texto de la app lo tenga (búsqueda
-        // del sidebar, renombrar pestaña): un clic fuera de él, o Esc, se lo devuelve.
+        // No se roba el foco a otros campos de texto (búsqueda del sidebar, renombrar pestaña).
         if self.input_enabled && self.search.is_none() && ui.memory(|m| m.focused().is_none_or(|f| f == id)) {
             ui.memory_mut(|m| m.request_focus(id));
         }

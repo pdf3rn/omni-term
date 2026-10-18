@@ -184,6 +184,10 @@ impl Explorer {
         (self.local.path.clone(), self.remote.path.clone())
     }
 
+    pub fn running_transfers(&self) -> usize {
+        self.transfers.iter().filter(|t| t.state() == TransferState::Running).count()
+    }
+
     pub fn label(&self) -> String {
         format!("Archivos · {}", self.connection.name)
     }
@@ -428,7 +432,6 @@ impl Explorer {
         let mut panes_area = Rect::from_min_max(area.min, Pos2::new(area.max.x, area.max.y - transfers_height));
         let (local_rect, middle_rect, remote_rect);
         if narrow {
-            // Un solo panel, con un selector arriba y el botón de copiar al lado.
             let bar = Rect::from_min_size(panes_area.min, Vec2::new(panes_area.width(), 34.0));
             panes_area.min.y += 38.0;
             self.narrow_selector(ui, bar);
@@ -506,7 +509,6 @@ impl Explorer {
             }
         }
 
-        // Botones centrales para copiar entre paneles.
         if !narrow {
             let mut middle = ui.new_child(UiBuilder::new().max_rect(middle_rect.shrink(6.0)));
             middle.add_space((middle_rect.height() / 2.0 - 56.0).max(40.0));
@@ -1110,7 +1112,6 @@ fn breadcrumb(ui: &mut egui::Ui, side: Side, state: &mut PaneState, actions: &mu
     }
 }
 
-/// Dibuja un panel (cabecera, lista y botones) y devuelve las acciones pedidas.
 fn pane_ui(
     ui: &mut egui::Ui,
     side: Side,
@@ -1167,7 +1168,6 @@ fn pane_ui(
     breadcrumb(ui, side, state, &mut actions);
     ui.add_space(6.0);
 
-    // Cabecera de columnas: un clic ordena, otro invierte el orden.
     let (head, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 22.0), Sense::hover());
     let columns = [
         (SortKey::Name, "Nombre", Rect::from_min_max(head.min, Pos2::new(head.max.x - 200.0, head.max.y)), Align2::LEFT_CENTER, head.min.x + 8.0),

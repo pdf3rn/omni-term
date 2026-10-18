@@ -306,7 +306,6 @@ mod tests {
             transfer.state()
         };
 
-        // Listar y crear carpeta.
         assert!(runtime.block_on(list(&sftp, &remote_path)).unwrap().is_empty());
         runtime.block_on(make_dir(&sftp, &join(&remote_path, "vacia"))).unwrap();
         let listed = runtime.block_on(list(&sftp, &remote_path)).unwrap();
@@ -331,7 +330,6 @@ mod tests {
         assert_eq!(std::fs::read(remote.join("proj/a.txt")).unwrap(), b"version uno");
         assert_eq!(std::fs::read(remote.join("proj/a (1).txt")).unwrap(), b"version dos");
 
-        // Bajar la carpeta remota a otro directorio local.
         let downloads = local.join("descargas");
         std::fs::create_dir_all(&downloads).unwrap();
         let source = (join(&remote_path, "proj"), true);
@@ -353,7 +351,6 @@ mod tests {
         assert_eq!(changed.permissions, Some(0o640));
         assert_eq!(untouched.permissions, Some(0o644));
 
-        // Renombrar y borrar de forma recursiva.
         let old = join(&remote_path, "proj/a.txt");
         let new = join(&remote_path, "proj/renombrado.txt");
         runtime.block_on(rename(&sftp, &old, &new)).unwrap();

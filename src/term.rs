@@ -12,6 +12,11 @@ use alacritty_terminal::Term;
 pub trait Backend: Send + Sync {
     fn write(&self, bytes: &[u8]);
     fn resize(&self, cols: usize, rows: usize);
+
+    /// ¿Hay un proceso en primer plano además del shell? `None` si el backend no puede saberlo.
+    fn is_busy(&self) -> Option<bool> {
+        None
+    }
 }
 
 type BackendSlot = Arc<OnceLock<Weak<dyn Backend>>>;
@@ -110,6 +115,11 @@ impl Activity {
         (!self.reported).then(|| (last.duration_since(first), now.duration_since(last)))
     }
 
+    /// ¿Hubo salida en el último `within`?
+    pub fn recent(&self, within: std::time::Duration) -> bool {
+        self.last.is_some_and(|last| last.elapsed() <= within)
+    }
+
     pub fn mark_reported(&mut self) {
         self.reported = true;
     }
@@ -193,6 +203,10 @@ impl Session {
 
     pub fn has_exited(&self) -> bool {
         self.exited.load(Ordering::SeqCst)
+    }
+
+    pub fn is_busy(&self) -> Option<bool> {
+        self.backend.is_busy()
     }
 
     pub fn is_disconnected(&self) -> bool {

@@ -19,6 +19,12 @@ impl Backend for PtyBackend {
     fn resize(&self, cols: usize, rows: usize) {
         let _ = self.master.lock().unwrap().resize(size(cols, rows));
     }
+
+    fn is_busy(&self) -> Option<bool> {
+        let leader = self.master.lock().unwrap().process_group_leader()?;
+        let shell = self.child.lock().unwrap().process_id()?;
+        Some(leader != shell as i32)
+    }
 }
 
 impl Drop for PtyBackend {
