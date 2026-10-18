@@ -153,6 +153,10 @@ pub struct App {
     settings: Settings,
     window_saved: (u32, u32),
     window_saved_at: std::time::Instant,
+    window_maximized: bool,
+    window_pos: (i32, i32),
+    window_restored: bool,
+    window_boot: std::time::Instant,
     grid: (usize, usize),
     ctx: egui::Context,
     runtime: tokio::runtime::Runtime,
@@ -219,6 +223,7 @@ impl App {
         let forwards = store.all_forwards().unwrap_or_default();
         let snippets = store.list_snippets().unwrap_or_default();
         let store = Arc::new(Mutex::new(store));
+        let store_meta_flag = matches!(store.lock().unwrap().meta("window_maximized"), Ok(Some(v)) if v == b"1");
         let secrets = Secrets::select(store.clone());
         let recent: Vec<(i64, u64)> = match store.lock().unwrap().meta("recent_connections") {
             Ok(Some(bytes)) => parse_recent(&String::from_utf8_lossy(&bytes)),
@@ -275,6 +280,10 @@ impl App {
             settings,
             window_saved: (0, 0),
             window_saved_at: std::time::Instant::now(),
+            window_maximized: matches!(store_meta_flag, true),
+            window_pos: (i32::MIN, i32::MIN),
+            window_restored: false,
+            window_boot: std::time::Instant::now(),
             grid: (80, 24),
             ctx: cc.egui_ctx.clone(),
             runtime,
@@ -911,17 +920,76 @@ impl App {
         }
     }
 
-    /// Recuerda el tamaño de la ventana para la próxima vez (como mucho una vez por segundo).
+    /// Recuerda tamaño, posición y si estaba maximizada, para la próxima vez. El tamaño y la posición
+    /// guardados son los de la ventana normal, no los de maximizada ni pantalla completa.
     fn remember_window_size(&mut self, ctx: &egui::Context) {
-        let (rect, maximized) = ctx.input(|i| (i.viewport().inner_rect, i.viewport().maximized.unwrap_or(false)));
-        let Some(rect) = rect else { return };
-        let size = (rect.width().round() as u32, rect.height().round() as u32);
-        if maximized || size == self.window_saved || self.window_saved_at.elapsed() < Duration::from_secs(1) {
+        let (inner, outer, maximized, fullscreen) = ctx.input(|i| {
+            let v = i.viewport();
+            (v.inner_rect, v.outer_rect, v.maximized.unwrap_or(false), v.fullscreen.unwrap_or(false))
+        });
+        // Al arrancar, el gestor de ventanas aún está aplicando lo guardado: no se anota nada todavía.
+        if fullscreen || self.window_boot.elapsed() < Duration::from_secs(2) {
             return;
         }
-        self.window_saved = size;
-        self.window_saved_at = std::time::Instant::now();
-        let _ = self.store.lock().unwrap().set_meta("window_size", format!("{}x{}", size.0, size.1).as_bytes());
+        if maximized != self.window_maximized {
+            self.window_maximized = maximized;
+            let _ = self.store.lock().unwrap().set_meta("window_maximized", if maximized { b"1" } else { b"0" });
+        }
+        if maximized || self.window_saved_at.elapsed() < Duration::from_secs(1) {
+            return;
+        }
+        if let Some(rect) = inner {
+            let size = (rect.width().round() as u32, rect.height().round() as u32);
+            if size != self.window_saved {
+                self.window_saved = size;
+                self.window_saved_at = std::time::Instant::now();
+                let _ = self.store.lock().unwrap().set_meta("window_size", format!("{}x{}", size.0, size.1).as_bytes());
+            }
+        }
+        if let Some(rect) = outer {
+            let pos = (rect.min.x.round() as i32, rect.min.y.round() as i32);
+            if pos != self.window_pos {
+                self.window_pos = pos;
+                self.window_saved_at = std::time::Instant::now();
+                let _ = self.store.lock().unwrap().set_meta("window_pos", format!("{},{}", pos.0, pos.1).as_bytes());
+            }
+        }
+    }
+
+    /// Devuelve la ventana a donde estaba, solo si esa posición cae en el monitor actual.
+    fn restore_window_position(&mut self, ctx: &egui::Context) {
+        // Algunos gestores de ventanas ignoran la petición de maximizar hecha demasiado pronto: se repite
+        // durante los primeros segundos hasta que la ventana lo confirma.
+        if self.window_maximized && self.window_boot.elapsed() < Duration::from_secs(2) {
+            let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
+            if !maximized {
+                ctx.send_viewport_cmd(ViewportCommand::Maximized(true));
+                ctx.request_repaint_after(Duration::from_millis(250));
+            }
+        }
+        if self.window_restored {
+            return;
+        }
+        let (monitor, maximized) = ctx.input(|i| (i.viewport().monitor_size, i.viewport().maximized.unwrap_or(false)));
+        let Some(monitor) = monitor else { return };
+        self.window_restored = true;
+        if self.window_maximized {
+            if !maximized {
+                ctx.send_viewport_cmd(ViewportCommand::Maximized(true));
+            }
+            return;
+        }
+        if maximized {
+            return;
+        }
+        let saved = match self.store.lock().unwrap().meta("window_pos") {
+            Ok(Some(bytes)) => String::from_utf8_lossy(&bytes).into_owned(),
+            _ => return,
+        };
+        let size = ctx.input(|i| i.viewport().inner_rect).map_or(egui::vec2(960.0, 600.0), |r| r.size());
+        if let Some(pos) = parse_window_position(&saved, monitor, size) {
+            ctx.send_viewport_cmd(ViewportCommand::OuterPosition(pos));
+        }
     }
 
     fn set_font_size(&mut self, size: f32) {
@@ -1035,6 +1103,10 @@ impl App {
             Command::Shortcuts => self.dialog = Some(Dialog::Settings(dialogs::SettingsTab::Atajos)),
             Command::About => self.dialog = Some(Dialog::About),
             Command::Palette => self.palette = Some(Palette::default()),
+            Command::Fullscreen => {
+                let on = self.ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
+                self.ctx.send_viewport_cmd(ViewportCommand::Fullscreen(!on));
+            }
             Command::SplitRight => self.split_active(Dir::Horizontal),
             Command::SplitDown => self.split_active(Dir::Vertical),
             Command::CloseTab => {
@@ -1152,6 +1224,7 @@ impl App {
                     ui.menu_button("Ver", |ui| {
                         ui.set_min_width(300.0);
                         item(ui, "Barra lateral", "Ctrl+Shift+B", true, Command::ToggleSidebar);
+                        item(ui, "Pantalla completa", "F11", true, Command::Fullscreen);
                         ui.separator();
                         item(ui, "Dividir a la derecha", "Ctrl+Shift+D", has_terminal, Command::SplitRight);
                         item(ui, "Dividir hacia abajo", "Ctrl+Shift+E", has_terminal, Command::SplitDown);
@@ -2347,6 +2420,15 @@ fn sidebar_groups(connections: &[Connection], query: &str, pinned: &[i64]) -> Ve
     groups
 }
 
+/// `x,y` guardado, si deja a la vista al menos 50 px de la ventana dentro del monitor.
+fn parse_window_position(text: &str, monitor: Vec2, size: Vec2) -> Option<Pos2> {
+    let (x, y) = text.split_once(',')?;
+    let (x, y) = (x.trim().parse::<f32>().ok()?, y.trim().parse::<f32>().ok()?);
+    let margin = 50.0;
+    let visible = x + size.x > margin && x < monitor.x - margin && y >= 0.0 && y < monitor.y - margin;
+    visible.then(|| Pos2::new(x, y))
+}
+
 fn now_secs() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
@@ -2725,6 +2807,7 @@ impl eframe::App for App {
         let ctx = ui.ctx().clone();
         self.sync_theme(&ctx);
         self.watch_activity(&ctx);
+        self.restore_window_position(&ctx);
         self.remember_window_size(&ctx);
 
         // Ctrl+Shift+B pliega la barra lateral y Ctrl+Shift+K salta a su búsqueda: con Ctrl solo
@@ -2738,6 +2821,9 @@ impl eframe::App for App {
         }
         if ctx.input_mut(|i| i.consume_key(Modifiers::CTRL | Modifiers::SHIFT, Key::P)) && self.dialog.is_none() {
             self.palette = if self.palette.is_some() { None } else { Some(Palette::default()) };
+        }
+        if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F11)) {
+            self.run_command(Command::Fullscreen);
         }
         if ctx.input_mut(|i| i.consume_key(Modifiers::CTRL | Modifiers::SHIFT, Key::T)) && self.dialog.is_none() {
             self.open_plus_menu = true;
@@ -3149,6 +3235,16 @@ impl eframe::App for App {
 #[cfg(test)]
 mod sidebar_tests {
     use super::*;
+
+    #[test]
+    fn saved_window_position_is_used_only_when_it_is_on_screen() {
+        let (monitor, size) = (Vec2::new(1920.0, 1080.0), Vec2::new(960.0, 600.0));
+        assert_eq!(parse_window_position("100,80", monitor, size), Some(Pos2::new(100.0, 80.0)));
+        assert_eq!(parse_window_position("-950,40", monitor, size), None);
+        assert_eq!(parse_window_position("3000,40", monitor, size), None);
+        assert_eq!(parse_window_position("100,-20", monitor, size), None);
+        assert_eq!(parse_window_position("basura", monitor, size), None);
+    }
 
     fn connection(id: i64, name: &str, env: Option<&str>) -> Connection {
         Connection {

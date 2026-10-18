@@ -1116,7 +1116,7 @@ const SHORTCUTS: [(&str, &[(&str, &str)]); 4] = [
     ),
     (
         "Ventana",
-        &[("Ctrl+Shift+B", "Mostrar u ocultar la barra lateral"), ("Ctrl+Shift+K", "Buscar en la barra lateral")],
+        &[("Ctrl+Shift+B", "Mostrar u ocultar la barra lateral"), ("Ctrl+Shift+K", "Buscar en la barra lateral"), ("F11", "Pantalla completa")],
     ),
     (
         "Explorador de archivos",

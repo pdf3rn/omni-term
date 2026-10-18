@@ -37,7 +37,8 @@ fn main() -> eframe::Result {
         .with_app_id("omni-term")
         .with_inner_size(size)
         .with_min_inner_size([320.0, 200.0])
-        .with_decorations(true);
+        .with_decorations(true)
+        .with_maximized(saved_flag("window_maximized"));
     if let Ok(icon) = eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png")) {
         viewport = viewport.with_icon(icon);
     }
@@ -51,6 +52,15 @@ fn main() -> eframe::Result {
         options,
         Box::new(|cc| ui::App::new(cc, debug_keys).map(|app| Box::new(app) as Box<dyn eframe::App>).map_err(Into::into)),
     )
+}
+
+/// Un ajuste guardado como «1» (verdadero) en la tabla `meta`.
+fn saved_flag(key: &str) -> bool {
+    let read = || -> Option<bool> {
+        let store = store::Store::open(&store::Store::default_path().ok()?).ok()?;
+        Some(store.meta(key).ok()??.as_slice() == b"1")
+    };
+    read().unwrap_or(false)
 }
 
 /// Tamaño de ventana de la última sesión, si se guardó uno razonable.

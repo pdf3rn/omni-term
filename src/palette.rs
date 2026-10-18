@@ -35,9 +35,10 @@ pub enum Command {
     Shortcuts,
     About,
     Palette,
+    Fullscreen,
 }
 
-pub const COMMANDS: [(Command, &str); 24] = [
+pub const COMMANDS: [(Command, &str); 25] = [
     (Command::NewTab, "Nueva pestaña de terminal local"),
     (Command::NewConnection, "Nueva conexión"),
     (Command::ImportConfig, "Importar conexiones de ~/.ssh/config"),
@@ -62,6 +63,7 @@ pub const COMMANDS: [(Command, &str); 24] = [
     (Command::Files, "Explorador de archivos de la conexión actual"),
     (Command::Shortcuts, "Atajos de teclado"),
     (Command::About, "Acerca de omni-term"),
+    (Command::Fullscreen, "Pantalla completa"),
 ];
 
 pub enum Target {
