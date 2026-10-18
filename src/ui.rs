@@ -3262,6 +3262,7 @@ impl eframe::App for App {
             let font_size = self.settings.font_size;
             let mut disconnected = false;
             let mut request = None;
+            let mut snippet_text: Option<String> = None;
             match &mut self.tabs[active].body {
                 Body::Terminal { panes, focused, .. } => {
                     let gap = if panes.len() > 1 { SPLIT_GAP } else { 0.0 };
@@ -3292,7 +3293,7 @@ impl eframe::App for App {
                         panes.set_ratio(&path, ratio);
                     }
 
-                    let pressed = ctx.input(|i| i.pointer.primary_pressed().then(|| i.pointer.interact_pos()).flatten());
+                    let pressed = ctx.input(|i| (i.pointer.primary_pressed() || i.pointer.button_pressed(egui::PointerButton::Secondary)).then(|| i.pointer.interact_pos()).flatten());
                     if let Some(position) = pressed {
                         if let Some((id, _)) = leaves.iter().find(|(_, rect)| rect.contains(position)) {
                             *focused = *id;
@@ -3317,9 +3318,13 @@ impl eframe::App for App {
                     if let Some(pane) = panes.get_mut(*focused) {
                         disconnected = pane.session.is_disconnected();
                         request = pane.take_request();
+                        snippet_text = pane.take_snippet();
                     }
                 }
                 Body::Explorer(explorer) => explorer.show(ui, area.shrink2(Vec2::new(8.0, 8.0))),
+            }
+            if let Some(text) = snippet_text {
+                self.dialog = Some(Dialog::Snippet(SnippetForm::new(text)));
             }
             match request {
                 Some(PaneRequest::SplitRight) => self.split_active(Dir::Horizontal),

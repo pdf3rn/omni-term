@@ -108,11 +108,16 @@ pub struct Pane {
     /// Pulsaciones seguidas del botón izquierdo (1 simple, 2 palabra, 3 línea) y cuándo y dónde fue la última.
     click_count: u8,
     last_press: Option<(Instant, Pos2)>,
+    /// Enlace bajo el puntero cuando se abrió el menú contextual.
+    menu_link: Option<String>,
+    /// Selección en curso con el ratón, para copiarla a la selección primaria al soltar.
+    selecting: bool,
+    snippet_request: Option<String>,
 }
 
 impl Pane {
     pub fn new(session: Session, debug_keys: bool, id: u64) -> Self {
-        Self { id, request: None, session, debug_keys, input_enabled: true, held: None, last_cell: None, hover_cell: (0, 0), window_focused: true, search: None, link: None, epoch: Instant::now(), click_count: 0, last_press: None }
+        Self { id, request: None, session, debug_keys, input_enabled: true, held: None, last_cell: None, hover_cell: (0, 0), window_focused: true, search: None, link: None, epoch: Instant::now(), click_count: 0, last_press: None, menu_link: None, selecting: false, snippet_request: None }
     }
 
     /// Escribe `text` como un pegado (con pegado entre corchetes si la aplicación lo pidió).
@@ -153,6 +158,11 @@ impl Pane {
         let mut selection = Selection::new(SelectionType::Simple, start, Side::Left);
         selection.update(end, Side::Right);
         term.selection = Some(selection);
+    }
+
+    /// Texto que el usuario pidió guardar como snippet desde el menú contextual.
+    pub fn take_snippet(&mut self) -> Option<String> {
+        self.snippet_request.take()
     }
 
     pub fn take_request(&mut self) -> Option<PaneRequest> {
@@ -238,6 +248,19 @@ impl Pane {
                     term.selection = Some(Selection::new(kind, point, side));
                 }
             }
+            if ui.input(|i| i.pointer.button_pressed(egui::PointerButton::Secondary)) && response.hovered() {
+                if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
+                    let (point, side) = to_point(pos, offset);
+                    let inside = term.selection.as_ref().and_then(|s| s.to_range(&term)).is_some_and(|range| range.contains(point));
+                    if !inside {
+                        let blank = matches!(term.grid()[point.line][point.column].c, ' ' | '\0');
+                        term.selection = (!blank).then(|| Selection::new(SelectionType::Semantic, point, side));
+                    }
+                }
+            }
+            if press.is_some() {
+                self.selecting = true;
+            }
             let multi_click = self.click_count >= 2;
             if let Some(pos) = response.interact_pointer_pos() {
                 if response.drag_started_by(egui::PointerButton::Primary) && !multi_click {
@@ -253,6 +276,27 @@ impl Pane {
             if response.clicked() && !multi_click {
                 term.selection = None;
             }
+            if self.selecting && ui.input(|i| i.pointer.primary_released()) {
+                self.selecting = false;
+                if let Some(text) = term.selection_to_string().filter(|t| !t.is_empty()) {
+                    set_primary_selection(&text);
+                }
+            }
+            if response.hovered() && ui.input(|i| i.pointer.button_clicked(egui::PointerButton::Middle)) {
+                drop(term);
+                self.paste_primary();
+            }
+        }
+
+        if !reporting {
+            if response.secondary_clicked() {
+                if let Some(pos) = response.interact_pointer_pos() {
+                    self.menu_link = self.link_at(pos, area, (cell_w, cell_h), (cols, rows)).map(|l| l.url);
+                }
+            }
+            let selection = self.selection_text();
+            let alt_screen = mode.contains(TermMode::ALT_SCREEN);
+            response.context_menu(|ui| self.terminal_menu(ui, selection, alt_screen));
         }
 
         self.update_link(ui, area, (cell_w, cell_h), (cols, rows), reporting);
@@ -308,6 +352,96 @@ impl Pane {
         let color = if active { theme::subtext() } else { theme::selection() };
         let thumb = Rect::from_min_size(Pos2::new(track.min.x, thumb_top), Vec2::new(track.width(), thumb_len));
         ui.painter().rect_filled(thumb, CornerRadius::same(3), color);
+    }
+
+    /// Abre la búsqueda, ya con `query` escrita.
+    fn open_search(&mut self, query: String) {
+        self.search = Some(SearchState {
+            query,
+            searched: String::new(),
+            matches: Vec::new(),
+            current: 0,
+            last_run: Instant::now(),
+            focus: true,
+        });
+    }
+
+    /// Pega la selección primaria (botón central del ratón, solo Linux).
+    fn paste_primary(&self) {
+        if let Some(text) = primary_text() {
+            let mode = *self.session.term.lock().unwrap().mode();
+            self.session.term.lock().unwrap().scroll_display(Scroll::Bottom);
+            self.session.write(&paste_bytes(&text, mode));
+        }
+    }
+
+    /// Menú del clic derecho: las entradas que no aplican no se muestran.
+    fn terminal_menu(&mut self, ui: &mut egui::Ui, selection: Option<String>, alt_screen: bool) {
+        ui.set_min_width(260.0);
+        let entry = |ui: &mut egui::Ui, label: &str, shortcut: &str| -> bool {
+            let mut button = egui::Button::new(label);
+            if !shortcut.is_empty() {
+                button = button.shortcut_text(shortcut);
+            }
+            ui.add(button).clicked()
+        };
+        if let Some(url) = self.menu_link.clone() {
+            if entry(ui, "Abrir enlace", "") {
+                if is_openable(&url) {
+                    let _ = open::that_detached(&url);
+                }
+                ui.close();
+            }
+            if entry(ui, "Copiar enlace", "") {
+                ui.ctx().copy_text(url);
+                ui.close();
+            }
+            ui.separator();
+        }
+        if let Some(text) = &selection {
+            if entry(ui, "Copiar", "Ctrl+Shift+C") {
+                ui.ctx().copy_text(text.clone());
+                ui.close();
+            }
+        }
+        if entry(ui, "Pegar", "Ctrl+Shift+V") {
+            self.paste_clipboard();
+            ui.close();
+        }
+        if entry(ui, "Seleccionar todo", "") {
+            self.select_all();
+            ui.close();
+        }
+        if let Some(text) = &selection {
+            let first_line = text.lines().next().unwrap_or("").trim();
+            let shown: String = first_line.chars().take(24).collect();
+            let ellipsis = if first_line.chars().count() > 24 { "…" } else { "" };
+            if entry(ui, &format!("Buscar «{shown}{ellipsis}»"), "") {
+                self.open_search(first_line.to_string());
+                ui.close();
+            }
+            if entry(ui, "Guardar selección como snippet", "") {
+                self.snippet_request = Some(text.clone());
+                ui.close();
+            }
+        }
+        ui.separator();
+        if entry(ui, "Dividir a la derecha", "Ctrl+Shift+D") {
+            self.request = Some(PaneRequest::SplitRight);
+            ui.close();
+        }
+        if entry(ui, "Dividir hacia abajo", "Ctrl+Shift+E") {
+            self.request = Some(PaneRequest::SplitDown);
+            ui.close();
+        }
+        // Ctrl+L limpia la pantalla en un shell; una aplicación a pantalla completa podría tomarlo de otra forma.
+        if !alt_screen {
+            ui.separator();
+            if entry(ui, "Limpiar pantalla", "") {
+                self.session.write(b"\x0c");
+                ui.close();
+            }
+        }
     }
 
     pub fn toggle_search(&mut self) {
@@ -449,10 +583,13 @@ impl Pane {
     }
 
     /// Enlace bajo el puntero (con Ctrl pulsado): hipervínculo OSC 8 o una URL en el texto.
-    fn update_link(&mut self, ui: &egui::Ui, area: Rect, (cell_w, cell_h): (f32, f32), (cols, rows): (usize, usize), reporting: bool) {
-        self.link = None;
+    fn update_link(&mut self, ui: &egui::Ui, area: Rect, cell: (f32, f32), grid: (usize, usize), reporting: bool) {
         let (ctrl, pos) = ui.input(|i| (i.modifiers.ctrl, i.pointer.hover_pos()));
-        let Some(pos) = pos.filter(|p| ctrl && !reporting && area.contains(*p)) else { return };
+        self.link = pos.filter(|p| ctrl && !reporting && area.contains(*p)).and_then(|p| self.link_at(p, area, cell, grid));
+    }
+
+    /// Enlace (hipervínculo OSC 8 o URL en el texto) bajo `pos`.
+    fn link_at(&self, pos: Pos2, area: Rect, (cell_w, cell_h): (f32, f32), (cols, rows): (usize, usize)) -> Option<LinkHit> {
         let col = ((pos.x - area.min.x) / cell_w).floor().clamp(0.0, cols as f32 - 1.0) as usize;
         let row = ((pos.y - area.min.y) / cell_h).floor().clamp(0.0, rows as f32 - 1.0) as usize;
         let term = self.session.term.lock().unwrap();
@@ -468,18 +605,17 @@ impl Pane {
             while end < cols && same(end) {
                 end += 1;
             }
-            self.link = Some(LinkHit { line, start, end, url });
-            return;
+            return Some(LinkHit { line, start, end, url });
         }
 
         let (text, columns) = line_text(&term, line);
         for (start, end, url) in search::find_urls(&text) {
             let (first, last) = (columns[start], columns[end - 1] + 1);
             if (first..last).contains(&col) {
-                self.link = Some(LinkHit { line, start: first, end: last, url });
-                return;
+                return Some(LinkHit { line, start: first, end: last, url });
             }
         }
+        None
     }
 
     /// Avisa a la aplicación cuando la ventana gana o pierde el foco (modo 1004).
@@ -940,6 +1076,29 @@ fn mouse_button(button: egui::PointerButton) -> Option<MouseButton> {
 
 fn mouse_mods(ui: &egui::Ui) -> MouseMods {
     ui.input(|i| MouseMods { shift: i.modifiers.shift, alt: i.modifiers.alt, ctrl: i.modifiers.ctrl })
+}
+
+/// Copia a la selección primaria de X11/Wayland, para pegarla con el botón central.
+#[cfg(target_os = "linux")]
+fn set_primary_selection(text: &str) {
+    use arboard::{LinuxClipboardKind, SetExtLinux};
+    if let Ok(mut clipboard) = arboard::Clipboard::new() {
+        let _ = clipboard.set().clipboard(LinuxClipboardKind::Primary).text(text.to_string());
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn set_primary_selection(_text: &str) {}
+
+#[cfg(target_os = "linux")]
+fn primary_text() -> Option<String> {
+    use arboard::{GetExtLinux, LinuxClipboardKind};
+    arboard::Clipboard::new().ok()?.get().clipboard(LinuxClipboardKind::Primary).text().ok().filter(|t| !t.is_empty())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn primary_text() -> Option<String> {
+    None
 }
 
 fn clipboard_text() -> Option<String> {
