@@ -26,20 +26,20 @@ const fn triple(hex: u32) -> (u8, u8, u8) {
 }
 
 static DARK: Palette = Palette {
-    base: rgb(0x1e1e2e),
-    mantle: rgb(0x181825),
-    text: rgb(0xcdd6f4),
-    subtext: rgb(0xa6adc8),
-    surface: rgb(0x313244),
-    selection: rgb(0x585b70),
+    base: rgb(0x1e1e1e),
+    mantle: rgb(0x181818),
+    text: rgb(0xd4d4d4),
+    subtext: rgb(0xa6a6a6),
+    surface: rgb(0x303030),
+    selection: rgb(0x575757),
     cursor: rgb(0xf5e0dc),
     red: rgb(0xf38ba8),
     accent: rgb(0x89b4fa),
     ansi: [
-        triple(0x45475a), triple(0xf38ba8), triple(0xa6e3a1), triple(0xf9e2af),
-        triple(0x89b4fa), triple(0xf5c2e7), triple(0x94e2d5), triple(0xbac2de),
-        triple(0x585b70), triple(0xf38ba8), triple(0xa6e3a1), triple(0xf9e2af),
-        triple(0x89b4fa), triple(0xf5c2e7), triple(0x94e2d5), triple(0xa6adc8),
+        triple(0x454545), triple(0xf38ba8), triple(0xa6e3a1), triple(0xf9e2af),
+        triple(0x89b4fa), triple(0xf5c2e7), triple(0x94e2d5), triple(0xbababa),
+        triple(0x575757), triple(0xf38ba8), triple(0xa6e3a1), triple(0xf9e2af),
+        triple(0x89b4fa), triple(0xf5c2e7), triple(0x94e2d5), triple(0xa6a6a6),
     ],
 };
 

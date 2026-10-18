@@ -768,6 +768,38 @@ impl App {
         }
     }
 
+    /// Pantalla sin pestañas: qué se puede hacer a continuación. Devuelve `true` si se pide un terminal local.
+    fn empty_state(&self, ui: &mut egui::Ui, area: Rect) -> bool {
+        let mut open = false;
+        let width = 360.0_f32.min(area.width());
+        let column = Rect::from_center_size(area.center(), Vec2::new(width, 0.0));
+        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_max(
+            Pos2::new(column.min.x, area.center().y - 140.0),
+            Pos2::new(column.max.x, area.max.y),
+        )));
+        child.spacing_mut().item_spacing.y = 8.0;
+        child.label(RichText::new("No hay pestañas abiertas").font(FontId::new(20.0, strong_family())));
+        child.label(RichText::new("Abre un terminal o conéctate a un servidor guardado.").color(theme::subtext()));
+        child.add_space(8.0);
+        let button = Button::new(RichText::new("Nuevo terminal local").color(theme::base())).fill(theme::accent());
+        if child.add(button).clicked() {
+            open = true;
+        }
+        child.add_space(16.0);
+        for (keys, what) in [
+            ("Doble clic", "en una conexión de la barra lateral para conectar"),
+            ("Ctrl+Shift+D / E", "dividir el panel a la derecha / hacia abajo"),
+            ("Ctrl+Shift+F", "buscar en la salida"),
+            ("Ctrl+= / Ctrl+−", "cambiar el tamaño de la letra"),
+        ] {
+            child.horizontal(|ui| {
+                ui.allocate_ui_with_layout(Vec2::new(128.0, 18.0), egui::Layout::left_to_right(egui::Align::Center), |ui| ui.label(RichText::new(keys).color(theme::text()).small()));
+                ui.label(RichText::new(what).color(theme::subtext()).small());
+            });
+        }
+        open
+    }
+
     fn import_ssh_config(&mut self) {
         let path = std::env::home_dir().unwrap_or_default().join(".ssh").join("config");
         let text = match std::fs::read_to_string(&path) {
@@ -1668,8 +1700,11 @@ impl eframe::App for App {
         }
 
         let finished_restoring = self.restore_active.is_none();
-        if self.tabs.is_empty() && finished_restoring && self.open_queue.is_empty() && self.dialog.is_none() {
-            ctx.send_viewport_cmd(ViewportCommand::Close);
+        if self.tabs.is_empty() && finished_restoring && self.open_queue.is_empty() {
+            ctx.send_viewport_cmd(ViewportCommand::Title("omni-term".to_string()));
+            if self.empty_state(ui, text_area) {
+                self.open_queue.push_back(SavedTab::plain(TabKind::Local));
+            }
             return;
         }
 
