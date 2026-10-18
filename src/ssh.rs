@@ -519,7 +519,8 @@ mod tests {
         term.renderable_content().display_iter.map(|cell| cell.cell.c).collect()
     }
 
-    /// Prueba de extremo a extremo contra un sshd privado. Se omite si no hay sshd/ssh-keygen.
+    /// Prueba de extremo a extremo contra un sshd privado. Solo Linux; se omite si no hay sshd/ssh-keygen.
+    #[cfg(target_os = "linux")]
     #[test]
     fn interactive_shell_over_a_private_sshd() {
         let sshd_path = std::path::Path::new("/usr/sbin/sshd");
