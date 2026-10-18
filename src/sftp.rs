@@ -267,6 +267,7 @@ mod tests {
         });
         let connection = Connection {
             id: None,
+            protocol: crate::store::Protocol::Ssh,
             name: "test".into(),
             host: "127.0.0.1".into(),
             port: sshd.port,
@@ -383,6 +384,7 @@ mod tests {
         });
         let connection = |sshd: &crate::testutil::PrivateSshd, name: &str| Connection {
             id: None,
+            protocol: crate::store::Protocol::Ssh,
             name: name.into(),
             host: "127.0.0.1".into(),
             port: sshd.port,

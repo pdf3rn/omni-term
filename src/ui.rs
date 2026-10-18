@@ -20,7 +20,8 @@ use crate::pane::{self, bold_family, Pane, PaneRequest, PADDING};
 use crate::settings::{CursorChoice, Settings, ThemeChoice, DEFAULT_FONT_SIZE, MAX_FONT_SIZE, MIN_FONT_SIZE};
 use crate::secrets::{account_for, SecretError, SecretKind, SecretStore, Secrets};
 use crate::ssh::{self, Credentials, JumpHost, TunnelState, Tunnels, UiEvent};
-use crate::store::{Auth, Connection, Forward, SavedTab, Snippet, Store, TabKind};
+use crate::store::{Auth, Connection, Forward, Protocol, SavedTab, Snippet, Store, TabKind};
+use crate::telnet;
 use crate::term::{self, Session, TermOptions};
 use crate::theme;
 
@@ -424,6 +425,23 @@ impl App {
         })
     }
 
+    fn telnet_session(&mut self, connection: Connection) -> anyhow::Result<Session> {
+        let wake = self.wake();
+        let handle = self.runtime.handle().clone();
+        let (cols, rows) = self.grid;
+        let options = self.term_options();
+        Session::start(cols, rows, options, move || wake(), move |feed| Ok(telnet::spawn(&handle, connection, (cols, rows), feed)))
+    }
+
+    /// Sesión de terminal de una conexión, por SSH o por Telnet.
+    fn connection_session(&mut self, connection: Connection, credentials: Credentials, tunnels: Tunnels) -> anyhow::Result<Session> {
+        if connection.is_telnet() {
+            self.telnet_session(connection)
+        } else {
+            self.ssh_session(connection, credentials, tunnels)
+        }
+    }
+
     fn open_local(&mut self) -> anyhow::Result<()> {
         let session = self.local_session()?;
         let id = self.take_tab_id();
@@ -444,7 +462,7 @@ impl App {
         let label = connection.name.clone();
         let forwards = self.forwards.get(&id).cloned().unwrap_or_default();
         let tunnels = ssh::new_tunnels(&forwards);
-        let session = self.ssh_session(connection, credentials, tunnels.clone())?;
+        let session = self.connection_session(connection, credentials, tunnels.clone())?;
         let tab_id = slot.unwrap_or_else(|| self.take_tab_id());
         let body = Body::terminal(Pane::new(session, self.debug_keys, 1), Some(tunnels));
         let mut tab = Tab { id: tab_id, kind: TabKind::Connection(id), label, custom: None, attention: false, body };
@@ -464,7 +482,7 @@ impl App {
 
     /// Añade o sustituye un panel SSH dentro de una pestaña de terminal.
     fn open_ssh_pane(&mut self, connection: Connection, credentials: Credentials, tab: u64, target: PaneTarget) -> anyhow::Result<()> {
-        let session = self.ssh_session(connection, credentials, ssh::new_tunnels(&[]))?;
+        let session = self.connection_session(connection, credentials, ssh::new_tunnels(&[]))?;
         self.place_pane(tab, target, session);
         Ok(())
     }
@@ -635,6 +653,20 @@ impl App {
 
     /// Reúne los secretos necesarios (pidiéndolos si hace falta) y abre la pestaña.
     fn begin_open(&mut self, connection: Connection, slot: Option<u64>, purpose: Purpose) {
+        if let Protocol::Telnet(options) = connection.protocol {
+            // Telnet no tiene credenciales guardadas ni explorador de archivos.
+            if matches!(purpose, Purpose::Explorer(..)) {
+                self.notify("Telnet no tiene explorador de archivos");
+                return;
+            }
+            let reconnecting = slot.is_some() || matches!(purpose, Purpose::Pane { target: PaneTarget::Replace(_), .. });
+            if !options.quiet && !reconnecting {
+                self.dialog = Some(Dialog::TelnetWarning(dialogs::TelnetWarning { connection, slot, purpose, dont_ask: false }));
+            } else {
+                self.finish_open(connection, Credentials::default(), slot, purpose);
+            }
+            return;
+        }
         match self.gather_credentials(&connection, 0) {
             Ok(credentials) => self.finish_open(connection, credentials, slot, purpose),
             Err(Step::Prompt { asking, kind }) => {
@@ -1210,7 +1242,7 @@ impl App {
         for connection in &self.connections {
             items.push(palette::Item {
                 title: connection.name.clone(),
-                detail: format!("{}@{}", connection.user, connection.host),
+                detail: connection.target(),
                 kind: "Conexión",
                 target: Target::Connect(connection.clone()),
             });
@@ -1398,7 +1430,7 @@ impl App {
                         ui.add_enabled_ui(!recents.is_empty(), |ui| {
                             ui.menu_button("Conexiones recientes", |ui| {
                                 for connection in &recents {
-                                    let label = format!("{}   {}@{}", connection.name, connection.user, connection.host);
+                                    let label = format!("{}   {}", connection.name, connection.target());
                                     if ui.button(label).clicked() {
                                         connect = Some(connection.clone());
                                         ui.close();
@@ -1498,7 +1530,7 @@ impl App {
                     }
                     let initial = connection.name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default();
                     ui.painter().text(rect.center(), Align2::CENTER_CENTER, initial, FontId::new(15.0, strong_family()), theme::text());
-                    let tip = format!("{}  ({}@{})", connection.name, connection.user, connection.host);
+                    let tip = format!("{}  ({})", connection.name, connection.target());
                     if response.on_hover_text(tip).clicked() {
                         *connect = Some(connection.clone());
                     }
@@ -1710,7 +1742,7 @@ impl App {
             (Outcome::Cancel, Dialog::Prompt(request, _)) => {
                 let _ = request.reply.send(None);
             }
-            (Outcome::Cancel, Dialog::Secret(_) | Dialog::Unlock(_) | Dialog::Edit(_) | Dialog::Error(_) | Dialog::HostKeyChanged(_) | Dialog::Settings(_) | Dialog::About | Dialog::ConfirmClose(_) | Dialog::Snippet(_) | Dialog::SnippetVars(_) | Dialog::ConfirmReset(_)) => {}
+            (Outcome::Cancel, Dialog::Secret(_) | Dialog::Unlock(_) | Dialog::Edit(_) | Dialog::Error(_) | Dialog::HostKeyChanged(_) | Dialog::Settings(_) | Dialog::About | Dialog::ConfirmClose(_) | Dialog::TelnetWarning(_) | Dialog::Snippet(_) | Dialog::SnippetVars(_) | Dialog::ConfirmReset(_)) => {}
             (Outcome::Cancel, dialog) => self.dialog = Some(dialog),
             (Outcome::Submit, Dialog::Prompt(request, answers)) => {
                 let _ = request.reply.send(Some(answers));
@@ -1785,6 +1817,16 @@ impl App {
             (Outcome::Submit, Dialog::SnippetVars(prompt)) => {
                 let text = prompt.rendered();
                 self.insert_into_active(&text, prompt.run);
+            }
+            (Outcome::Submit, Dialog::TelnetWarning(mut warning)) => {
+                if warning.dont_ask {
+                    if let Protocol::Telnet(options) = &mut warning.connection.protocol {
+                        options.quiet = true;
+                    }
+                    let _ = self.store.lock().unwrap().save_connection(&warning.connection);
+                    self.refresh_connections();
+                }
+                self.finish_open(warning.connection, Credentials::default(), warning.slot, warning.purpose);
             }
             (Outcome::Forget, Dialog::HostKeyChanged(change)) => {
                 let entries = known_hosts::load(&ssh::default_known_hosts()).map(|all| known_hosts::entries_for(&all, &change.host, change.port)).unwrap_or_default();
@@ -2191,9 +2233,19 @@ impl App {
                                 let name_font = FontId::new(14.0, strong_family());
                                 let name_width = painter.layout_no_wrap(connection.name.clone(), name_font.clone(), Color32::PLACEHOLDER).size().x;
                                 painter.text(Pos2::new(rect.min.x, rect.min.y + 9.0), Align2::LEFT_TOP, &connection.name, name_font, theme::text());
+                                let lock_width = if connection.is_telnet() { 18.0 } else { 0.0 };
+                                if connection.is_telnet() {
+                                    painter.text(
+                                        Pos2::new(rect.min.x + name_width + 12.0, rect.min.y + 19.0),
+                                        Align2::CENTER_CENTER,
+                                        icons::LOCK_OPEN,
+                                        FontId::proportional(13.0),
+                                        theme::red(),
+                                    );
+                                }
                                 if let Some(env) = connection.env.as_ref().filter(|_| !headed || searching) {
                                     painter.text(
-                                        Pos2::new(rect.min.x + name_width + 8.0, rect.min.y + 11.0),
+                                        Pos2::new(rect.min.x + name_width + 8.0 + lock_width, rect.min.y + 11.0),
                                         Align2::LEFT_TOP,
                                         env,
                                         FontId::new(12.0, strong_family()),
@@ -2203,7 +2255,7 @@ impl App {
                                 painter.text(
                                     Pos2::new(rect.min.x, rect.min.y + 27.0),
                                     Align2::LEFT_TOP,
-                                    if ago.is_empty() { format!("{}@{}", connection.user, connection.host) } else { format!("{}@{}  ·  {ago}", connection.user, connection.host) },
+                                    if ago.is_empty() { connection.target() } else { format!("{}  ·  {ago}", connection.target()) },
                                     FontId::new(12.0, FontFamily::Proportional),
                                     theme::subtext(),
                                 );
@@ -2737,7 +2789,7 @@ fn plus_menu(ui: &mut egui::Ui, recents: &[Connection], selected: &mut usize, ch
         ui.painter().text(
             rect.min + Vec2::new(44.0, 29.0),
             Align2::LEFT_CENTER,
-            format!("{}@{}", connection.user, connection.host),
+            connection.target(),
             FontId::new(12.0, FontFamily::Proportional),
             theme::subtext(),
         );
@@ -2934,13 +2986,16 @@ fn tab(
     index: usize,
     identity: Option<Color32>,
     attention: bool,
+    insecure: bool,
     count: usize,
     can_duplicate: bool,
     max_width: f32,
     menu: &mut Option<(usize, TabAction)>,
 ) -> TabOutcome {
     let font = FontId::new(14.0, if selected { strong_family() } else { FontFamily::Proportional });
-    let chrome = 12.0 + 8.0 + 20.0 + 8.0;
+    // Un candado abierto rojo avisa de las conexiones sin cifrar (Telnet).
+    let lock = if insecure { 16.0 } else { 0.0 };
+    let chrome = 12.0 + 8.0 + 20.0 + 8.0 + lock;
     // Hasta 24 caracteres de ancho natural; si no caben todas las pestañas, el texto se corta con «…».
     let natural: String = label.chars().take(24).collect();
     let mut job = egui::text::LayoutJob::simple_singleline(natural, font, Color32::PLACEHOLDER);
@@ -2974,7 +3029,10 @@ fn tab(
     }
 
     let color = if selected { theme::text() } else { theme::subtext() };
-    ui.painter().galley(Pos2::new(rect.min.x + 12.0, rect.center().y - galley.size().y / 2.0 + 1.0), galley, color);
+    if insecure {
+        ui.painter().text(Pos2::new(rect.min.x + 18.0, rect.center().y + 1.0), Align2::CENTER_CENTER, icons::LOCK_OPEN, FontId::proportional(13.0), theme::red());
+    }
+    ui.painter().galley(Pos2::new(rect.min.x + 12.0 + lock, rect.center().y - galley.size().y / 2.0 + 1.0), galley, color);
 
     let close_rect = Rect::from_center_size(Pos2::new(rect.max.x - 18.0, rect.center().y + 1.0), Vec2::splat(20.0));
     if attention && !selected && !hovered {
@@ -3094,7 +3152,14 @@ impl eframe::App for App {
         let mut files_tab: Option<i64> = None;
         let mut split: Option<Dir> = None;
         let mut close_pane = false;
-        let tab_labels: Vec<(String, Option<Color32>, bool)> = self.tabs.iter().map(|t| (t.title(), self.identity_for(t.kind), t.attention)).collect();
+        let tab_labels: Vec<(String, Option<Color32>, bool, bool)> = self
+            .tabs
+            .iter()
+            .map(|t| {
+                let insecure = matches!(t.kind, TabKind::Connection(id) if self.connections.iter().any(|c| c.id == Some(id) && c.is_telnet()));
+                (t.title(), self.identity_for(t.kind), t.attention, insecure)
+            })
+            .collect();
         let mut renaming = self.renaming.take();
         let mut rename_done: Option<(usize, Option<String>)> = None;
         let mut tab_menu: Option<(usize, TabAction)> = None;
@@ -3137,7 +3202,7 @@ impl eframe::App for App {
                     }
                     ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 2.0;
-                    for (i, (title, identity, attention)) in tab_labels.iter().enumerate() {
+                    for (i, (title, identity, attention, insecure)) in tab_labels.iter().enumerate() {
                         if let Some((index, text, focus)) = renaming.as_mut().filter(|(index, _, _)| *index == i) {
                             let _ = index;
                             let field = ui.add_sized([150.0, TAB_HEIGHT - 8.0], egui::TextEdit::singleline(text).hint_text("Nombre de la pestaña"));
@@ -3156,7 +3221,7 @@ impl eframe::App for App {
                             continue;
                         }
                         let can_duplicate = !matches!(self.tabs[i].kind, TabKind::Explorer(_));
-                        let outcome = tab(ui, title, i == self.active, i, *identity, *attention, self.tabs.len(), can_duplicate, tab_cap, &mut tab_menu);
+                        let outcome = tab(ui, title, i == self.active, i, *identity, *attention, *insecure, self.tabs.len(), can_duplicate, tab_cap, &mut tab_menu);
                         tab_rects.push(outcome.rect);
                         if i == self.active && self.tabs.get(i).is_some_and(|t| t.id != self.tab_strip_seen) {
                             ui.scroll_to_rect(outcome.rect.expand2(Vec2::new(24.0, 0.0)), None);
@@ -3194,7 +3259,7 @@ impl eframe::App for App {
                         let list = ui.add(Button::new(RichText::new(icons::CARET_DOWN).size(14.0).color(theme::subtext())).fill(Color32::TRANSPARENT).min_size(Vec2::splat(28.0)));
                         let list = list.on_hover_text("Todas las pestañas");
                         egui::Popup::menu(&list).width(260.0).show(|ui| {
-                            for (i, (title, _, _)) in tab_labels.iter().enumerate() {
+                            for (i, (title, _, _, _)) in tab_labels.iter().enumerate() {
                                 let shown: String = title.chars().take(32).collect();
                                 if ui.selectable_label(i == self.active, shown).clicked() {
                                     activate = Some(i);
@@ -3228,7 +3293,7 @@ impl eframe::App for App {
                         }
                         if let Some(TabKind::Connection(id)) = self.tabs.get(self.active).map(|t| t.kind) {
                             let files = Button::new(RichText::new(icons::FOLDER).size(17.0).color(theme::subtext())).fill(Color32::TRANSPARENT);
-                            if ui.add(files).on_hover_text("Abrir el explorador de archivos de esta conexión").clicked() {
+                            if !tab_labels.get(self.active).is_some_and(|l| l.3) && ui.add(files).on_hover_text("Abrir el explorador de archivos de esta conexión").clicked() {
                                 files_tab = Some(id);
                             }
                         }
@@ -3507,6 +3572,7 @@ mod sidebar_tests {
     fn connection(id: i64, name: &str, env: Option<&str>) -> Connection {
         Connection {
             id: Some(id),
+            protocol: crate::store::Protocol::Ssh,
             name: name.into(),
             host: format!("{name}.test"),
             port: 22,

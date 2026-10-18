@@ -7,7 +7,7 @@ use crate::cursor::HandExt;
 use crate::secrets::SecretKind;
 use crate::settings::{AccentChoice, CursorChoice, Settings, ThemeChoice, MAX_FONT_SIZE, MAX_SCROLLBACK, MIN_FONT_SIZE, MIN_SCROLLBACK};
 use crate::ssh::{HostKeyChange, HostKeyRequest, PromptRequest};
-use crate::store::{Auth, Connection, Forward, ForwardKind, Snippet};
+use crate::store::{Encoding, Protocol, TelnetOptions, Auth, Connection, Forward, ForwardKind, Snippet};
 use crate::theme;
 
 /// Atajos de entorno: nombre del botón, etiqueta que se guarda y color de identidad.
@@ -128,6 +128,12 @@ impl FormErrors {
 }
 
 pub struct ConnForm {
+    /// Conexión Telnet en lugar de SSH.
+    pub telnet: bool,
+    pub negotiate: bool,
+    pub encoding: Encoding,
+    /// Se conserva el «no avisar» de la conexión que se edita.
+    pub quiet: bool,
     /// Pide el foco para «Nombre» la primera vez que se dibuja.
     pub focus: bool,
     /// Muestra la etiqueta y los colores a mano en vez de los atajos de entorno.
@@ -153,6 +159,10 @@ pub struct ConnForm {
 impl ConnForm {
     pub fn new() -> Self {
         Self {
+            telnet: false,
+            negotiate: true,
+            encoding: Encoding::Utf8,
+            quiet: false,
             id: None,
             name: String::new(),
             host: String::new(),
@@ -178,7 +188,15 @@ impl ConnForm {
         let env = connection.env.clone().unwrap_or_default();
         let known = ENVIRONMENTS.iter().any(|(_, name, color)| env.eq_ignore_ascii_case(name) && connection.color == Some(*color));
         let custom_env = !known && (!env.is_empty() || connection.color.is_some());
+        let options = match connection.protocol {
+            Protocol::Telnet(options) => Some(options),
+            Protocol::Ssh => None,
+        };
         Self {
+            telnet: options.is_some(),
+            negotiate: options.map_or(true, |o| o.negotiate),
+            encoding: options.map_or(Encoding::Utf8, |o| o.encoding),
+            quiet: options.is_some_and(|o| o.quiet),
             focus: true,
             custom_env,
             jump: connection.jump,
@@ -213,7 +231,7 @@ impl ConnForm {
         if host.is_empty() {
             errors.host = Some("Indica el servidor".into());
         }
-        if user.is_empty() {
+        if user.is_empty() && !self.telnet {
             errors.user = Some("Indica el usuario".into());
         }
         let port = match self.port.trim().parse::<u16>() {
@@ -228,7 +246,7 @@ impl ConnForm {
             errors.key_path = Some("Indica la ruta de la llave privada".into());
         }
         let mut forwards = Vec::new();
-        for row in &self.forwards {
+        for row in self.forwards.iter().filter(|_| !self.telnet) {
             match row.to_forward() {
                 Ok(forward) => {
                     forwards.push(forward);
@@ -245,16 +263,22 @@ impl ConnForm {
             return None;
         }
         self.errors = FormErrors::default();
+        let telnet = self.telnet;
         let connection = Connection {
             id: self.id,
+            protocol: if telnet {
+                Protocol::Telnet(TelnetOptions { negotiate: self.negotiate, encoding: self.encoding, quiet: self.quiet })
+            } else {
+                Protocol::Ssh
+            },
             name,
             host,
             port,
-            user,
-            auth: self.auth,
-            key_path: (self.auth == Auth::Key).then_some(key_path),
-            init_command: Some(self.init_command.trim().to_string()).filter(|c| !c.is_empty()),
-            jump: self.jump,
+            user: if telnet { String::new() } else { user },
+            auth: if telnet { Auth::Agent } else { self.auth },
+            key_path: (!telnet && self.auth == Auth::Key).then_some(key_path),
+            init_command: Some(self.init_command.trim().to_string()).filter(|c| !c.is_empty() && !telnet),
+            jump: if telnet { None } else { self.jump },
             color: self.color,
             env: Some(self.env.trim().to_string()).filter(|e| !e.is_empty()),
         };
@@ -459,12 +483,21 @@ impl KnownHostsView {
     }
 }
 
+/// Aviso previo al abrir una conexión Telnet: viaja todo en texto claro.
+pub struct TelnetWarning {
+    pub connection: Connection,
+    pub slot: Option<u64>,
+    pub purpose: Purpose,
+    pub dont_ask: bool,
+}
+
 pub enum Dialog {
     Error(ErrorInfo),
     HostKeyChanged(HostKeyChange),
     Settings(SettingsTab),
     About,
     ConfirmClose(CloseConfirm),
+    TelnetWarning(TelnetWarning),
     Edit(ConnForm),
     Snippet(SnippetForm),
     SnippetVars(VarsPrompt),
@@ -773,6 +806,17 @@ pub fn show(
             });
             plain(action, Outcome::Delete)
         }
+        Dialog::TelnetWarning(warning) => {
+            let spec = Spec::new("Conexión sin cifrar").width(440.0).accept("Conectar").icon(DialogIcon::Warning).no_enter();
+            let action = shell(ctx, spec, |ui| {
+                ui.label(format!("«{}» usa Telnet: todo lo que escribas, contraseñas incluidas, viaja en texto claro y cualquiera en la red puede leerlo.", warning.connection.name));
+                ui.label(RichText::new("Úsalo solo en redes de confianza o con equipos que no admiten SSH.").color(theme::subtext()));
+                ui.add_space(4.0);
+                ui.checkbox(&mut warning.dont_ask, "No volver a avisar para esta conexión").hand();
+                false
+            });
+            plain(action, Outcome::Submit)
+        }
         Dialog::About => {
             let action = shell(ctx, Spec::new("Acerca de omni-term").width(420.0).cancel("Cerrar"), |ui| {
                 ui.label(RichText::new(format!("omni-term {}", env!("CARGO_PKG_VERSION"))).font(FontId::new(16.0, crate::ui::strong_family())));
@@ -788,7 +832,10 @@ pub fn show(
         }
         Dialog::Edit(form) => {
             let title = if form.id.is_some() { "Editar conexión" } else { "Nueva conexión" };
-            let spec = Spec::new(title).width(544.0).accept("Guardar").no_enter().extra("Probar conexión");
+            let mut spec = Spec::new(title).width(544.0).accept("Guardar").no_enter();
+            if !form.telnet {
+                spec = spec.extra("Probar conexión");
+            }
             match shell(ctx, spec, |ui| edit_body(ui, form, connections)) {
                 Action::Accept => Outcome::Save,
                 Action::Cancel => Outcome::Cancel,
@@ -1012,10 +1059,19 @@ fn environment_row(ui: &mut egui::Ui, form: &mut ConnForm) {
 
 fn edit_body(ui: &mut egui::Ui, form: &mut ConnForm, connections: &[Connection]) -> bool {
     // Pestañas con subrayado, igual que la barra lateral; un punto rojo marca las que tienen errores.
+    // Telnet solo tiene una página.
+    if form.telnet {
+        form.tab = EditTab::General;
+    }
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 20.0;
         ui.spacing_mut().button_padding.x = 0.0;
-        for (tab, label) in [(EditTab::General, "General"), (EditTab::Acceso, "Acceso"), (EditTab::Avanzado, "Avanzado")] {
+        let tabs: &[(EditTab, &str)] = if form.telnet {
+            &[(EditTab::General, "General")]
+        } else {
+            &[(EditTab::General, "General"), (EditTab::Acceso, "Acceso"), (EditTab::Avanzado, "Avanzado")]
+        };
+        for &(tab, label) in tabs {
             let broken = form.errors.in_tab(tab);
             let selected = form.tab == tab;
             let text = if broken { format!("{label} ●") } else { label.to_string() };
@@ -1045,6 +1101,23 @@ fn edit_body(ui: &mut egui::Ui, form: &mut ConnForm, connections: &[Connection])
                 error_line(ui, &form.errors.name);
             });
 
+            ui.add_space(ROW_GAP);
+            form_row(ui, "Protocolo", |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 4.0;
+                    for (telnet, label) in [(false, "SSH"), (true, "Telnet")] {
+                        if ui.selectable_label(form.telnet == telnet, label).hand().clicked() && form.telnet != telnet {
+                            form.telnet = telnet;
+                            // El puerto por defecto sigue al protocolo mientras no se haya tocado.
+                            let (from, to) = if telnet { ("22", "23") } else { ("23", "22") };
+                            if form.port.trim() == from {
+                                form.port = to.into();
+                            }
+                        }
+                    }
+                });
+            });
+
             ui.add_space(GROUP_GAP);
             form_row(ui, "Servidor", |ui| {
                 ui.horizontal(|ui| {
@@ -1056,12 +1129,35 @@ fn edit_body(ui: &mut egui::Ui, form: &mut ConnForm, connections: &[Connection])
                 error_line(ui, &form.errors.host);
                 error_line(ui, &form.errors.port);
             });
-            ui.add_space(ROW_GAP);
-            form_row(ui, "Usuario", |ui| {
-                let width = ui.available_width();
-                text_input(ui, &mut form.user, width, "usuario del servidor", &mut form.errors.user);
-                error_line(ui, &form.errors.user);
-            });
+            if !form.telnet {
+                ui.add_space(ROW_GAP);
+                form_row(ui, "Usuario", |ui| {
+                    let width = ui.available_width();
+                    text_input(ui, &mut form.user, width, "usuario del servidor", &mut form.errors.user);
+                    error_line(ui, &form.errors.user);
+                });
+            } else {
+                ui.add_space(ROW_GAP);
+                form_row(ui, "Codificación", |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 4.0;
+                        for (encoding, label) in Encoding::ALL {
+                            ui.selectable_value(&mut form.encoding, encoding, label);
+                        }
+                    });
+                });
+                ui.add_space(ROW_GAP);
+                form_row(ui, "Opciones", |ui| {
+                    ui.checkbox(&mut form.negotiate, "Negociar Telnet (eco, tamaño de ventana y tipo de terminal)").hand();
+                    if !form.negotiate {
+                        ui.label(RichText::new("Sin negociar es una conexión TCP simple: no se traducen Enter ni opciones.").small().color(theme::subtext()));
+                    }
+                });
+                ui.add_space(ROW_GAP);
+                form_row(ui, "", |ui| {
+                    ui.label(RichText::new("Telnet no cifra: contraseñas y comandos viajan en texto claro.").small().color(theme::red()));
+                });
+            }
 
             ui.add_space(GROUP_GAP);
             environment_row(ui, form);

@@ -77,6 +77,7 @@ pub fn parse(text: &str, default_user: &str) -> Vec<ImportedHost> {
         .map(|entry| ImportedHost {
             connection: Connection {
                 id: None,
+                protocol: crate::store::Protocol::Ssh,
                 name: entry.alias.clone(),
                 host: entry.host.unwrap_or(entry.alias),
                 port: entry.port.unwrap_or(22),

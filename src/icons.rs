@@ -30,3 +30,4 @@ pub const COPY: &str = "\u{E1CA}";
 pub const WARNING: &str = "\u{E4E0}";
 pub const INFO: &str = "\u{E2CE}";
 pub const ERROR: &str = "\u{E4E2}";
+pub const LOCK_OPEN: &str = "\u{E306}";

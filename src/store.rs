@@ -49,6 +49,10 @@ const MIGRATIONS: &[&str] = &[
     "ALTER TABLE connections ADD COLUMN jump_id INTEGER REFERENCES connections(id) ON DELETE SET NULL;",
     "ALTER TABLE connections ADD COLUMN color INTEGER;
      ALTER TABLE connections ADD COLUMN env TEXT;",
+    "ALTER TABLE connections ADD COLUMN protocol TEXT NOT NULL DEFAULT 'ssh';
+     ALTER TABLE connections ADD COLUMN telnet_raw INTEGER NOT NULL DEFAULT 0;
+     ALTER TABLE connections ADD COLUMN encoding TEXT NOT NULL DEFAULT 'utf8';
+     ALTER TABLE connections ADD COLUMN telnet_quiet INTEGER NOT NULL DEFAULT 0;",
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -81,8 +85,76 @@ impl Auth {
     }
 }
 
+/// Codificación de texto de una conexión Telnet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Encoding {
+    Utf8,
+    Latin1,
+    Cp437,
+}
+
+impl Encoding {
+    pub const ALL: [(Encoding, &'static str); 3] = [(Encoding::Utf8, "UTF-8"), (Encoding::Latin1, "Latin-1"), (Encoding::Cp437, "CP437")];
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Encoding::Utf8 => "utf8",
+            Encoding::Latin1 => "latin1",
+            Encoding::Cp437 => "cp437",
+        }
+    }
+
+    fn parse(text: &str) -> Self {
+        match text {
+            "latin1" => Encoding::Latin1,
+            "cp437" => Encoding::Cp437,
+            _ => Encoding::Utf8,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TelnetOptions {
+    /// Negociar opciones Telnet; apagado, la conexión es TCP simple.
+    pub negotiate: bool,
+    pub encoding: Encoding,
+    /// No avisar de que Telnet no cifra al abrir esta conexión.
+    pub quiet: bool,
+}
+
+impl Default for TelnetOptions {
+    fn default() -> Self {
+        Self { negotiate: true, encoding: Encoding::Utf8, quiet: false }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Protocol {
+    Ssh,
+    Telnet(TelnetOptions),
+}
+
+impl Protocol {
+    /// Columnas `protocol`, `telnet_raw`, `encoding` y `telnet_quiet`.
+    fn columns(self) -> (&'static str, bool, &'static str, bool) {
+        match self {
+            Protocol::Ssh => ("ssh", false, "utf8", false),
+            Protocol::Telnet(o) => ("telnet", !o.negotiate, o.encoding.as_str(), o.quiet),
+        }
+    }
+
+    fn from_columns(protocol: &str, raw: bool, encoding: &str, quiet: bool) -> Self {
+        if protocol == "telnet" {
+            Protocol::Telnet(TelnetOptions { negotiate: !raw, encoding: Encoding::parse(encoding), quiet })
+        } else {
+            Protocol::Ssh
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Connection {
+    pub protocol: Protocol,
     pub id: Option<i64>,
     pub name: String,
     pub host: String,
@@ -97,6 +169,20 @@ pub struct Connection {
     pub color: Option<u8>,
     /// Entorno en texto libre, por ejemplo «producción».
     pub env: Option<String>,
+}
+
+impl Connection {
+    pub fn is_telnet(&self) -> bool {
+        matches!(self.protocol, Protocol::Telnet(_))
+    }
+
+    /// Destino para mostrar: `usuario@host` en SSH y `telnet · host:puerto` en Telnet.
+    pub fn target(&self) -> String {
+        match self.protocol {
+            Protocol::Ssh => format!("{}@{}", self.user, self.host),
+            Protocol::Telnet(_) => format!("telnet · {}:{}", self.host, self.port),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -233,7 +319,8 @@ impl Store {
 
     pub fn list_connections(&self) -> anyhow::Result<Vec<Connection>> {
         let mut statement = self.db.prepare(
-            "SELECT id, name, host, port, user, auth, key_path, init_command, jump_id, color, env
+            "SELECT id, name, host, port, user, auth, key_path, init_command, jump_id, color, env,
+                    protocol, telnet_raw, encoding, telnet_quiet
              FROM connections ORDER BY name COLLATE NOCASE",
         )?;
         let rows = statement.query_map([], |row| {
@@ -249,11 +336,16 @@ impl Store {
                 row.get::<_, Option<i64>>(8)?,
                 row.get::<_, Option<u8>>(9)?,
                 row.get::<_, Option<String>>(10)?,
+                row.get::<_, String>(11)?,
+                row.get::<_, bool>(12)?,
+                row.get::<_, String>(13)?,
+                row.get::<_, bool>(14)?,
             ))
         })?;
         rows.map(|row| {
-            let (id, name, host, port, user, auth, key_path, init_command, jump, color, env) = row?;
+            let (id, name, host, port, user, auth, key_path, init_command, jump, color, env, protocol, raw, encoding, quiet) = row?;
             Ok(Connection {
+                protocol: Protocol::from_columns(&protocol, raw, &encoding, quiet),
                 id: Some(id),
                 name,
                 host,
@@ -272,11 +364,12 @@ impl Store {
 
     /// Inserta o actualiza y devuelve el id.
     pub fn save_connection(&self, connection: &Connection) -> anyhow::Result<i64> {
+        let columns = connection.protocol.columns();
         match connection.id {
             Some(id) => {
                 self.db.execute(
                     "UPDATE connections SET name=?1, host=?2, port=?3, user=?4, auth=?5, key_path=?6, init_command=?7, jump_id=?8,
-                     color=?9, env=?10 WHERE id=?11",
+                     color=?9, env=?10, protocol=?11, telnet_raw=?12, encoding=?13, telnet_quiet=?14 WHERE id=?15",
                     params![
                         connection.name,
                         connection.host,
@@ -288,6 +381,10 @@ impl Store {
                         connection.jump,
                         connection.color,
                         connection.env,
+                        columns.0,
+                        columns.1,
+                        columns.2,
+                        columns.3,
                         id
                     ],
                 )?;
@@ -295,8 +392,9 @@ impl Store {
             }
             None => {
                 self.db.execute(
-                    "INSERT INTO connections (name, host, port, user, auth, key_path, init_command, jump_id, color, env)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                    "INSERT INTO connections (name, host, port, user, auth, key_path, init_command, jump_id, color, env,
+                                              protocol, telnet_raw, encoding, telnet_quiet)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
                     params![
                         connection.name,
                         connection.host,
@@ -307,7 +405,11 @@ impl Store {
                         connection.init_command,
                         connection.jump,
                         connection.color,
-                        connection.env.clone()
+                        connection.env.clone(),
+                        columns.0,
+                        columns.1,
+                        columns.2,
+                        columns.3
                     ],
                 )?;
                 Ok(self.db.last_insert_rowid())
@@ -319,8 +421,9 @@ impl Store {
     pub fn restore_connection(&self, connection: &Connection) -> anyhow::Result<()> {
         let id = connection.id.context("la conexión no tiene id")?;
         self.db.execute(
-            "INSERT INTO connections (id, name, host, port, user, auth, key_path, init_command, jump_id, color, env)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            "INSERT INTO connections (id, name, host, port, user, auth, key_path, init_command, jump_id, color, env,
+                                      protocol, telnet_raw, encoding, telnet_quiet)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
             params![
                 id,
                 connection.name,
@@ -332,7 +435,11 @@ impl Store {
                 connection.init_command,
                 connection.jump,
                 connection.color,
-                connection.env
+                connection.env,
+                connection.protocol.columns().0,
+                connection.protocol.columns().1,
+                connection.protocol.columns().2,
+                connection.protocol.columns().3
             ],
         )?;
         Ok(())
@@ -561,6 +668,7 @@ mod tests {
     fn sample(name: &str) -> Connection {
         Connection {
             id: None,
+            protocol: Protocol::Ssh,
             name: name.into(),
             host: "example.com".into(),
             port: 22,
@@ -572,6 +680,29 @@ mod tests {
             color: None,
             env: None,
         }
+    }
+
+    #[test]
+    fn telnet_options_round_trip_and_ssh_is_the_default() {
+        let store = Store::open_in_memory().unwrap();
+        let mut telnet = sample("router");
+        telnet.port = 23;
+        telnet.protocol = Protocol::Telnet(TelnetOptions { negotiate: false, encoding: Encoding::Cp437, quiet: true });
+        let id = store.save_connection(&telnet).unwrap();
+        store.save_connection(&sample("web")).unwrap();
+
+        let listed = store.list_connections().unwrap();
+        let loaded = listed.iter().find(|c| c.id == Some(id)).unwrap();
+        assert_eq!(loaded.protocol, telnet.protocol);
+        assert!(loaded.is_telnet());
+        assert_eq!(loaded.target(), "telnet · example.com:23");
+        assert_eq!(listed.iter().find(|c| c.name == "web").unwrap().protocol, Protocol::Ssh);
+
+        store.delete_connection(id).unwrap();
+        let mut restored = telnet.clone();
+        restored.id = Some(id);
+        store.restore_connection(&restored).unwrap();
+        assert_eq!(store.list_connections().unwrap().iter().find(|c| c.id == Some(id)).unwrap().protocol, telnet.protocol);
     }
 
     #[test]

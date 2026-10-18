@@ -749,6 +749,7 @@ mod tests {
         let known_hosts = dir.join("known_hosts");
         let connection = Connection {
             id: None,
+            protocol: crate::store::Protocol::Ssh,
             name: "test".into(),
             host: "127.0.0.1".into(),
             port,
@@ -919,6 +920,7 @@ mod tests {
         let (events, requests) = std_mpsc::channel();
         let connection = Connection {
             id: None,
+            protocol: crate::store::Protocol::Ssh,
             name: "cambio".into(),
             host: "127.0.0.1".into(),
             port: sshd.port,
@@ -966,6 +968,7 @@ mod tests {
         });
         let mut connection = Connection {
             id: None,
+            protocol: crate::store::Protocol::Ssh,
             name: "prueba".into(),
             host: "127.0.0.1".into(),
             port: sshd.port,
@@ -1012,6 +1015,7 @@ mod tests {
             });
             let connection = Connection {
                 id: None,
+                protocol: crate::store::Protocol::Ssh,
                 name: "otp".into(),
                 host: "127.0.0.1".into(),
                 port: server.port,

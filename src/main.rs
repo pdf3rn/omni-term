@@ -24,6 +24,7 @@ mod store;
 mod transfer;
 #[cfg(test)]
 mod testutil;
+mod telnet;
 mod term;
 mod theme;
 mod ui;
