@@ -6,9 +6,10 @@ use alacritty_terminal::term::{point_to_viewport, viewport_to_point, TermMode};
 use alacritty_terminal::vte::ansi::CursorShape;
 use eframe::egui::{
     self, Align2, CornerRadius, Event, EventFilter, FontData, FontDefinitions, FontFamily,
-    FontId, Key, Modifiers, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2, ViewportCommand,
+    FontId, Key, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2, ViewportCommand,
 };
 
+use crate::keys;
 use crate::term::Session;
 use crate::theme;
 
@@ -22,14 +23,15 @@ fn bold_family() -> FontFamily {
 pub struct App {
     session: Session,
     window_title: String,
+    debug_keys: bool,
 }
 
 impl App {
-    pub fn new(cc: &eframe::CreationContext<'_>) -> anyhow::Result<Self> {
+    pub fn new(cc: &eframe::CreationContext<'_>, debug_keys: bool) -> anyhow::Result<Self> {
         install_fonts(&cc.egui_ctx);
         let ctx = cc.egui_ctx.clone();
         let session = Session::spawn(80, 24, move || ctx.request_repaint())?;
-        Ok(Self { session, window_title: String::new() })
+        Ok(Self { session, window_title: String::new(), debug_keys })
     }
 }
 
@@ -150,24 +152,34 @@ impl App {
     fn handle_input(&mut self, ui: &egui::Ui) {
         let events = ui.input(|i| i.events.clone());
         let mode = *self.session.term.lock().unwrap().mode();
+        let ctrl_held = ui.input(|i| i.modifiers.ctrl);
         let mut out: Vec<u8> = Vec::new();
-        let mut alt_held = false;
 
         for event in &events {
             match event {
-                Event::Key { key, pressed: true, modifiers, .. } => {
-                    alt_held |= modifiers.alt;
-                    if modifiers.ctrl && modifiers.shift && *key == Key::C {
-                        self.copy_selection(ui);
-                    } else if modifiers.ctrl && modifiers.shift && *key == Key::V {
-                        if let Some(text) = clipboard_text() {
-                            out.extend(paste_bytes(&text, mode));
+                Event::Key { key, pressed, modifiers, repeat, .. } => {
+                    let reserved = modifiers.ctrl && modifiers.shift && matches!(key, Key::C | Key::V);
+                    if reserved {
+                        if *pressed && *key == Key::C {
+                            self.copy_selection(ui);
+                        } else if *pressed && *key == Key::V {
+                            if let Some(text) = clipboard_text() {
+                                out.extend(paste_bytes(&text, mode));
+                            }
                         }
-                    } else if let Some(bytes) = key_bytes(*key, *modifiers, mode) {
-                        out.extend(bytes);
+                        continue;
                     }
+                    let press = keys::Press { key: *key, mods: *modifiers, pressed: *pressed, repeat: *repeat };
+                    let bytes = keys::encode(&press, mode);
+                    if self.debug_keys {
+                        eprintln!("key {key:?} {modifiers:?} pressed={pressed} repeat={repeat} -> {bytes:?}");
+                    }
+                    out.extend(bytes.unwrap_or_default());
                 }
-                Event::Text(text) if !alt_held && !ui.input(|i| i.modifiers.ctrl) => {
+                Event::Text(text) if !ctrl_held && !keys::reports_all_keys(mode) => {
+                    if self.debug_keys {
+                        eprintln!("text {text:?}");
+                    }
                     out.extend(text.as_bytes());
                 }
                 _ => {}
@@ -262,61 +274,4 @@ fn paste_bytes(text: &str, mode: TermMode) -> Vec<u8> {
     } else {
         text.replace("\r\n", "\r").replace('\n', "\r").into_bytes()
     }
-}
-
-fn key_bytes(key: Key, mods: Modifiers, mode: TermMode) -> Option<Vec<u8>> {
-    let app_cursor = mode.contains(TermMode::APP_CURSOR);
-    let csi_or_ss3 = |final_byte: char| {
-        if app_cursor { format!("\x1bO{final_byte}") } else { format!("\x1b[{final_byte}") }
-    };
-
-    let sequence = match key {
-        Key::Enter => "\r".to_string(),
-        Key::Backspace => "\x7f".to_string(),
-        Key::Tab if mods.shift => "\x1b[Z".to_string(),
-        Key::Tab => "\t".to_string(),
-        Key::Escape => "\x1b".to_string(),
-        Key::ArrowUp => csi_or_ss3('A'),
-        Key::ArrowDown => csi_or_ss3('B'),
-        Key::ArrowRight => csi_or_ss3('C'),
-        Key::ArrowLeft => csi_or_ss3('D'),
-        Key::Home => csi_or_ss3('H'),
-        Key::End => csi_or_ss3('F'),
-        Key::PageUp => "\x1b[5~".to_string(),
-        Key::PageDown => "\x1b[6~".to_string(),
-        Key::Delete => "\x1b[3~".to_string(),
-        Key::Insert => "\x1b[2~".to_string(),
-        Key::F1 => "\x1bOP".to_string(),
-        Key::F2 => "\x1bOQ".to_string(),
-        Key::F3 => "\x1bOR".to_string(),
-        Key::F4 => "\x1bOS".to_string(),
-        Key::F5 => "\x1b[15~".to_string(),
-        Key::F6 => "\x1b[17~".to_string(),
-        Key::F7 => "\x1b[18~".to_string(),
-        Key::F8 => "\x1b[19~".to_string(),
-        Key::F9 => "\x1b[20~".to_string(),
-        Key::F10 => "\x1b[21~".to_string(),
-        Key::F11 => "\x1b[23~".to_string(),
-        Key::F12 => "\x1b[24~".to_string(),
-        Key::Space if mods.ctrl => "\0".to_string(),
-        _ => {
-            let name = key.name();
-            let mut chars = name.chars();
-            let (Some(c), None) = (chars.next(), chars.next()) else { return None };
-            if !c.is_ascii_alphanumeric() {
-                return None;
-            }
-            if mods.ctrl && c.is_ascii_alphabetic() {
-                let byte = (c.to_ascii_lowercase() as u8 - b'a') + 1;
-                let prefix = if mods.alt { "\x1b" } else { "" };
-                return Some([prefix.as_bytes(), &[byte]].concat());
-            }
-            if mods.alt && !mods.ctrl {
-                let c = if mods.shift { c.to_ascii_uppercase() } else { c.to_ascii_lowercase() };
-                return Some(format!("\x1b{c}").into_bytes());
-            }
-            return None;
-        }
-    };
-    Some(sequence.into_bytes())
 }

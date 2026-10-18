@@ -81,7 +81,7 @@ impl Session {
         let writer: SharedWriter = Arc::new(Mutex::new(pair.master.take_writer()?));
         let title = Arc::new(Mutex::new(String::new()));
         let proxy = Proxy { writer: writer.clone(), title: title.clone() };
-        let term = Arc::new(Mutex::new(Term::new(Config::default(), &GridSize { cols, rows }, proxy)));
+        let term = Arc::new(Mutex::new(Term::new(Config { kitty_keyboard: true, ..Config::default() }, &GridSize { cols, rows }, proxy)));
         let exited = Arc::new(AtomicBool::new(false));
 
         let mut reader = pair.master.try_clone_reader()?;
