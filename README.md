@@ -1,67 +1,84 @@
 # omni-term
 
-Terminal multiplataforma en Rust nativo con una interfaz pensada como un IDE: terminal local, conexiones SSH guardadas, explorador SFTP, túneles y snippets.
+A native, cross-platform terminal written in Rust, built like an IDE: local shells, saved SSH, Telnet and serial connections, and a two-pane file explorer for SFTP, FTP/FTPS and SMB.
 
-## Qué incluye
+> **Status:** version 0.x. Expect rough edges and changes between minor versions. See [Status](#status).
 
-- **Terminal local y SSH nativo** en pestañas, con la sesión restaurada al reabrir. Autenticación con contraseña, llave (con passphrase), `ssh-agent` e interactiva (2FA). Saltos entre servidores (`ProxyJump`) y verificación de huellas en `~/.ssh/known_hosts`.
-- **Identidad por conexión**: cada conexión puede llevar un color y un entorno («producción», «staging»). Se ve en la barra lateral, en la pestaña, en una banda bajo las pestañas y en el título de la ventana, para no escribir en el servidor equivocado.
-- **Secretos protegidos**: keyring del sistema, o una clave maestra propia (Argon2id + XChaCha20-Poly1305) si no hay keyring.
-- **Túneles** guardados por conexión: `-L`, `-R` y `-D` (proxy SOCKS5), con su estado en la barra lateral.
-- **Explorador SFTP** de dos paneles (local y remoto): arrastrar y soltar, transferencias recursivas en segundo plano con cancelación, resolución de conflictos, permisos y papelera local.
-- **Snippets** con búsqueda y variables `{{nombre}}` / `{{nombre=defecto}}`.
-- **Paneles divididos** dentro de cada pestaña, con divisores arrastrables. Una pestaña SSH divide abriendo otra sesión a la misma conexión.
-- **Terminal completo**: ratón para `vim`/`tmux`/`htop`, protocolo de teclado kitty, búsqueda en el historial, enlaces clicables, color verdadero y bloques/cajas dibujados como geometría.
-- Tema oscuro, claro o del sistema, tamaño de fuente, cursor y tamaño de ventana recordados.
+## Features
 
-## Atajos
+**Terminal**
+- Tabs and split panes with draggable dividers; the session is restored when you reopen the app.
+- Mouse support for `vim`/`tmux`/`htop`, kitty keyboard protocol, history search, clickable links, true color, and block/box characters drawn as geometry.
+- Double-click selects a word, triple-click a line; context menu, primary selection on Linux.
+- Command palette, menu bar, light/dark/system theme, selectable accent, font size and cursor.
 
-| Atajo | Acción |
-|---|---|
-| `Ctrl+Shift+C` / `Ctrl+Shift+V` | Copiar la selección / pegar |
-| `Ctrl+Shift+F` | Buscar en el historial (`Enter` siguiente, `Mayús+Enter` anterior, `Esc` cierra) |
-| `Ctrl+Shift+D` / `Ctrl+Shift+E` | Dividir el panel a la derecha / hacia abajo (también en el menú *Dividir*) |
-| `Ctrl+Shift+W` | Cerrar el panel con foco (o la pestaña si es el único) |
-| `Ctrl+=` / `Ctrl+-` / `Ctrl+0` | Ampliar, reducir y restablecer la fuente |
-| `Ctrl` + clic | Abrir el enlace bajo el puntero |
-| `Mayús` + arrastrar | Seleccionar texto aunque la aplicación use el ratón |
+**Connections**
+- **SSH** with password, key (with passphrase), `ssh-agent` and interactive (2FA) authentication, jump hosts (`ProxyJump`), host key verification against `~/.ssh/known_hosts`, and a known-hosts browser.
+- **Telnet** and **serial** ports (baud, parity, flow control, live line controls).
+- Saved connections with a color and environment ("production", "staging") shown in the sidebar, tab, a band under the tabs and the window title, so you don't type into the wrong server.
+- Port forwarding per connection: `-L`, `-R` and `-D` (SOCKS5 proxy).
+- Snippets with search and `{{name}}` / `{{name=default}}` variables.
 
-`Ctrl+C` se envía siempre a la aplicación (interrumpe el proceso).
+**Files**
+- Two-pane explorer (local and remote) over **SFTP**, **FTP/FTPS** and **SMB 2/3**: drag and drop, recursive background transfers with cancellation, conflict resolution, permissions (where the protocol supports them) and a local trash.
+- A saved "Files" connection opens the explorer directly, without a terminal.
 
-## Instalar
+**Security**
+- Secrets live in the system keyring, or in your own master key (Argon2id + XChaCha20-Poly1305) when no keyring is available.
+- Plain FTP and Telnet show a lock icon and a warning before connecting.
+- Closing a tab with a running process asks for confirmation.
 
-Descarga el archivo de tu sistema desde las *Releases*. En Linux, el paquete incluye `install.sh`, que instala el binario, el icono y la entrada de escritorio para tu usuario:
+## Install
+
+Download the archive for your system from the [Releases](https://github.com/pdf3rn/omni-term/releases) page. On Linux it includes `install.sh`, which installs the binary, icon and desktop entry for your user:
 
 ```bash
 ./install.sh
 ```
 
-También puedes compilarlo:
+Or build from source (Rust stable):
 
 ```bash
-cargo build --release
-packaging/install-linux.sh        # opcional, solo Linux
+cargo build --release --locked
+packaging/install-linux.sh        # optional, Linux only
 ```
 
-En Linux necesitas las cabeceras de desarrollo de `libxkbcommon`, `wayland`, `x11` y `dbus`.
+On Linux you need the development headers for `libxkbcommon`, `wayland`, `x11` and `dbus`. `omni-term --version` prints the installed version.
 
-## Datos
+## Shortcuts
 
-La base de datos (conexiones, túneles, snippets, sesión y ajustes) está en el directorio de datos del sistema (`~/.local/share/omniterm/omniterm.db` en Linux). Las contraseñas no se guardan ahí, salvo cifradas con la clave maestra.
+| Shortcut | Action |
+|---|---|
+| `Ctrl+Shift+C` / `Ctrl+Shift+V` | Copy selection / paste |
+| `Ctrl+Shift+F` | Search history (`Enter` next, `Shift+Enter` previous, `Esc` closes) |
+| `Ctrl+Shift+P` | Command palette |
+| `Ctrl+Shift+B` / `Ctrl+Shift+K` | Toggle sidebar / search connections |
+| `Ctrl+Shift+D` / `Ctrl+Shift+E` | Split right / split down |
+| `Ctrl+Shift+W` | Close the focused pane (or the tab if it is the only one) |
+| `Ctrl+=` / `Ctrl+-` / `Ctrl+0` | Increase, decrease and reset the font |
+| `F11` | Fullscreen |
+| `Ctrl` + click | Open the link under the pointer |
+| `Shift` + drag | Select text even when the application uses the mouse |
 
-## Desarrollo
+`Ctrl+C` always goes to the application (it interrupts the process).
 
-```bash
-cargo test            # incluye pruebas de extremo a extremo con un sshd privado en Linux
-cargo run -- --keys   # imprime las teclas recibidas y los bytes enviados
-```
+## Data
 
-## Versiones
+The database (connections, forwards, snippets, session and settings) is in the system data directory (`~/.local/share/omniterm/omniterm.db` on Linux). Passwords are not stored there, except encrypted with the master key.
 
-omni-term sigue [versionado semántico](https://semver.org/lang/es/) (`MAYOR.MENOR.PARCHE`) y anota los cambios en [CHANGELOG.md](CHANGELOG.md). Mientras la versión mayor sea 0, los cambios incompatibles suben la menor.
+## Status
 
-Las versiones son automáticas. Cada commit a `master` con [commits convencionales](https://www.conventionalcommits.org/es/) (`fix:` sube el parche, `feat:` la menor, `!` o `BREAKING CHANGE` la mayor) hace que release-plz abra o actualice un PR «chore(release)» con la versión nueva y el CHANGELOG. Al fusionarlo se crea la etiqueta `vX.Y.Z`, y esa etiqueta compila y publica los binarios de Linux, Windows y macOS.
+omni-term is below 1.0. These parts have only been tested against local servers:
 
-Requisito único: un secreto `RELEASE_PLZ_TOKEN` en el repositorio, con un token personal con permisos de contenido y pull requests. Con el `GITHUB_TOKEN` por defecto la etiqueta no dispararía el flujo de publicación.
+- FTPS with real certificates (self-signed certificates are rejected).
+- SMB uploads, renames and deletes against a fully conformant server (tested with a local test server only).
 
-`omni-term --version` muestra la versión instalada. El flujo de publicación falla si la etiqueta no coincide con `Cargo.toml`.
+Bug reports are welcome. For vulnerabilities, see [SECURITY.md](SECURITY.md).
+
+## Contributing and releases
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). The project follows [Semantic Versioning](https://semver.org/); changes are listed in [CHANGELOG.md](CHANGELOG.md).
+
+## License
+
+Licensed under either of [Apache License 2.0](LICENSE-APACHE) or [MIT license](LICENSE-MIT), at your option. Bundled fonts and icons are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
