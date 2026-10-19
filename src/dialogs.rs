@@ -320,7 +320,7 @@ impl ConnForm {
         if user.is_empty() && user_needed {
             errors.user = Some("Indica el usuario".into());
         }
-        if self.files == 3 && self.smb_share.trim().is_empty() {
+        if self.files == 3 && self.smb_share.trim().trim_matches(['\\', '/']).is_empty() {
             errors.share = Some("Indica el recurso compartido".into());
         }
         let port = if self.serial {

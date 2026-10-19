@@ -297,6 +297,9 @@ impl AsyncWrite for PipeEnd {
 }
 
 pub async fn connect(connection: &Connection, credentials: &Credentials) -> anyhow::Result<Arc<dyn RemoteFs>> {
+    if connection.smb_share().trim_matches(['\\', '/']).is_empty() {
+        anyhow::bail!("Falta el recurso compartido: edita la conexión e indica su nombre");
+    }
     let server = if connection.port == 445 { connection.host.clone() } else { format!("{}:{}", connection.host, connection.port) };
     let base = UncPath::new(&server).map_err(failure)?.with_share(connection.smb_share()).map_err(failure)?;
     let user = if connection.smb_domain().is_empty() { connection.user.clone() } else { format!("{}\\{}", connection.smb_domain(), connection.user) };
@@ -322,3 +325,4 @@ pub async fn connect(connection: &Connection, credentials: &Credentials) -> anyh
     }
     Err(anyhow::anyhow!("{}", last_error.unwrap_or_default())).context("el servidor rechazó la conexión (revisa usuario, contraseña y recurso)")
 }
+

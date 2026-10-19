@@ -1704,6 +1704,8 @@ impl App {
             self.dialog = Some(dialog);
         } else if let Some((account, secret)) = self.save_queue.pop_front() {
             self.save_secret(account, secret);
+        } else if self.window_boot.elapsed() < RESTORE_PROMPT_DELAY && self.open_queue.front().is_some_and(|s| !matches!(s.kind, TabKind::Local)) {
+            // Un diálogo en los primeros fotogramas deja a la ventana sin recibir eventos de ratón ni teclado.
         } else if let Some(saved) = self.open_queue.pop_front() {
             match saved.kind {
                 TabKind::Local => {
@@ -3111,6 +3113,9 @@ fn tab(
     }
 }
 
+/// Hasta que pasa este tiempo desde el arranque no se abren pestañas remotas restauradas.
+const RESTORE_PROMPT_DELAY: Duration = Duration::from_millis(1000);
+
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
@@ -3482,6 +3487,9 @@ impl eframe::App for App {
         self.grid = pane::grid_for(ui, text_area, self.settings.font_size);
         let tabs_before = self.tabs.len();
         self.drive_pending();
+        if !self.open_queue.is_empty() && self.window_boot.elapsed() < RESTORE_PROMPT_DELAY {
+            ctx.request_repaint_after(Duration::from_millis(100));
+        }
         if self.tabs.len() != tabs_before {
             ctx.request_repaint();
         }
