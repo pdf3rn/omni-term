@@ -1,6 +1,7 @@
 //! Lectura y edición del archivo `known_hosts` de OpenSSH.
 
-use std::path::Path;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 
 use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD};
 use base64::Engine;
@@ -86,7 +87,69 @@ fn write_lines(path: &Path, lines: &[String]) -> std::io::Result<()> {
     if !lines.is_empty() {
         text.push('\n');
     }
-    std::fs::write(path, text)
+    let path = resolve(path);
+    let staged = stage(&path, text.as_bytes())?;
+    commit(&staged, &path)
+}
+
+/// Sigue un enlace simbólico (por ejemplo, de un gestor de dotfiles) para no reemplazarlo por un archivo.
+fn resolve(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+fn temp_path(path: &Path) -> PathBuf {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(format!(".tmp{}", std::process::id()));
+    path.with_file_name(name)
+}
+
+/// Escribe `bytes` en un archivo temporal junto a `path`: modo 0600 si es nuevo, los permisos de siempre si ya existía.
+fn stage(path: &Path, bytes: &[u8]) -> std::io::Result<PathBuf> {
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent)?;
+    }
+    let temp = temp_path(path);
+    let result = (|| {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        let mut file = options.open(&temp)?;
+        file.write_all(bytes)?;
+        if let Ok(existing) = std::fs::metadata(path) {
+            file.set_permissions(existing.permissions())?;
+        }
+        file.sync_all()
+    })();
+    match result {
+        Ok(()) => Ok(temp),
+        Err(error) => {
+            let _ = std::fs::remove_file(&temp);
+            Err(error)
+        }
+    }
+}
+
+fn commit(temp: &Path, path: &Path) -> std::io::Result<()> {
+    std::fs::rename(temp, path).inspect_err(|_| {
+        let _ = std::fs::remove_file(temp);
+    })
+}
+
+/// Añade la huella de `host:port` sin dejar el archivo a medias: se escribe una copia y se reemplaza de una vez.
+pub fn learn(path: &Path, host: &str, port: u16, key: &russh::keys::PublicKey) -> std::io::Result<()> {
+    let path = resolve(path);
+    let existing = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(error) => return Err(error),
+    };
+    let staged = stage(&path, &existing)?;
+    if let Err(error) = russh::keys::known_hosts::learn_known_hosts_path(host, port, key, &staged) {
+        let _ = std::fs::remove_file(&staged);
+        return Err(std::io::Error::other(error.to_string()));
+    }
+    commit(&staged, &path)
 }
 
 /// Borra la línea de `entry`. Si el archivo cambió desde que se leyó, la busca por su contenido.
@@ -175,5 +238,77 @@ mod tests {
     #[test]
     fn a_missing_file_is_an_empty_list() {
         assert!(load(Path::new("/no/existe/known_hosts")).unwrap().is_empty());
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("omniterm-kh-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn key() -> russh::keys::PublicKey {
+        russh::keys::PublicKey::from_openssh(&format!("ssh-ed25519 {ED}")).unwrap()
+    }
+
+    #[test]
+    fn learning_appends_and_leaves_no_temporary_file() {
+        let dir = scratch("learn");
+        let path = dir.join("known_hosts");
+        std::fs::write(&path, sample()).unwrap();
+        learn(&path, "new.test", 2200, &key()).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.starts_with(&sample()) && text.contains("[new.test]:2200"));
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_new_file_is_private_and_an_existing_one_keeps_its_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch("mode");
+        let fresh = dir.join("fresh");
+        learn(&fresh, "a.test", 22, &key()).unwrap();
+        assert_eq!(std::fs::metadata(&fresh).unwrap().permissions().mode() & 0o777, 0o600);
+
+        let shared = dir.join("shared");
+        std::fs::write(&shared, sample()).unwrap();
+        std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o644)).unwrap();
+        learn(&shared, "b.test", 22, &key()).unwrap();
+        assert_eq!(std::fs::metadata(&shared).unwrap().permissions().mode() & 0o777, 0o644);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn writing_through_a_symlink_keeps_the_link() {
+        let dir = scratch("link");
+        let real = dir.join("real");
+        std::fs::write(&real, sample()).unwrap();
+        let link = dir.join("known_hosts");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        learn(&link, "c.test", 22, &key()).unwrap();
+        assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+        assert!(std::fs::read_to_string(&real).unwrap().contains("c.test"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn learning_fails_when_the_folder_is_read_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch("ro");
+        let path = dir.join("known_hosts");
+        std::fs::write(&path, sample()).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let writable_anyway = std::fs::write(dir.join("probe"), "").is_ok();
+        let result = learn(&path, "d.test", 22, &key());
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        if !writable_anyway {
+            assert!(result.is_err());
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), sample());
+        }
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

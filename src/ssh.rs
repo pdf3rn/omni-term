@@ -7,7 +7,7 @@ use std::time::Duration;
 use anyhow::{anyhow, bail, Context};
 use russh::client::{self, AuthResult, Handle, Handler, KeyboardInteractiveAuthResponse};
 use russh::keys::agent::client::AgentClient;
-use russh::keys::known_hosts::{check_known_hosts_path, learn_known_hosts_path};
+use russh::keys::known_hosts::check_known_hosts_path;
 use russh::keys::{HashAlg, PrivateKeyWithHashAlg, PublicKeyOrCertificate};
 use russh::client::{ChannelOpenHandle, Msg, Session as ClientSession};
 use russh::{Channel, ChannelMsg, MethodKind};
@@ -230,8 +230,12 @@ impl Handler for Client {
         (self.wake)();
 
         if answer.await.unwrap_or(false) {
-            if let Err(error) = learn_known_hosts_path(&self.host, self.port, key, &self.known_hosts) {
-                eprintln!("no se pudo escribir known_hosts: {error}");
+            if let Err(error) = crate::known_hosts::learn(&self.known_hosts, &self.host, self.port, key) {
+                *self.rejection.lock().unwrap() = Some(format!(
+                    "No se pudo guardar la huella en {}: {error}. Conexión cancelada.",
+                    self.known_hosts.display()
+                ));
+                return Ok(false);
             }
             Ok(true)
         } else {

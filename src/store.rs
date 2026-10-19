@@ -511,11 +511,39 @@ pub struct Store {
     db: Db,
 }
 
+#[cfg(unix)]
+fn restrict(path: &Path, mode: u32) -> anyhow::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).with_context(|| format!("protegiendo {}", path.display()))
+}
+
+#[cfg(not(unix))]
+fn restrict(_path: &Path, _mode: u32) -> anyhow::Result<()> {
+    Ok(())
+}
+
+/// Crea el archivo vacío con modo 0600 si no existe; si existe, le quita el acceso a otros usuarios.
+fn restrict_file(path: &Path) -> anyhow::Result<()> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    options.open(path).with_context(|| format!("abriendo {}", path.display()))?;
+    restrict(path, 0o600)
+}
+
 impl Store {
     pub fn open(path: &Path) -> anyhow::Result<Self> {
         if let Some(parent) = path.parent() {
+            let created = !parent.exists();
             std::fs::create_dir_all(parent).with_context(|| format!("creando {}", parent.display()))?;
+            let own_dir = Self::default_path().ok().and_then(|p| p.parent().map(Path::to_path_buf));
+            if created || own_dir.as_deref() == Some(parent) {
+                restrict(parent, 0o700)?;
+            }
         }
+        // SQLite crea `-wal` y `-shm` con los permisos de la base: se fijan antes de abrirla.
+        restrict_file(path)?;
         Self::init(Db::open(path).with_context(|| format!("abriendo {}", path.display()))?)
     }
 
@@ -1211,5 +1239,32 @@ mod tests {
         assert_eq!(c.insecure_protocol(), None);
         c.protocol = Protocol::Files(FilesKind::Smb);
         assert_eq!(c.insecure_protocol(), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_database_and_its_folder_are_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("omniterm-perm-{}", std::process::id())).join("data");
+        let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+        let path = dir.join("omniterm.db");
+        let store = Store::open(&path).unwrap();
+        store.save_connection(&sample("x")).unwrap();
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&dir), 0o700);
+        assert_eq!(mode(&path), 0o600);
+        for suffix in ["-wal", "-shm"] {
+            let side = dir.join(format!("omniterm.db{suffix}"));
+            if side.exists() {
+                assert_eq!(mode(&side) & 0o077, 0, "{}", side.display());
+            }
+        }
+        drop(store);
+
+        // Una base creada antes con permisos abiertos se corrige al abrirla.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        Store::open(&path).unwrap();
+        assert_eq!(mode(&path), 0o600);
+        std::fs::remove_dir_all(dir.parent().unwrap()).ok();
     }
 }

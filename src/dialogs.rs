@@ -81,6 +81,18 @@ impl ForwardRow {
     }
 }
 
+impl ForwardRow {
+    /// Un túnel `-L` o `-D` que escucha fuera de este equipo lo puede usar cualquiera de la red.
+    fn listens_on_network(&self) -> bool {
+        let host = self.bind_host.trim().trim_matches(['[', ']']);
+        self.kind != ForwardKind::Remote
+            && !host.is_empty()
+            && !host.eq_ignore_ascii_case("localhost")
+            && host != "::1"
+            && !host.starts_with("127.")
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum EditTab {
     General,
@@ -1578,6 +1590,8 @@ fn edit_body(ui: &mut egui::Ui, form: &mut ConnForm, connections: &[Connection])
                 });
                 if let Some(message) = &form.errors.forwards[index] {
                     ui.label(RichText::new(message.as_str()).small().color(theme::red()));
+                } else if row.listens_on_network() {
+                    ui.label(RichText::new("Escucha fuera de este equipo: otros dispositivos de la red podrán usar este túnel.").small().color(theme::identity(1)));
                 }
             }
             if let Some(index) = remove {
@@ -1967,4 +1981,25 @@ fn host_key_changed_body(ui: &mut egui::Ui, change: &HostKeyChange) -> bool {
     ui.label("Si sabes que el servidor cambió de verdad, borra la huella antigua y vuelve a conectar:");
     ui.label(RichText::new(change.forget_command()).monospace().color(theme::subtext()));
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(kind: ForwardKind, host: &str) -> ForwardRow {
+        ForwardRow { kind, bind_host: host.into(), ..ForwardRow::new() }
+    }
+
+    #[test]
+    fn only_non_loopback_local_and_socks_listeners_warn() {
+        for host in ["127.0.0.1", "127.0.1.1", "::1", "[::1]", "localhost", "LocalHost"] {
+            assert!(!row(ForwardKind::Local, host).listens_on_network(), "{host}");
+        }
+        for host in ["0.0.0.0", "::", "192.168.1.5", "example.com"] {
+            assert!(row(ForwardKind::Local, host).listens_on_network(), "{host}");
+            assert!(row(ForwardKind::Dynamic, host).listens_on_network(), "{host}");
+            assert!(!row(ForwardKind::Remote, host).listens_on_network(), "{host}");
+        }
+    }
 }
