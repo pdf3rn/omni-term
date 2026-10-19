@@ -55,3 +55,13 @@ La base de datos (conexiones, túneles, snippets, sesión y ajustes) está en el
 cargo test            # incluye pruebas de extremo a extremo con un sshd privado en Linux
 cargo run -- --keys   # imprime las teclas recibidas y los bytes enviados
 ```
+
+## Versiones
+
+omni-term sigue [versionado semántico](https://semver.org/lang/es/) (`MAYOR.MENOR.PARCHE`) y anota los cambios en [CHANGELOG.md](CHANGELOG.md). Mientras la versión mayor sea 0, los cambios incompatibles suben la menor.
+
+Las versiones son automáticas. Cada commit a `master` con [commits convencionales](https://www.conventionalcommits.org/es/) (`fix:` sube el parche, `feat:` la menor, `!` o `BREAKING CHANGE` la mayor) hace que release-plz abra o actualice un PR «chore(release)» con la versión nueva y el CHANGELOG. Al fusionarlo se crea la etiqueta `vX.Y.Z`, y esa etiqueta compila y publica los binarios de Linux, Windows y macOS.
+
+Requisito único: un secreto `RELEASE_PLZ_TOKEN` en el repositorio, con un token personal con permisos de contenido y pull requests. Con el `GITHUB_TOKEN` por defecto la etiqueta no dispararía el flujo de publicación.
+
+`omni-term --version` muestra la versión instalada. El flujo de publicación falla si la etiqueta no coincide con `Cargo.toml`.

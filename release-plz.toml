@@ -1,0 +1,6 @@
+[workspace]
+# La publicación en crates.io no aplica; el binario lo publica release.yml al crearse la etiqueta.
+publish = false
+git_release_enable = false
+git_tag_name = "v{{ version }}"
+changelog_update = true

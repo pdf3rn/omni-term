@@ -36,6 +36,10 @@ mod ui;
 use eframe::egui;
 
 fn main() -> eframe::Result {
+    if std::env::args().any(|a| a == "--version" || a == "-V") {
+        println!("omni-term {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
     let debug_keys = std::env::args().any(|a| a == "--keys");
     let size = saved_window_size().unwrap_or([960.0, 600.0]);
     let mut viewport = egui::ViewportBuilder::default()
