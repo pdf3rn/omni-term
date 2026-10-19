@@ -1,6 +1,6 @@
 //! Diálogos modales: edición de conexión, contraseñas, clave maestra y confianza de host.
 
-use eframe::egui::{self, Color32, ComboBox, FontId, Id, Modal, RichText, TextEdit};
+use eframe::egui::{self, CollapsingHeader, Color32, ComboBox, FontId, Id, Modal, RichText, ScrollArea, TextEdit};
 use zeroize::Zeroizing;
 
 use crate::cursor::HandExt;
@@ -9,6 +9,9 @@ use crate::settings::{AccentChoice, CursorChoice, Settings, ThemeChoice, MAX_FON
 use crate::ssh::{HostKeyChange, HostKeyRequest, PromptRequest};
 use crate::store::{Encoding, FilesKind, FtpOptions, FtpTls, Flow, Newline, Parity, Protocol, SerialOptions, TelnetOptions, BAUD_RATES, Auth, Connection, Forward, ForwardKind, Snippet};
 use crate::theme;
+
+/// Pide desplazarse hasta el primer campo con error en el próximo dibujo del formulario.
+static REVEAL_ERROR: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Atajos de entorno: nombre del botón, etiqueta que se guarda y color de identidad.
 const ENVIRONMENTS: [(&str, &str, u8); 4] = [
@@ -93,13 +96,6 @@ impl ForwardRow {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum EditTab {
-    General,
-    Acceso,
-    Avanzado,
-}
-
 /// Resultado de «Probar conexión», actualizado desde una tarea en segundo plano.
 pub enum TestState {
     Running,
@@ -127,16 +123,6 @@ impl Dialog {
     /// Error sin reintento: `title` dice qué falló y `detail` el porqué.
     pub fn failure(title: &str, detail: impl std::fmt::Display) -> Self {
         Dialog::Error(ErrorInfo { title: title.into(), detail: detail.to_string(), retry: None })
-    }
-}
-
-impl FormErrors {
-    fn in_tab(&self, tab: EditTab) -> bool {
-        match tab {
-            EditTab::General => self.name.is_some() || self.host.is_some() || self.port.is_some() || self.user.is_some() || self.share.is_some(),
-            EditTab::Acceso => self.key_path.is_some(),
-            EditTab::Avanzado => self.forwards.iter().any(Option::is_some),
-        }
     }
 }
 
@@ -170,7 +156,8 @@ pub struct ConnForm {
     pub focus: bool,
     /// Muestra la etiqueta y los colores a mano en vez de los atajos de entorno.
     pub custom_env: bool,
-    pub tab: EditTab,
+    /// «Avanzado» desplegado.
+    pub advanced_open: bool,
     pub errors: FormErrors,
     pub test: Option<TestHandle>,
     pub color: Option<u8>,
@@ -223,7 +210,7 @@ impl ConnForm {
             secret: String::new(),
             focus: true,
             custom_env: false,
-            tab: EditTab::General,
+            advanced_open: false,
             errors: FormErrors::default(),
             test: None,
             forwards: Vec::new(),
@@ -240,11 +227,6 @@ impl ConnForm {
     /// Usa los campos de SSH (usuario, acceso, llave, salto): SSH y SFTP.
     pub fn ssh_like(&self) -> bool {
         self.is_ssh() || self.files == 1
-    }
-
-    /// Conexiones de una sola página (sin pestañas «Acceso» y «Avanzado»).
-    pub fn single_page(&self) -> bool {
-        !self.ssh_like()
     }
 
     pub fn from_connection(connection: &Connection, forwards: &[Forward]) -> Self {
@@ -302,7 +284,7 @@ impl ConnForm {
             key_path: connection.key_path.clone().unwrap_or_default(),
             init_command: connection.init_command.clone().unwrap_or_default(),
             secret: String::new(),
-            tab: EditTab::General,
+            advanced_open: false,
             errors: FormErrors::default(),
             test: None,
         }
@@ -361,9 +343,11 @@ impl ConnForm {
             }
         }
 
-        let first_tab = [EditTab::General, EditTab::Acceso, EditTab::Avanzado].into_iter().find(|tab| errors.in_tab(*tab));
-        if let Some(tab) = first_tab {
-            self.tab = tab;
+        let has_error = [&errors.name, &errors.host, &errors.port, &errors.user, &errors.key_path, &errors.share].iter().any(|e| e.is_some())
+            || errors.forwards.iter().any(Option::is_some);
+        if has_error {
+            self.advanced_open |= errors.forwards.iter().any(Option::is_some);
+            REVEAL_ERROR.store(true, std::sync::atomic::Ordering::Relaxed);
             self.errors = errors;
             return None;
         }
@@ -693,6 +677,7 @@ pub struct Spec {
     extras: Vec<String>,
     enter_submits: bool,
     backdrop_cancels: bool,
+    status: Option<(String, Color32)>,
 }
 
 impl Spec {
@@ -709,6 +694,7 @@ impl Spec {
             extras: Vec::new(),
             enter_submits: true,
             backdrop_cancels: false,
+            status: None,
         }
     }
 
@@ -761,6 +747,12 @@ impl Spec {
         self
     }
 
+    /// Una línea de estado sobre el pie (resultado de una prueba, error al guardar).
+    pub fn status(mut self, text: impl Into<String>, color: Color32) -> Self {
+        self.status = Some((text.into(), color));
+        self
+    }
+
     /// Un clic fuera cierra el diálogo; solo para los que no tienen nada que perder.
     pub fn backdrop_closes(mut self) -> Self {
         self.backdrop_cancels = true;
@@ -809,22 +801,35 @@ pub fn shell(ctx: &egui::Context, spec: Spec, body: impl FnOnce(&mut egui::Ui) -
             if let Some(context) = &spec.context {
                 ui.label(RichText::new(context).small().color(theme::subtext()));
             }
-            match icon {
-                Some(icon) => {
-                    ui.horizontal_top(|ui| {
-                        ui.spacing_mut().item_spacing.x = 12.0;
-                        let (glyph, color) = match icon {
-                            DialogIcon::Warning => (crate::icons::WARNING, theme::identity(1)),
-                            DialogIcon::Error => (crate::icons::ERROR, theme::red()),
-                            DialogIcon::Info => (crate::icons::INFO, theme::accent()),
-                        };
-                        ui.add_sized([26.0, 26.0], egui::Label::new(RichText::new(glyph).size(24.0).color(color)));
-                        ui.vertical(|ui| enter = body(ui));
-                    });
+            let mut body = Some(body);
+            let mut content = |ui: &mut egui::Ui| -> bool {
+                let body = body.take().expect("el cuerpo se dibuja una vez");
+                match icon {
+                    Some(icon) => {
+                        let mut enter = false;
+                        ui.horizontal_top(|ui| {
+                            ui.spacing_mut().item_spacing.x = 12.0;
+                            let (glyph, color) = match icon {
+                                DialogIcon::Warning => (crate::icons::WARNING, theme::identity(1)),
+                                DialogIcon::Error => (crate::icons::ERROR, theme::red()),
+                                DialogIcon::Info => (crate::icons::INFO, theme::accent()),
+                            };
+                            ui.add_sized([26.0, 26.0], egui::Label::new(RichText::new(glyph).size(24.0).color(color)));
+                            ui.vertical(|ui| enter = body(ui));
+                        });
+                        enter
+                    }
+                    None => body(ui),
                 }
-                None => enter = body(ui),
-            }
+            };
+            enter = content(ui);
         });
+
+        if let Some((text, color)) = &spec.status {
+            egui::Frame::NONE.inner_margin(egui::Margin { left: 18, right: 18, top: 0, bottom: 10 }).show(ui, |ui| {
+                ui.label(RichText::new(text.as_str()).small().color(*color));
+            });
+        }
 
         // Franja de botones.
         let (foot_rect, _) = ui.allocate_exact_size(egui::vec2(spec.width, 56.0), egui::Sense::hover());
@@ -970,9 +975,21 @@ pub fn show(
         }
         Dialog::Edit(form) => {
             let title = if form.id.is_some() { "Editar conexión" } else { "Nueva conexión" };
-            let mut spec = Spec::new(title).width(544.0).accept("Guardar").no_enter();
+            let mut spec = Spec::new(title).width(700.0).accept("Guardar").no_enter();
             if form.ssh_like() {
                 spec = spec.extra("Probar conexión");
+            }
+            let status = match (&form.errors.general, &form.test) {
+                (Some(error), _) => Some((error.clone(), theme::red())),
+                (None, Some(test)) => Some(match &*test.lock().unwrap() {
+                    TestState::Running => ("Probando la conexión…".to_string(), theme::subtext()),
+                    TestState::Ok(message) => (message.clone(), theme::identity(3)),
+                    TestState::Failed(message) => (message.clone(), theme::red()),
+                }),
+                (None, None) => None,
+            };
+            if let Some((text, color)) = status {
+                spec = spec.status(text, color);
             }
             match shell(ctx, spec, |ui| edit_body(ui, form, connections)) {
                 Action::Accept => Outcome::Save,
@@ -1070,13 +1087,14 @@ const FIELD_HEIGHT: f32 = 28.0;
 const ROW_GAP: f32 = 8.0;
 const GROUP_GAP: f32 = 18.0;
 
-/// Fila de formulario: etiqueta alineada a la izquierda y contenido que ocupa el resto.
+/// Fila de formulario: etiqueta alineada a la derecha y contenido que ocupa el resto.
 fn form_row(ui: &mut egui::Ui, label: &str, content: impl FnOnce(&mut egui::Ui)) {
     ui.horizontal_top(|ui| {
         ui.allocate_ui_with_layout(
             egui::vec2(LABEL_WIDTH, FIELD_HEIGHT),
-            egui::Layout::left_to_right(egui::Align::Center),
+            egui::Layout::right_to_left(egui::Align::Center),
             |ui| {
+                ui.set_min_width(LABEL_WIDTH);
                 ui.label(label);
             },
         );
@@ -1103,6 +1121,9 @@ fn text_input(ui: &mut egui::Ui, value: &mut String, width: f32, hint: &str, err
         .inner;
     if response.changed() {
         *error = None;
+    }
+    if broken && REVEAL_ERROR.swap(false, std::sync::atomic::Ordering::Relaxed) {
+        response.scroll_to_me(Some(egui::Align::Center));
     }
     response
 }
@@ -1348,194 +1369,202 @@ fn serial_rows(ui: &mut egui::Ui, form: &mut ConnForm) {
     });
 }
 
-fn edit_body(ui: &mut egui::Ui, form: &mut ConnForm, connections: &[Connection]) -> bool {
-    // Pestañas con subrayado, igual que la barra lateral; un punto rojo marca las que tienen errores.
-    // Telnet solo tiene una página.
-    if form.single_page() {
-        form.tab = EditTab::General;
+/// Tipos de conexión del selector: añadir uno nuevo es una fila aquí y sus brazos en `ConnKind::of` y `apply`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ConnKind {
+    Ssh,
+    Telnet,
+    Serial,
+    Sftp,
+    Ftp,
+    Smb,
+}
+
+impl ConnKind {
+    /// (tipo, nombre, grupo): el selector pone un encabezado cada vez que cambia el grupo.
+    const ALL: [(ConnKind, &'static str, &'static str); 6] = [
+        (ConnKind::Ssh, "SSH", "Terminal"),
+        (ConnKind::Telnet, "Telnet", "Terminal"),
+        (ConnKind::Serial, "Puerto serie", "Terminal"),
+        (ConnKind::Sftp, "SFTP", "Archivos"),
+        (ConnKind::Ftp, "FTP / FTPS", "Archivos"),
+        (ConnKind::Smb, "SMB", "Archivos"),
+    ];
+
+    fn of(form: &ConnForm) -> Self {
+        match (form.files, form.serial, form.telnet) {
+            (1, ..) => ConnKind::Sftp,
+            (2, ..) => ConnKind::Ftp,
+            (3, ..) => ConnKind::Smb,
+            (_, true, _) => ConnKind::Serial,
+            (_, _, true) => ConnKind::Telnet,
+            _ => ConnKind::Ssh,
+        }
     }
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 20.0;
-        ui.spacing_mut().button_padding.x = 0.0;
-        let tabs: &[(EditTab, &str)] = if form.single_page() {
-            &[(EditTab::General, "General")]
-        } else if form.files == 1 {
-            &[(EditTab::General, "General"), (EditTab::Acceso, "Acceso")]
-        } else {
-            &[(EditTab::General, "General"), (EditTab::Acceso, "Acceso"), (EditTab::Avanzado, "Avanzado")]
+
+    fn apply(self, form: &mut ConnForm) {
+        form.telnet = self == ConnKind::Telnet;
+        form.serial = self == ConnKind::Serial;
+        form.files = match self {
+            ConnKind::Sftp => 1,
+            ConnKind::Ftp => 2,
+            ConnKind::Smb => 3,
+            _ => 0,
         };
-        for &(tab, label) in tabs {
-            let broken = form.errors.in_tab(tab);
-            let selected = form.tab == tab;
-            let text = if broken { format!("{label} ●") } else { label.to_string() };
-            let color = if broken { theme::red() } else if selected { theme::text() } else { theme::subtext() };
-            let font = FontId::new(14.0, if selected { crate::ui::strong_family() } else { egui::FontFamily::Proportional });
-            let response = ui.add(egui::Button::new(RichText::new(text).font(font).color(color)).fill(Color32::TRANSPARENT));
-            if selected {
-                let y = response.rect.max.y + 1.0;
-                let line = if broken { theme::red() } else { theme::accent() };
-                ui.painter().line_segment([egui::pos2(response.rect.min.x, y), egui::pos2(response.rect.max.x, y)], egui::Stroke::new(2.0, line));
+        set_default_port(form);
+    }
+
+    fn group(self) -> &'static str {
+        Self::ALL.iter().find(|(kind, ..)| *kind == self).map_or("", |(_, _, group)| group)
+    }
+}
+
+/// Categorías del raíl izquierdo: (grupo de `ConnKind::ALL`, icono). Una categoría nueva es una fila más.
+const CATEGORIES: [(&str, &str); 2] = [("Terminal", crate::icons::TERMINAL), ("Archivos", crate::icons::FOLDER)];
+
+const RAIL_BUTTON: f32 = 56.0;
+const RAIL_WIDTH: f32 = RAIL_BUTTON + 16.0;
+
+/// Botones cuadrados de categoría, fijos a la izquierda mientras el formulario se desplaza.
+fn category_rail(ui: &mut egui::Ui, form: &mut ConnForm) {
+    let current = ConnKind::of(form).group();
+    ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing.y = 8.0;
+        ui.set_width(RAIL_BUTTON);
+        for (group, icon) in CATEGORIES {
+            let selected = group == current;
+            let (rect, response) = ui.allocate_exact_size(egui::vec2(RAIL_BUTTON, RAIL_BUTTON), egui::Sense::click());
+            let response = response.hand().on_hover_text(group);
+            let (fill, ink) = if selected { (theme::accent(), theme::base()) } else { (Color32::TRANSPARENT, theme::text()) };
+            let radius = egui::CornerRadius::same(6);
+            ui.painter().rect_filled(rect, radius, if !selected && response.hovered() { theme::selection() } else { fill });
+            if !selected {
+                ui.painter().rect_stroke(rect, radius, egui::Stroke::new(1.0, theme::surface()), egui::StrokeKind::Inside);
             }
-            if response.clicked() {
-                form.tab = tab;
+            ui.painter().text(rect.center() - egui::vec2(0.0, 8.0), egui::Align2::CENTER_CENTER, icon, FontId::proportional(22.0), ink);
+            ui.painter().text(rect.center() + egui::vec2(0.0, 17.0), egui::Align2::CENTER_CENTER, group, FontId::proportional(10.5), ink);
+            if response.clicked() && !selected {
+                if let Some((kind, ..)) = ConnKind::ALL.iter().find(|(_, _, g)| *g == group) {
+                    kind.apply(form);
+                }
             }
         }
     });
-    ui.add_space(GROUP_GAP);
+}
 
-    match form.tab {
-        EditTab::General => {
-            form_row(ui, "Nombre", |ui| {
-                let width = ui.available_width();
-                let response = text_input(ui, &mut form.name, width, "Nombre de la conexión", &mut form.errors.name);
-                if std::mem::take(&mut form.focus) {
-                    response.request_focus();
+/// Tipos de la categoría elegida: la primera línea del formulario.
+fn kind_row(ui: &mut egui::Ui, form: &mut ConnForm) {
+    // Sin etiqueta: los botones del raíl ya dicen qué se está eligiendo.
+    form_row(ui, "", |ui| {
+        let current = ConnKind::of(form);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            for (kind, name, group) in ConnKind::ALL {
+                if group == current.group() && ui.selectable_label(current == kind, name).hand().clicked() && current != kind {
+                    kind.apply(form);
                 }
-                error_line(ui, &form.errors.name);
-            });
+            }
+        });
+    });
+}
 
+fn ssh_access_rows(ui: &mut egui::Ui, form: &mut ConnForm, connections: &[Connection]) {
+    ui.add_space(ROW_GAP);
+    form_row(ui, "Usuario", |ui| {
+        let width = ui.available_width();
+        text_input(ui, &mut form.user, width, "usuario del servidor", &mut form.errors.user);
+        error_line(ui, &form.errors.user);
+    });
+    ui.add_space(ROW_GAP);
+    form_row(ui, "Autenticación", |ui| {
+        ComboBox::from_id_salt("auth")
+            .width(ui.available_width())
+            .selected_text(match form.auth {
+                Auth::Password => "Contraseña",
+                Auth::Key => "Llave privada",
+                Auth::Agent => "ssh-agent",
+                Auth::Interactive => "Interactivo (2FA)",
+            })
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut form.auth, Auth::Agent, "ssh-agent");
+                ui.selectable_value(&mut form.auth, Auth::Key, "Llave privada");
+                ui.selectable_value(&mut form.auth, Auth::Password, "Contraseña");
+                ui.selectable_value(&mut form.auth, Auth::Interactive, "Interactivo (2FA)");
+            })
+            .response
+            .hand();
+    });
+    if form.auth == Auth::Key {
+        ui.add_space(ROW_GAP);
+        form_row(ui, "Llave privada", |ui| {
+            let width = ui.available_width();
+            text_input(ui, &mut form.key_path, width, "~/.ssh/id_ed25519", &mut form.errors.key_path);
+            error_line(ui, &form.errors.key_path);
+        });
+    }
+    if matches!(form.auth, Auth::Password | Auth::Key) {
+        ui.add_space(ROW_GAP);
+        form_row(ui, if form.auth == Auth::Password { "Contraseña" } else { "Passphrase" }, |ui| {
+            let width = ui.available_width();
+            ui.add_sized(
+                [width, FIELD_HEIGHT],
+                TextEdit::singleline(&mut form.secret)
+                    .password(true)
+                    .hint_text("opcional: se guarda en el almacén")
+                    .align(egui::Align2::LEFT_CENTER),
+            );
+        });
+    }
+    ui.add_space(ROW_GAP);
+    form_row(ui, "Saltar mediante", |ui| {
+        let current = form
+            .jump
+            .and_then(|id| connections.iter().find(|c| c.id == Some(id)))
+            .map_or("Directo".to_string(), |c| c.name.clone());
+        ComboBox::from_id_salt("jump")
+            .width(ui.available_width())
+            .selected_text(current)
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut form.jump, None, "Directo");
+                for other in connections.iter().filter(|c| c.id != form.id) {
+                    ui.selectable_value(&mut form.jump, other.id, other.name.as_str());
+                }
+            })
+            .response
+            .hand();
+    });
+}
+
+fn telnet_rows(ui: &mut egui::Ui, form: &mut ConnForm) {
+    ui.add_space(ROW_GAP);
+    form_row(ui, "Codificación", |ui| {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            for (encoding, label) in Encoding::ALL {
+                ui.selectable_value(&mut form.encoding, encoding, label);
+            }
+        });
+    });
+    ui.add_space(ROW_GAP);
+    form_row(ui, "Opciones", |ui| {
+        ui.checkbox(&mut form.negotiate, "Negociar Telnet (eco, tamaño de ventana y tipo de terminal)").hand();
+        if !form.negotiate {
+            ui.label(RichText::new("Sin negociar es una conexión TCP simple: no se traducen Enter ni opciones.").small().color(theme::subtext()));
+        }
+    });
+    ui.add_space(ROW_GAP);
+    form_row(ui, "", |ui| {
+        ui.label(RichText::new("Telnet no cifra: contraseñas y comandos viajan en texto claro.").small().color(theme::red()));
+    });
+}
+
+/// Comando inicial y túneles, solo de SSH; se despliega solo si un túnel tiene un error.
+fn advanced_rows(ui: &mut egui::Ui, form: &mut ConnForm) {
+    let shown = CollapsingHeader::new(RichText::new("Avanzado").color(theme::subtext()))
+        .id_salt("conn-advanced")
+        .open(Some(form.advanced_open))
+        .show(ui, |ui| {
             ui.add_space(ROW_GAP);
-            form_row(ui, "Protocolo", |ui| {
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 4.0;
-                    for (kind, label) in [(0, "SSH"), (1, "Telnet"), (2, "Serie"), (3, "Archivos")] {
-                        let current = if form.files > 0 { 3 } else if form.serial { 2 } else if form.telnet { 1 } else { 0 };
-                        if ui.selectable_label(current == kind, label).hand().clicked() && current != kind {
-                            form.telnet = kind == 1;
-                            form.serial = kind == 2;
-                            form.files = if kind == 3 { 1 } else { 0 };
-                            set_default_port(form);
-                        }
-                    }
-                });
-            });
-            if form.files > 0 {
-                ui.add_space(ROW_GAP);
-                form_row(ui, "Tipo", |ui| {
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 4.0;
-                        for (kind, label) in [(1, "SFTP"), (2, "FTP"), (3, "SMB")] {
-                            if ui.selectable_label(form.files == kind, label).hand().clicked() && form.files != kind {
-                                form.files = kind;
-                                set_default_port(form);
-                            }
-                        }
-                    });
-                });
-            }
-
-            ui.add_space(GROUP_GAP);
-            if form.serial {
-                serial_rows(ui, form);
-            } else {
-            form_row(ui, "Servidor", |ui| {
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 8.0;
-                    let host_width = (ui.available_width() - 80.0 - 8.0).max(120.0);
-                    text_input(ui, &mut form.host, host_width, "ejemplo.com o 10.0.0.5", &mut form.errors.host);
-                    text_input(ui, &mut form.port, 80.0, "22", &mut form.errors.port);
-                });
-                error_line(ui, &form.errors.host);
-                error_line(ui, &form.errors.port);
-            });
-            }
-            if form.serial {
-            } else if form.files >= 2 {
-                files_rows(ui, form);
-            } else if !form.telnet {
-                ui.add_space(ROW_GAP);
-                form_row(ui, "Usuario", |ui| {
-                    let width = ui.available_width();
-                    text_input(ui, &mut form.user, width, "usuario del servidor", &mut form.errors.user);
-                    error_line(ui, &form.errors.user);
-                });
-            } else {
-                ui.add_space(ROW_GAP);
-                form_row(ui, "Codificación", |ui| {
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 4.0;
-                        for (encoding, label) in Encoding::ALL {
-                            ui.selectable_value(&mut form.encoding, encoding, label);
-                        }
-                    });
-                });
-                ui.add_space(ROW_GAP);
-                form_row(ui, "Opciones", |ui| {
-                    ui.checkbox(&mut form.negotiate, "Negociar Telnet (eco, tamaño de ventana y tipo de terminal)").hand();
-                    if !form.negotiate {
-                        ui.label(RichText::new("Sin negociar es una conexión TCP simple: no se traducen Enter ni opciones.").small().color(theme::subtext()));
-                    }
-                });
-                ui.add_space(ROW_GAP);
-                form_row(ui, "", |ui| {
-                    ui.label(RichText::new("Telnet no cifra: contraseñas y comandos viajan en texto claro.").small().color(theme::red()));
-                });
-            }
-
-            ui.add_space(GROUP_GAP);
-            environment_row(ui, form);
-        }
-        EditTab::Acceso => {
-            form_row(ui, "Autenticación", |ui| {
-                ComboBox::from_id_salt("auth")
-                    .width(ui.available_width())
-                    .selected_text(match form.auth {
-                        Auth::Password => "Contraseña",
-                        Auth::Key => "Llave privada",
-                        Auth::Agent => "ssh-agent",
-                        Auth::Interactive => "Interactivo (2FA)",
-                    })
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut form.auth, Auth::Agent, "ssh-agent");
-                        ui.selectable_value(&mut form.auth, Auth::Key, "Llave privada");
-                        ui.selectable_value(&mut form.auth, Auth::Password, "Contraseña");
-                        ui.selectable_value(&mut form.auth, Auth::Interactive, "Interactivo (2FA)");
-                    })
-                    .response
-                    .hand();
-            });
-            if form.auth == Auth::Key {
-                ui.add_space(ROW_GAP);
-                form_row(ui, "Llave privada", |ui| {
-                    let width = ui.available_width();
-                    text_input(ui, &mut form.key_path, width, "~/.ssh/id_ed25519", &mut form.errors.key_path);
-                    error_line(ui, &form.errors.key_path);
-                });
-            }
-            if matches!(form.auth, Auth::Password | Auth::Key) {
-                ui.add_space(ROW_GAP);
-                form_row(ui, if form.auth == Auth::Password { "Contraseña" } else { "Passphrase" }, |ui| {
-                    let width = ui.available_width();
-                    ui.add_sized(
-                        [width, FIELD_HEIGHT],
-                        TextEdit::singleline(&mut form.secret)
-                            .password(true)
-                            .hint_text("opcional: se guarda en el almacén")
-                            .align(egui::Align2::LEFT_CENTER),
-                    );
-                });
-            }
-
-            ui.add_space(GROUP_GAP);
-            form_row(ui, "Saltar mediante", |ui| {
-                let current = form
-                    .jump
-                    .and_then(|id| connections.iter().find(|c| c.id == Some(id)))
-                    .map_or("Directo".to_string(), |c| c.name.clone());
-                ComboBox::from_id_salt("jump")
-                    .width(ui.available_width())
-                    .selected_text(current)
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut form.jump, None, "Directo");
-                        for other in connections.iter().filter(|c| c.id != form.id) {
-                            ui.selectable_value(&mut form.jump, other.id, other.name.as_str());
-                        }
-                    })
-                    .response
-                    .hand();
-            });
-        }
-        EditTab::Avanzado => {
             form_row(ui, "Comando inicial", |ui| {
                 let width = ui.available_width();
                 ui.add_sized(
@@ -1589,7 +1618,10 @@ fn edit_body(ui: &mut egui::Ui, form: &mut ConnForm, connections: &[Connection])
                     }
                 });
                 if let Some(message) = &form.errors.forwards[index] {
-                    ui.label(RichText::new(message.as_str()).small().color(theme::red()));
+                    let line = ui.label(RichText::new(message.as_str()).small().color(theme::red()));
+                    if REVEAL_ERROR.swap(false, std::sync::atomic::Ordering::Relaxed) {
+                        line.scroll_to_me(Some(egui::Align::Center));
+                    }
                 } else if row.listens_on_network() {
                     ui.label(RichText::new("Escucha fuera de este equipo: otros dispositivos de la red podrán usar este túnel.").small().color(theme::identity(1)));
                 }
@@ -1607,25 +1639,77 @@ fn edit_body(ui: &mut egui::Ui, form: &mut ConnForm, connections: &[Connection])
                     .small()
                     .color(theme::subtext()),
             );
-        }
+        });
+    if shown.header_response.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+        form.advanced_open = !form.advanced_open;
     }
+}
 
-    // Resultado de «Probar conexión» y error al guardar, siempre visibles.
-    if let Some(test) = &form.test {
-        ui.add_space(ROW_GAP);
-        match &*test.lock().unwrap() {
-            TestState::Running => {
-                ui.label(RichText::new("Probando la conexión…").color(theme::subtext()));
-            }
-            TestState::Ok(message) => {
-                ui.label(RichText::new(message.as_str()).color(theme::identity(3)));
-            }
-            TestState::Failed(message) => {
-                ui.label(RichText::new(message.as_str()).color(theme::red()));
-            }
+fn edit_body(ui: &mut egui::Ui, form: &mut ConnForm, connections: &[Connection]) -> bool {
+    // Pantalla menos título, pie, márgenes y la línea de estado.
+    let room = (ui.ctx().content_rect().height() * 0.9 - 38.0 - 56.0 - 34.0 - 34.0).max(240.0);
+    ui.horizontal_top(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        category_rail(ui, form);
+        ui.add_space(RAIL_WIDTH - RAIL_BUTTON);
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
+            ScrollArea::vertical()
+                .max_height(room)
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    // La barra flotante no debe tapar el borde de los campos.
+                    ui.set_max_width(ui.available_width() - 10.0);
+                    form_fields(ui, form, connections)
+                })
+                .inner
+        })
+        .inner
+    })
+    .inner
+}
+
+fn form_fields(ui: &mut egui::Ui, form: &mut ConnForm, connections: &[Connection]) -> bool {
+    kind_row(ui, form);
+    ui.add_space(GROUP_GAP);
+    form_row(ui, "Nombre", |ui| {
+        let width = ui.available_width();
+        let response = text_input(ui, &mut form.name, width, "Nombre de la conexión", &mut form.errors.name);
+        if std::mem::take(&mut form.focus) {
+            response.request_focus();
         }
+        error_line(ui, &form.errors.name);
+    });
+    // El entorno va junto al nombre: es lo que evita escribir en el servidor equivocado.
+    ui.add_space(ROW_GAP);
+    environment_row(ui, form);
+
+    ui.add_space(GROUP_GAP);
+    let kind = ConnKind::of(form);
+    if kind == ConnKind::Serial {
+        serial_rows(ui, form);
+        return false;
     }
-    error_label(ui, &form.errors.general);
+    form_row(ui, "Servidor", |ui| {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            let host_width = (ui.available_width() - 80.0 - 8.0).max(120.0);
+            text_input(ui, &mut form.host, host_width, "ejemplo.com o 10.0.0.5", &mut form.errors.host);
+            text_input(ui, &mut form.port, 80.0, "22", &mut form.errors.port);
+        });
+        error_line(ui, &form.errors.host);
+        error_line(ui, &form.errors.port);
+    });
+    match kind {
+        ConnKind::Ssh | ConnKind::Sftp => ssh_access_rows(ui, form, connections),
+        ConnKind::Ftp | ConnKind::Smb => files_rows(ui, form),
+        ConnKind::Telnet => telnet_rows(ui, form),
+        ConnKind::Serial => {}
+    }
+    if kind == ConnKind::Ssh {
+        ui.add_space(GROUP_GAP);
+        advanced_rows(ui, form);
+    }
     false
 }
 
