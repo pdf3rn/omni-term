@@ -53,6 +53,7 @@ const MIGRATIONS: &[&str] = &[
      ALTER TABLE connections ADD COLUMN telnet_raw INTEGER NOT NULL DEFAULT 0;
      ALTER TABLE connections ADD COLUMN encoding TEXT NOT NULL DEFAULT 'utf8';
      ALTER TABLE connections ADD COLUMN telnet_quiet INTEGER NOT NULL DEFAULT 0;",
+    "ALTER TABLE connections ADD COLUMN serial_opts TEXT;",
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -129,25 +130,137 @@ impl Default for TelnetOptions {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Parity {
+    None,
+    Odd,
+    Even,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Flow {
+    None,
+    /// XON/XOFF.
+    Software,
+    /// RTS/CTS.
+    Hardware,
+}
+
+/// Qué bytes se envían al pulsar Enter.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Newline {
+    Cr,
+    Lf,
+    CrLf,
+}
+
+impl Newline {
+    pub const ALL: [(Newline, &'static str); 3] = [(Newline::Cr, "CR"), (Newline::Lf, "LF"), (Newline::CrLf, "CR LF")];
+
+    pub fn bytes(self) -> &'static [u8] {
+        match self {
+            Newline::Cr => b"\r",
+            Newline::Lf => b"\n",
+            Newline::CrLf => b"\r\n",
+        }
+    }
+}
+
+/// Parámetros de una conexión por puerto serie (el puerto va en `Connection::host`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SerialOptions {
+    pub baud: u32,
+    pub data_bits: u8,
+    pub parity: Parity,
+    pub stop_bits: u8,
+    pub flow: Flow,
+    pub newline: Newline,
+    pub local_echo: bool,
+}
+
+pub const BAUD_RATES: [u32; 8] = [9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600];
+
+impl Default for SerialOptions {
+    fn default() -> Self {
+        Self { baud: 115_200, data_bits: 8, parity: Parity::None, stop_bits: 1, flow: Flow::None, newline: Newline::Cr, local_echo: false }
+    }
+}
+
+impl SerialOptions {
+    /// `baudios,bits,paridad,paradas,flujo,salto,eco`, por ejemplo `115200,8,N,1,none,cr,0`.
+    pub fn to_text(self) -> String {
+        let parity = match self.parity {
+            Parity::None => "N",
+            Parity::Odd => "O",
+            Parity::Even => "E",
+        };
+        let flow = match self.flow {
+            Flow::None => "none",
+            Flow::Software => "xonxoff",
+            Flow::Hardware => "rtscts",
+        };
+        let newline = match self.newline {
+            Newline::Cr => "cr",
+            Newline::Lf => "lf",
+            Newline::CrLf => "crlf",
+        };
+        format!("{},{},{parity},{},{flow},{newline},{}", self.baud, self.data_bits, self.stop_bits, u8::from(self.local_echo))
+    }
+
+    /// Lo que no se entiende queda con el valor por defecto.
+    pub fn parse(text: &str) -> Self {
+        let mut options = Self::default();
+        let parts: Vec<&str> = text.split(',').collect();
+        if let Some(baud) = parts.first().and_then(|t| t.parse::<u32>().ok()).filter(|b| *b > 0) {
+            options.baud = baud;
+        }
+        if let Some(bits) = parts.get(1).and_then(|t| t.parse::<u8>().ok()).filter(|b| (5..=8).contains(b)) {
+            options.data_bits = bits;
+        }
+        options.parity = match parts.get(2) {
+            Some(&"O") => Parity::Odd,
+            Some(&"E") => Parity::Even,
+            _ => Parity::None,
+        };
+        if let Some(stop) = parts.get(3).and_then(|t| t.parse::<u8>().ok()).filter(|s| matches!(s, 1 | 2)) {
+            options.stop_bits = stop;
+        }
+        options.flow = match parts.get(4) {
+            Some(&"xonxoff") => Flow::Software,
+            Some(&"rtscts") => Flow::Hardware,
+            _ => Flow::None,
+        };
+        options.newline = match parts.get(5) {
+            Some(&"lf") => Newline::Lf,
+            Some(&"crlf") => Newline::CrLf,
+            _ => Newline::Cr,
+        };
+        options.local_echo = parts.get(6) == Some(&"1");
+        options
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Protocol {
     Ssh,
     Telnet(TelnetOptions),
+    Serial(SerialOptions),
 }
 
 impl Protocol {
     /// Columnas `protocol`, `telnet_raw`, `encoding` y `telnet_quiet`.
-    fn columns(self) -> (&'static str, bool, &'static str, bool) {
+    fn columns(self) -> (&'static str, bool, &'static str, bool, Option<String>) {
         match self {
-            Protocol::Ssh => ("ssh", false, "utf8", false),
-            Protocol::Telnet(o) => ("telnet", !o.negotiate, o.encoding.as_str(), o.quiet),
+            Protocol::Ssh => ("ssh", false, "utf8", false, None),
+            Protocol::Telnet(o) => ("telnet", !o.negotiate, o.encoding.as_str(), o.quiet, None),
+            Protocol::Serial(o) => ("serial", false, "utf8", false, Some(o.to_text())),
         }
     }
 
-    fn from_columns(protocol: &str, raw: bool, encoding: &str, quiet: bool) -> Self {
-        if protocol == "telnet" {
-            Protocol::Telnet(TelnetOptions { negotiate: !raw, encoding: Encoding::parse(encoding), quiet })
-        } else {
-            Protocol::Ssh
+    fn from_columns(protocol: &str, raw: bool, encoding: &str, quiet: bool, serial: Option<&str>) -> Self {
+        match protocol {
+            "telnet" => Protocol::Telnet(TelnetOptions { negotiate: !raw, encoding: Encoding::parse(encoding), quiet }),
+            "serial" => Protocol::Serial(SerialOptions::parse(serial.unwrap_or(""))),
+            _ => Protocol::Ssh,
         }
     }
 }
@@ -172,6 +285,15 @@ pub struct Connection {
 }
 
 impl Connection {
+    /// Solo SSH tiene explorador de archivos, túneles y credenciales.
+    pub fn is_ssh(&self) -> bool {
+        self.protocol == Protocol::Ssh
+    }
+
+    pub fn is_serial(&self) -> bool {
+        matches!(self.protocol, Protocol::Serial(_))
+    }
+
     pub fn is_telnet(&self) -> bool {
         matches!(self.protocol, Protocol::Telnet(_))
     }
@@ -181,6 +303,7 @@ impl Connection {
         match self.protocol {
             Protocol::Ssh => format!("{}@{}", self.user, self.host),
             Protocol::Telnet(_) => format!("telnet · {}:{}", self.host, self.port),
+            Protocol::Serial(o) => format!("serie · {} · {}", self.host, o.baud),
         }
     }
 }
@@ -320,7 +443,7 @@ impl Store {
     pub fn list_connections(&self) -> anyhow::Result<Vec<Connection>> {
         let mut statement = self.db.prepare(
             "SELECT id, name, host, port, user, auth, key_path, init_command, jump_id, color, env,
-                    protocol, telnet_raw, encoding, telnet_quiet
+                    protocol, telnet_raw, encoding, telnet_quiet, serial_opts
              FROM connections ORDER BY name COLLATE NOCASE",
         )?;
         let rows = statement.query_map([], |row| {
@@ -340,12 +463,13 @@ impl Store {
                 row.get::<_, bool>(12)?,
                 row.get::<_, String>(13)?,
                 row.get::<_, bool>(14)?,
+                row.get::<_, Option<String>>(15)?,
             ))
         })?;
         rows.map(|row| {
-            let (id, name, host, port, user, auth, key_path, init_command, jump, color, env, protocol, raw, encoding, quiet) = row?;
+            let (id, name, host, port, user, auth, key_path, init_command, jump, color, env, protocol, raw, encoding, quiet, serial) = row?;
             Ok(Connection {
-                protocol: Protocol::from_columns(&protocol, raw, &encoding, quiet),
+                protocol: Protocol::from_columns(&protocol, raw, &encoding, quiet, serial.as_deref()),
                 id: Some(id),
                 name,
                 host,
@@ -369,7 +493,7 @@ impl Store {
             Some(id) => {
                 self.db.execute(
                     "UPDATE connections SET name=?1, host=?2, port=?3, user=?4, auth=?5, key_path=?6, init_command=?7, jump_id=?8,
-                     color=?9, env=?10, protocol=?11, telnet_raw=?12, encoding=?13, telnet_quiet=?14 WHERE id=?15",
+                     color=?9, env=?10, protocol=?11, telnet_raw=?12, encoding=?13, telnet_quiet=?14, serial_opts=?15 WHERE id=?16",
                     params![
                         connection.name,
                         connection.host,
@@ -385,6 +509,7 @@ impl Store {
                         columns.1,
                         columns.2,
                         columns.3,
+                        columns.4,
                         id
                     ],
                 )?;
@@ -393,8 +518,8 @@ impl Store {
             None => {
                 self.db.execute(
                     "INSERT INTO connections (name, host, port, user, auth, key_path, init_command, jump_id, color, env,
-                                              protocol, telnet_raw, encoding, telnet_quiet)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                                              protocol, telnet_raw, encoding, telnet_quiet, serial_opts)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
                     params![
                         connection.name,
                         connection.host,
@@ -409,7 +534,8 @@ impl Store {
                         columns.0,
                         columns.1,
                         columns.2,
-                        columns.3
+                        columns.3,
+                        columns.4
                     ],
                 )?;
                 Ok(self.db.last_insert_rowid())
@@ -422,8 +548,8 @@ impl Store {
         let id = connection.id.context("la conexión no tiene id")?;
         self.db.execute(
             "INSERT INTO connections (id, name, host, port, user, auth, key_path, init_command, jump_id, color, env,
-                                      protocol, telnet_raw, encoding, telnet_quiet)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+                                      protocol, telnet_raw, encoding, telnet_quiet, serial_opts)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
             params![
                 id,
                 connection.name,
@@ -439,7 +565,8 @@ impl Store {
                 connection.protocol.columns().0,
                 connection.protocol.columns().1,
                 connection.protocol.columns().2,
-                connection.protocol.columns().3
+                connection.protocol.columns().3,
+                connection.protocol.columns().4
             ],
         )?;
         Ok(())
@@ -680,6 +807,26 @@ mod tests {
             color: None,
             env: None,
         }
+    }
+
+    #[test]
+    fn serial_options_round_trip_through_text_and_the_database() {
+        let options = SerialOptions { baud: 9600, data_bits: 7, parity: Parity::Even, stop_bits: 2, flow: Flow::Hardware, newline: Newline::CrLf, local_echo: true };
+        assert_eq!(options.to_text(), "9600,7,E,2,rtscts,crlf,1");
+        assert_eq!(SerialOptions::parse(&options.to_text()), options);
+        assert_eq!(SerialOptions::parse("basura"), SerialOptions::default());
+        assert_eq!(SerialOptions::parse("57600,9,X,3,zzz,qq,0").data_bits, 8);
+
+        let store = Store::open_in_memory().unwrap();
+        let mut serial = sample("consola");
+        serial.host = "/dev/ttyUSB0".into();
+        serial.port = 0;
+        serial.protocol = Protocol::Serial(options);
+        let id = store.save_connection(&serial).unwrap();
+        let loaded = store.list_connections().unwrap().into_iter().find(|c| c.id == Some(id)).unwrap();
+        assert_eq!(loaded.protocol, serial.protocol);
+        assert_eq!(loaded.target(), "serie · /dev/ttyUSB0 · 9600");
+        assert!(loaded.is_serial() && !loaded.is_ssh());
     }
 
     #[test]

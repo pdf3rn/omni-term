@@ -20,7 +20,7 @@ use crate::pane::{self, bold_family, Pane, PaneRequest, PADDING};
 use crate::settings::{CursorChoice, Settings, ThemeChoice, DEFAULT_FONT_SIZE, MAX_FONT_SIZE, MIN_FONT_SIZE};
 use crate::secrets::{account_for, SecretError, SecretKind, SecretStore, Secrets};
 use crate::ssh::{self, Credentials, JumpHost, TunnelState, Tunnels, UiEvent};
-use crate::store::{Auth, Connection, Forward, Protocol, SavedTab, Snippet, Store, TabKind};
+use crate::store::{self, Auth, Connection, Forward, Protocol, SavedTab, Snippet, Store, TabKind};
 use crate::telnet;
 use crate::term::{self, Session, TermOptions};
 use crate::theme;
@@ -433,9 +433,26 @@ impl App {
         Session::start(cols, rows, options, move || wake(), move |feed| Ok(telnet::spawn(&handle, connection, (cols, rows), feed)))
     }
 
-    /// Sesión de terminal de una conexión, por SSH o por Telnet.
+    fn serial_session(&mut self, connection: Connection) -> anyhow::Result<Session> {
+        let wake = self.wake();
+        let (cols, rows) = self.grid;
+        let options = self.term_options();
+        Session::start(cols, rows, options, move || wake(), move |feed| Ok(crate::serial::spawn(&connection, feed)))
+    }
+
+    /// ¿La pestaña activa es una conexión SSH? Solo esas tienen explorador de archivos.
+    fn active_is_ssh(&self) -> bool {
+        match self.tabs.get(self.active).map(|t| t.kind) {
+            Some(TabKind::Connection(id)) => self.connections.iter().any(|c| c.id == Some(id) && c.is_ssh()),
+            _ => false,
+        }
+    }
+
+    /// Sesión de terminal de una conexión: SSH, Telnet o puerto serie.
     fn connection_session(&mut self, connection: Connection, credentials: Credentials, tunnels: Tunnels) -> anyhow::Result<Session> {
-        if connection.is_telnet() {
+        if connection.is_serial() {
+            self.serial_session(connection)
+        } else if connection.is_telnet() {
             self.telnet_session(connection)
         } else {
             self.ssh_session(connection, credentials, tunnels)
@@ -653,6 +670,14 @@ impl App {
 
     /// Reúne los secretos necesarios (pidiéndolos si hace falta) y abre la pestaña.
     fn begin_open(&mut self, connection: Connection, slot: Option<u64>, purpose: Purpose) {
+        if connection.is_serial() {
+            if matches!(purpose, Purpose::Explorer(..)) {
+                self.notify("Un puerto serie no tiene explorador de archivos");
+            } else {
+                self.finish_open(connection, Credentials::default(), slot, purpose);
+            }
+            return;
+        }
         if let Protocol::Telnet(options) = connection.protocol {
             // Telnet no tiene credenciales guardadas ni explorador de archivos.
             if matches!(purpose, Purpose::Explorer(..)) {
@@ -3293,8 +3318,36 @@ impl eframe::App for App {
                         }
                         if let Some(TabKind::Connection(id)) = self.tabs.get(self.active).map(|t| t.kind) {
                             let files = Button::new(RichText::new(icons::FOLDER).size(17.0).color(theme::subtext())).fill(Color32::TRANSPARENT);
-                            if !tab_labels.get(self.active).is_some_and(|l| l.3) && ui.add(files).on_hover_text("Abrir el explorador de archivos de esta conexión").clicked() {
+                            if self.active_is_ssh() && ui.add(files).on_hover_text("Abrir el explorador de archivos de esta conexión").clicked() {
                                 files_tab = Some(id);
+                            }
+                        }
+                        if let Some(session) = self.tabs.get(self.active).and_then(|t| t.pane()).map(|p| &p.session).filter(|s| s.serial_status().is_some()) {
+                            if let Some(status) = session.serial_status() {
+                                let menu = ui.menu_button(RichText::new(format!("{} baudios", status.baud)).small().color(theme::subtext()), |ui| {
+                                    ui.menu_button("Velocidad", |ui| {
+                                        for rate in store::BAUD_RATES {
+                                            if ui.selectable_label(rate == status.baud, rate.to_string()).clicked() {
+                                                session.control(term::Control::Baud(rate));
+                                                ui.close();
+                                            }
+                                        }
+                                    });
+                                    if ui.button("Enviar break").clicked() {
+                                        session.control(term::Control::Break);
+                                        ui.close();
+                                    }
+                                    ui.separator();
+                                    let mut dtr = status.dtr;
+                                    if ui.checkbox(&mut dtr, "DTR").clicked() {
+                                        session.control(term::Control::Dtr(dtr));
+                                    }
+                                    let mut rts = status.rts;
+                                    if ui.checkbox(&mut rts, "RTS").clicked() {
+                                        session.control(term::Control::Rts(rts));
+                                    }
+                                });
+                                menu.response.on_hover_text("Ajustes del puerto serie");
                             }
                         }
                     });

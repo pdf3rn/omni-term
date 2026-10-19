@@ -17,6 +17,28 @@ pub trait Backend: Send + Sync {
     fn is_busy(&self) -> Option<bool> {
         None
     }
+
+    /// Ajustes en caliente de una conexión serie; el resto de backends los ignora.
+    fn control(&self, _command: Control) {}
+
+    fn serial_status(&self) -> Option<SerialStatus> {
+        None
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum Control {
+    Baud(u32),
+    Break,
+    Dtr(bool),
+    Rts(bool),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SerialStatus {
+    pub baud: u32,
+    pub dtr: bool,
+    pub rts: bool,
 }
 
 type BackendSlot = Arc<OnceLock<Weak<dyn Backend>>>;
@@ -217,6 +239,14 @@ impl Session {
 
     pub fn is_busy(&self) -> Option<bool> {
         self.backend.is_busy()
+    }
+
+    pub fn control(&self, command: Control) {
+        self.backend.control(command);
+    }
+
+    pub fn serial_status(&self) -> Option<SerialStatus> {
+        self.backend.serial_status()
     }
 
     pub fn is_disconnected(&self) -> bool {

@@ -7,7 +7,7 @@ use crate::cursor::HandExt;
 use crate::secrets::SecretKind;
 use crate::settings::{AccentChoice, CursorChoice, Settings, ThemeChoice, MAX_FONT_SIZE, MAX_SCROLLBACK, MIN_FONT_SIZE, MIN_SCROLLBACK};
 use crate::ssh::{HostKeyChange, HostKeyRequest, PromptRequest};
-use crate::store::{Encoding, Protocol, TelnetOptions, Auth, Connection, Forward, ForwardKind, Snippet};
+use crate::store::{Encoding, Flow, Newline, Parity, Protocol, SerialOptions, TelnetOptions, BAUD_RATES, Auth, Connection, Forward, ForwardKind, Snippet};
 use crate::theme;
 
 /// Atajos de entorno: nombre del botón, etiqueta que se guarda y color de identidad.
@@ -128,6 +128,17 @@ impl FormErrors {
 }
 
 pub struct ConnForm {
+    /// Conexión por puerto serie; el puerto va en `host`.
+    pub serial: bool,
+    pub baud: String,
+    pub data_bits: u8,
+    pub parity: Parity,
+    pub stop_bits: u8,
+    pub flow: Flow,
+    pub newline: Newline,
+    pub local_echo: bool,
+    /// Puertos detectados la última vez que se pulsó «Detectar».
+    pub ports: Vec<(String, String)>,
     /// Conexión Telnet en lugar de SSH.
     pub telnet: bool,
     pub negotiate: bool,
@@ -158,7 +169,17 @@ pub struct ConnForm {
 
 impl ConnForm {
     pub fn new() -> Self {
+        let serial = SerialOptions::default();
         Self {
+            serial: false,
+            baud: serial.baud.to_string(),
+            data_bits: serial.data_bits,
+            parity: serial.parity,
+            stop_bits: serial.stop_bits,
+            flow: serial.flow,
+            newline: serial.newline,
+            local_echo: serial.local_echo,
+            ports: Vec::new(),
             telnet: false,
             negotiate: true,
             encoding: Encoding::Utf8,
@@ -184,15 +205,33 @@ impl ConnForm {
         }
     }
 
+    pub fn is_ssh(&self) -> bool {
+        !self.telnet && !self.serial
+    }
+
     pub fn from_connection(connection: &Connection, forwards: &[Forward]) -> Self {
         let env = connection.env.clone().unwrap_or_default();
         let known = ENVIRONMENTS.iter().any(|(_, name, color)| env.eq_ignore_ascii_case(name) && connection.color == Some(*color));
         let custom_env = !known && (!env.is_empty() || connection.color.is_some());
         let options = match connection.protocol {
             Protocol::Telnet(options) => Some(options),
-            Protocol::Ssh => None,
+            Protocol::Ssh | Protocol::Serial(_) => None,
         };
+        let serial = match connection.protocol {
+            Protocol::Serial(options) => Some(options),
+            _ => None,
+        };
+        let serial_defaults = serial.unwrap_or_default();
         Self {
+            serial: serial.is_some(),
+            baud: serial_defaults.baud.to_string(),
+            data_bits: serial_defaults.data_bits,
+            parity: serial_defaults.parity,
+            stop_bits: serial_defaults.stop_bits,
+            flow: serial_defaults.flow,
+            newline: serial_defaults.newline,
+            local_echo: serial_defaults.local_echo,
+            ports: Vec::new(),
             telnet: options.is_some(),
             negotiate: options.map_or(true, |o| o.negotiate),
             encoding: options.map_or(Encoding::Utf8, |o| o.encoding),
@@ -229,16 +268,27 @@ impl ConnForm {
             errors.name = Some("Pon un nombre para reconocerla".into());
         }
         if host.is_empty() {
-            errors.host = Some("Indica el servidor".into());
+            errors.host = Some(if self.serial { "Indica el puerto, por ejemplo /dev/ttyUSB0" } else { "Indica el servidor" }.into());
         }
-        if user.is_empty() && !self.telnet {
+        let mut baud = 0;
+        if self.serial {
+            match self.baud.trim().parse::<u32>() {
+                Ok(value) if value > 0 => baud = value,
+                _ => errors.port = Some("Una velocidad mayor que 0".into()),
+            }
+        }
+        if user.is_empty() && !self.telnet && !self.serial {
             errors.user = Some("Indica el usuario".into());
         }
-        let port = match self.port.trim().parse::<u16>() {
-            Ok(port) if port > 0 => port,
-            _ => {
-                errors.port = Some("Un número entre 1 y 65535".into());
-                0
+        let port = if self.serial {
+            0
+        } else {
+            match self.port.trim().parse::<u16>() {
+                Ok(port) if port > 0 => port,
+                _ => {
+                    errors.port = Some("Un número entre 1 y 65535".into());
+                    0
+                }
             }
         };
         let key_path = self.key_path.trim().to_string();
@@ -246,7 +296,7 @@ impl ConnForm {
             errors.key_path = Some("Indica la ruta de la llave privada".into());
         }
         let mut forwards = Vec::new();
-        for row in self.forwards.iter().filter(|_| !self.telnet) {
+        for row in self.forwards.iter().filter(|_| self.is_ssh()) {
             match row.to_forward() {
                 Ok(forward) => {
                     forwards.push(forward);
@@ -263,10 +313,20 @@ impl ConnForm {
             return None;
         }
         self.errors = FormErrors::default();
-        let telnet = self.telnet;
+        let telnet = self.telnet || self.serial;
         let connection = Connection {
             id: self.id,
-            protocol: if telnet {
+            protocol: if self.serial {
+                Protocol::Serial(SerialOptions {
+                    baud,
+                    data_bits: self.data_bits,
+                    parity: self.parity,
+                    stop_bits: self.stop_bits,
+                    flow: self.flow,
+                    newline: self.newline,
+                    local_echo: self.local_echo,
+                })
+            } else if self.telnet {
                 Protocol::Telnet(TelnetOptions { negotiate: self.negotiate, encoding: self.encoding, quiet: self.quiet })
             } else {
                 Protocol::Ssh
@@ -833,7 +893,7 @@ pub fn show(
         Dialog::Edit(form) => {
             let title = if form.id.is_some() { "Editar conexión" } else { "Nueva conexión" };
             let mut spec = Spec::new(title).width(544.0).accept("Guardar").no_enter();
-            if !form.telnet {
+            if form.is_ssh() {
                 spec = spec.extra("Probar conexión");
             }
             match shell(ctx, spec, |ui| edit_body(ui, form, connections)) {
@@ -1057,16 +1117,99 @@ fn environment_row(ui: &mut egui::Ui, form: &mut ConnForm) {
     }
 }
 
+/// Filas del formulario de una conexión serie: puerto, velocidad, formato, flujo, Enter y eco.
+fn serial_rows(ui: &mut egui::Ui, form: &mut ConnForm) {
+    form_row(ui, "Puerto", |ui| {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            let width = (ui.available_width() - 90.0 - 8.0).max(120.0);
+            text_input(ui, &mut form.host, width, if cfg!(windows) { "COM3" } else { "/dev/ttyUSB0" }, &mut form.errors.host);
+            let detect = ui.add(egui::Button::new("Detectar").fill(Color32::TRANSPARENT).stroke(egui::Stroke::new(1.0, theme::selection())).min_size(egui::vec2(90.0, FIELD_HEIGHT)));
+            if detect.clicked() {
+                form.ports = crate::serial::detect_ports();
+            }
+            egui::Popup::menu(&detect).show(|ui| {
+                ui.set_min_width(260.0);
+                if form.ports.is_empty() {
+                    ui.label(RichText::new("No se detectó ningún puerto.").color(theme::subtext()));
+                }
+                for (path, description) in form.ports.clone() {
+                    let label = if description.is_empty() { path.clone() } else { format!("{path}   {description}") };
+                    if ui.button(label).clicked() {
+                        form.host = path;
+                        ui.close();
+                    }
+                }
+            });
+        });
+        error_line(ui, &form.errors.host);
+    });
+    ui.add_space(ROW_GAP);
+    form_row(ui, "Velocidad", |ui| {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            text_input(ui, &mut form.baud, 100.0, "115200", &mut form.errors.port);
+            let speeds = ui.add(egui::Button::new(format!("{}  baudios", crate::icons::CARET_DOWN)).fill(Color32::TRANSPARENT).stroke(egui::Stroke::new(1.0, theme::selection())).min_size(egui::vec2(0.0, FIELD_HEIGHT)));
+            egui::Popup::menu(&speeds).show(|ui| {
+                for rate in BAUD_RATES {
+                    if ui.button(rate.to_string()).clicked() {
+                        form.baud = rate.to_string();
+                        ui.close();
+                    }
+                }
+            });
+        });
+        error_line(ui, &form.errors.port);
+    });
+    ui.add_space(ROW_GAP);
+    form_row(ui, "Formato", |ui| {
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            for bits in [5u8, 6, 7, 8] {
+                ui.selectable_value(&mut form.data_bits, bits, bits.to_string());
+            }
+            ui.add_space(8.0);
+            for (parity, label) in [(Parity::None, "Sin paridad"), (Parity::Odd, "Impar"), (Parity::Even, "Par")] {
+                ui.selectable_value(&mut form.parity, parity, label);
+            }
+            ui.add_space(8.0);
+            for stop in [1u8, 2] {
+                ui.selectable_value(&mut form.stop_bits, stop, format!("{stop} parada"));
+            }
+        });
+    });
+    ui.add_space(ROW_GAP);
+    form_row(ui, "Flujo", |ui| {
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            for (flow, label) in [(Flow::None, "Ninguno"), (Flow::Software, "XON/XOFF"), (Flow::Hardware, "RTS/CTS")] {
+                ui.selectable_value(&mut form.flow, flow, label);
+            }
+        });
+    });
+    ui.add_space(ROW_GAP);
+    form_row(ui, "Enter envía", |ui| {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            for (newline, label) in Newline::ALL {
+                ui.selectable_value(&mut form.newline, newline, label);
+            }
+            ui.add_space(12.0);
+            ui.checkbox(&mut form.local_echo, "Eco local").hand();
+        });
+    });
+}
+
 fn edit_body(ui: &mut egui::Ui, form: &mut ConnForm, connections: &[Connection]) -> bool {
     // Pestañas con subrayado, igual que la barra lateral; un punto rojo marca las que tienen errores.
     // Telnet solo tiene una página.
-    if form.telnet {
+    if !form.is_ssh() {
         form.tab = EditTab::General;
     }
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 20.0;
         ui.spacing_mut().button_padding.x = 0.0;
-        let tabs: &[(EditTab, &str)] = if form.telnet {
+        let tabs: &[(EditTab, &str)] = if !form.is_ssh() {
             &[(EditTab::General, "General")]
         } else {
             &[(EditTab::General, "General"), (EditTab::Acceso, "Acceso"), (EditTab::Avanzado, "Avanzado")]
@@ -1105,13 +1248,15 @@ fn edit_body(ui: &mut egui::Ui, form: &mut ConnForm, connections: &[Connection])
             form_row(ui, "Protocolo", |ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 4.0;
-                    for (telnet, label) in [(false, "SSH"), (true, "Telnet")] {
-                        if ui.selectable_label(form.telnet == telnet, label).hand().clicked() && form.telnet != telnet {
-                            form.telnet = telnet;
+                    for (kind, label) in [(0, "SSH"), (1, "Telnet"), (2, "Serie")] {
+                        let current = if form.serial { 2 } else if form.telnet { 1 } else { 0 };
+                        if ui.selectable_label(current == kind, label).hand().clicked() && current != kind {
+                            form.telnet = kind == 1;
+                            form.serial = kind == 2;
                             // El puerto por defecto sigue al protocolo mientras no se haya tocado.
-                            let (from, to) = if telnet { ("22", "23") } else { ("23", "22") };
-                            if form.port.trim() == from {
-                                form.port = to.into();
+                            let target = if kind == 1 { "23" } else { "22" };
+                            if matches!(form.port.trim(), "22" | "23") {
+                                form.port = target.into();
                             }
                         }
                     }
@@ -1119,6 +1264,9 @@ fn edit_body(ui: &mut egui::Ui, form: &mut ConnForm, connections: &[Connection])
             });
 
             ui.add_space(GROUP_GAP);
+            if form.serial {
+                serial_rows(ui, form);
+            } else {
             form_row(ui, "Servidor", |ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 8.0;
@@ -1129,7 +1277,9 @@ fn edit_body(ui: &mut egui::Ui, form: &mut ConnForm, connections: &[Connection])
                 error_line(ui, &form.errors.host);
                 error_line(ui, &form.errors.port);
             });
-            if !form.telnet {
+            }
+            if form.serial {
+            } else if !form.telnet {
                 ui.add_space(ROW_GAP);
                 form_row(ui, "Usuario", |ui| {
                     let width = ui.available_width();
