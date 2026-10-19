@@ -20,10 +20,17 @@ impl Backend for PtyBackend {
         let _ = self.master.lock().unwrap().resize(size(cols, rows));
     }
 
+    #[cfg(unix)]
     fn is_busy(&self) -> Option<bool> {
         let leader = self.master.lock().unwrap().process_group_leader()?;
         let shell = self.child.lock().unwrap().process_id()?;
         Some(leader != shell as i32)
+    }
+
+    // ConPTY no expone el grupo de procesos en primer plano.
+    #[cfg(not(unix))]
+    fn is_busy(&self) -> Option<bool> {
+        None
     }
 }
 

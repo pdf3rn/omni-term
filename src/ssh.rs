@@ -593,6 +593,26 @@ async fn dynamic_forward(session: Arc<Handle<Client>>, tunnels: Tunnels, index: 
     }
 }
 
+type DynAgent = AgentClient<Box<dyn russh::keys::agent::client::AgentStream + Send + Unpin>>;
+
+#[cfg(unix)]
+async fn connect_agent() -> anyhow::Result<DynAgent> {
+    let agent = AgentClient::connect_env().await.map_err(|e| anyhow!("no hay ssh-agent: {e}"))?;
+    Ok(agent.dynamic())
+}
+
+/// En Windows: el agente de OpenSSH por su tubería con nombre, y si no, Pageant.
+#[cfg(windows)]
+async fn connect_agent() -> anyhow::Result<DynAgent> {
+    match AgentClient::connect_named_pipe(r"\\.\pipe\openssh-ssh-agent").await {
+        Ok(agent) => Ok(agent.dynamic()),
+        Err(pipe_error) => match AgentClient::connect_pageant().await {
+            Ok(agent) => Ok(agent.dynamic()),
+            Err(_) => bail!("no hay ssh-agent: {pipe_error}"),
+        },
+    }
+}
+
 async fn authenticate(
     session: &mut Handle<Client>,
     connection: &Connection,
@@ -615,7 +635,7 @@ async fn authenticate(
             Some(session.authenticate_publickey(user.clone(), PrivateKeyWithHashAlg::new(Arc::new(key), hash)).await?)
         }
         Auth::Agent => {
-            let mut agent = AgentClient::connect_env().await.map_err(|e| anyhow!("no hay ssh-agent: {e}"))?;
+            let mut agent = connect_agent().await?;
             let identities = agent.request_identities().await.map_err(|e| anyhow!("ssh-agent: {e}"))?;
             if identities.is_empty() {
                 bail!("el ssh-agent no tiene identidades cargadas (ssh-add)");
@@ -698,6 +718,7 @@ pub fn default_known_hosts() -> std::path::PathBuf {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "linux")]
     use std::time::Instant;
 
     use super::*;
