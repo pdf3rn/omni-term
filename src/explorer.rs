@@ -10,12 +10,12 @@ use eframe::egui::{
     self, Align2, Button, Color32, CornerRadius, FontFamily, FontId, Id, Pos2, ProgressBar, Rect,
     RichText, ScrollArea, Sense, TextEdit, UiBuilder, Vec2,
 };
-use russh_sftp::client::SftpSession;
 
 use crate::cursor::HandExt;
 use crate::icons;
 use crate::dialogs::{error_dialog, shell, Action, ErrorAction, ErrorInfo, Spec};
-use crate::sftp::{self, Entry, Sftp, SortKey};
+use crate::remotefs::{self, RemoteFs};
+use crate::sftp::{self, Entry, SortKey};
 use crate::ssh::{Credentials, UiEvent};
 use crate::store::Connection;
 use crate::theme;
@@ -35,7 +35,7 @@ pub enum Side {
 
 enum Link {
     Connecting,
-    Ready(Sftp),
+    Ready(Arc<dyn RemoteFs>),
     Failed(String),
 }
 
@@ -201,9 +201,9 @@ impl Explorer {
         let (events, wake, known_hosts) = (self.ui_events.clone(), self.wake.clone(), self.known_hosts.clone());
         let (link, inbox) = (self.link.clone(), self.inbox.clone());
         self.runtime.spawn(async move {
-            match sftp::connect(&connection, &credentials, events, wake.clone(), known_hosts).await {
+            match remotefs::connect(&connection, &credentials, events, wake.clone(), known_hosts).await {
                 Ok(client) => {
-                    let home = sftp::home(&client.session).await;
+                    let home = client.home().await;
                     *link.lock().unwrap() = Link::Ready(client);
                     inbox.lock().unwrap().push_back(Message::Connected { home });
                 }
@@ -213,9 +213,9 @@ impl Explorer {
         });
     }
 
-    fn session(&self) -> Option<Arc<SftpSession>> {
+    fn session(&self) -> Option<Arc<dyn RemoteFs>> {
         match &*self.link.lock().unwrap() {
-            Link::Ready(client) => Some(client.session.clone()),
+            Link::Ready(client) => Some(client.clone()),
             _ => None,
         }
     }
@@ -241,7 +241,7 @@ impl Explorer {
         self.remote.loading = true;
         let (path, inbox, wake) = (self.remote.path.clone(), self.inbox.clone(), self.wake.clone());
         self.runtime.spawn(async move {
-            let result = sftp::list(&session, &path).await.map_err(|e| format!("{e:#}"));
+            let result = session.list(&path).await.map_err(|e| format!("{e:#}"));
             inbox.lock().unwrap().push_back(Message::Listed { path, result });
             wake();
         });
@@ -249,7 +249,7 @@ impl Explorer {
 
     fn remote_task<F, Fut>(&mut self, work: F)
     where
-        F: FnOnce(Arc<SftpSession>) -> Fut + Send + 'static,
+        F: FnOnce(Arc<dyn RemoteFs>) -> Fut + Send + 'static,
         Fut: std::future::Future<Output = anyhow::Result<()>> + Send + 'static,
     {
         let Some(session) = self.session() else { return };
@@ -360,7 +360,7 @@ impl Explorer {
         self.start_upload(session, sources);
     }
 
-    fn start_upload(&mut self, session: Arc<SftpSession>, sources: Vec<PathBuf>) {
+    fn start_upload(&mut self, session: Arc<dyn RemoteFs>, sources: Vec<PathBuf>) {
         let transfer = transfer::upload(
             &self.runtime,
             session,
@@ -462,6 +462,7 @@ impl Explorer {
                 Side::Remote => self.connection.name.clone(),
             };
             let can_delete = side == Side::Remote;
+            let can_chmod = side == Side::Remote && self.session().is_some_and(|fs| fs.supports_permissions());
             let (state, status) = match side {
                 Side::Local => (&mut self.local, None),
                 Side::Remote => {
@@ -475,7 +476,7 @@ impl Explorer {
                     (&mut self.remote, status)
                 }
             };
-            let pane_actions = pane_ui(&mut child, side, &title, state, status.as_deref(), can_delete);
+            let pane_actions = pane_ui(&mut child, side, &title, state, status.as_deref(), can_delete, can_chmod);
             actions.extend(pane_actions.into_iter().map(|a| (side, a)));
 
             let zone = ui.interact(rect, Id::NULL.with(("explorer-drop", matches!(side, Side::Remote))), Sense::hover());
@@ -890,7 +891,7 @@ impl Explorer {
                     }
                     Side::Remote => {
                         let path = sftp::join(&self.remote.path, &name);
-                        self.remote_task(move |session| async move { sftp::make_dir(&session, &path).await });
+                        self.remote_task(move |session| async move { session.make_dir(&path).await });
                     }
                 },
             },
@@ -907,7 +908,7 @@ impl Explorer {
                     }
                     Side::Remote => {
                         let (from, to) = (sftp::join(&self.remote.path, &old), sftp::join(&self.remote.path, &new));
-                        self.remote_task(move |session| async move { sftp::rename(&session, &from, &to).await });
+                        self.remote_task(move |session| async move { session.rename(&from, &to).await });
                     }
                 },
             },
@@ -915,7 +916,7 @@ impl Explorer {
                 let paths: Vec<String> = names.iter().map(|n| sftp::join(&self.remote.path, n)).collect();
                 self.remote_task(move |session| async move {
                     for path in paths {
-                        sftp::remove(&session, &path).await?;
+                        session.remove(&path).await?;
                     }
                     Ok(())
                 });
@@ -930,7 +931,7 @@ impl Explorer {
             }
             (Outcome::Accept, Dialog::Permissions { name, mode }) => {
                 let path = sftp::join(&self.remote.path, &name);
-                self.remote_task(move |session| async move { sftp::set_permissions(&session, &path, mode).await });
+                self.remote_task(move |session| async move { session.set_permissions(&path, mode).await });
             }
             _ => {}
         }
@@ -1119,6 +1120,7 @@ fn pane_ui(
     state: &mut PaneState,
     status: Option<&str>,
     can_delete: bool,
+    can_chmod: bool,
 ) -> Vec<PaneAction> {
     let show_permissions = side == Side::Remote && ui.available_width() > 440.0;
     let mut actions = Vec::new();
@@ -1145,7 +1147,7 @@ fn pane_ui(
         if tool_button(ui, icons::PENCIL, "Renombrar (F2)", one, false) {
             actions.push(PaneAction::Rename);
         }
-        if side == Side::Remote && tool_button(ui, icons::LOCK, "Permisos", one, false) {
+        if side == Side::Remote && tool_button(ui, icons::LOCK, if can_chmod { "Permisos" } else { "Este protocolo no admite permisos" }, one && can_chmod, false) {
             actions.push(PaneAction::Permissions);
         }
         let delete_tip = if can_delete { "Eliminar (Supr)" } else { "Mover a la papelera (Supr)" };
@@ -1301,7 +1303,7 @@ fn pane_ui(
                         actions.push(PaneAction::Rename);
                         ui.close();
                     }
-                    if side == Side::Remote && ui.add_enabled(state.selected.len() == 1, Button::new("Permisos")).clicked() {
+                    if side == Side::Remote && ui.add_enabled(state.selected.len() == 1 && can_chmod, Button::new("Permisos")).clicked() {
                         actions.push(PaneAction::Permissions);
                         ui.close();
                     }

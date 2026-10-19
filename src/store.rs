@@ -240,10 +240,89 @@ impl SerialOptions {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FtpTls {
+    None,
+    /// FTPS explícito: conecta en claro y sube a TLS (AUTH TLS).
+    Explicit,
+    /// FTPS implícito: TLS desde el primer byte (puerto 990).
+    Implicit,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FtpOptions {
+    pub tls: FtpTls,
+    pub passive: bool,
+    /// Entra como `anonymous`, sin pedir contraseña.
+    pub anonymous: bool,
+    /// No avisar de que FTP sin cifrar viaja en claro.
+    pub quiet: bool,
+}
+
+impl Default for FtpOptions {
+    fn default() -> Self {
+        Self { tls: FtpTls::None, passive: true, anonymous: false, quiet: false }
+    }
+}
+
+impl FtpOptions {
+    fn to_text(self) -> String {
+        let tls = match self.tls {
+            FtpTls::None => "none",
+            FtpTls::Explicit => "explicit",
+            FtpTls::Implicit => "implicit",
+        };
+        format!("ftp,{tls},{},{},{}", u8::from(self.passive), u8::from(self.anonymous), u8::from(self.quiet))
+    }
+
+    fn parse(parts: &[&str]) -> Self {
+        let flag = |index: usize, default: bool| parts.get(index).map_or(default, |t| *t == "1");
+        Self {
+            tls: match parts.get(1) {
+                Some(&"explicit") => FtpTls::Explicit,
+                Some(&"implicit") => FtpTls::Implicit,
+                _ => FtpTls::None,
+            },
+            passive: flag(2, true),
+            anonymous: flag(3, false),
+            quiet: flag(4, false),
+        }
+    }
+}
+
+/// Conexiones «de archivos»: sin terminal, abren directamente el explorador.
+/// El recurso compartido de SMB va en `Connection::init_command` y el dominio en `key_path`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FilesKind {
+    Sftp,
+    Ftp(FtpOptions),
+    Smb,
+}
+
+impl FilesKind {
+    fn to_text(self) -> String {
+        match self {
+            FilesKind::Sftp => "sftp".into(),
+            FilesKind::Ftp(options) => options.to_text(),
+            FilesKind::Smb => "smb".into(),
+        }
+    }
+
+    fn parse(text: &str) -> Self {
+        let parts: Vec<&str> = text.split(',').collect();
+        match parts.first() {
+            Some(&"ftp") => FilesKind::Ftp(FtpOptions::parse(&parts)),
+            Some(&"smb") => FilesKind::Smb,
+            _ => FilesKind::Sftp,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Protocol {
     Ssh,
     Telnet(TelnetOptions),
     Serial(SerialOptions),
+    Files(FilesKind),
 }
 
 impl Protocol {
@@ -253,6 +332,7 @@ impl Protocol {
             Protocol::Ssh => ("ssh", false, "utf8", false, None),
             Protocol::Telnet(o) => ("telnet", !o.negotiate, o.encoding.as_str(), o.quiet, None),
             Protocol::Serial(o) => ("serial", false, "utf8", false, Some(o.to_text())),
+            Protocol::Files(kind) => ("files", false, "utf8", false, Some(kind.to_text())),
         }
     }
 
@@ -260,6 +340,7 @@ impl Protocol {
         match protocol {
             "telnet" => Protocol::Telnet(TelnetOptions { negotiate: !raw, encoding: Encoding::parse(encoding), quiet }),
             "serial" => Protocol::Serial(SerialOptions::parse(serial.unwrap_or(""))),
+            "files" => Protocol::Files(FilesKind::parse(serial.unwrap_or(""))),
             _ => Protocol::Ssh,
         }
     }
@@ -290,6 +371,30 @@ impl Connection {
         self.protocol == Protocol::Ssh
     }
 
+    /// Conexión sin terminal: solo explorador de archivos.
+    pub fn is_files(&self) -> bool {
+        matches!(self.protocol, Protocol::Files(_))
+    }
+
+    /// Recurso compartido de una conexión SMB.
+    pub fn smb_share(&self) -> &str {
+        self.init_command.as_deref().unwrap_or("")
+    }
+
+    /// Dominio de una conexión SMB.
+    pub fn smb_domain(&self) -> &str {
+        self.key_path.as_deref().unwrap_or("")
+    }
+
+    /// Nombre del protocolo si lo que escribes viaja en claro (Telnet o FTP sin cifrar).
+    pub fn insecure_protocol(&self) -> Option<&'static str> {
+        match self.protocol {
+            Protocol::Telnet(_) => Some("Telnet"),
+            Protocol::Files(FilesKind::Ftp(o)) if o.tls == FtpTls::None => Some("FTP sin cifrar"),
+            _ => None,
+        }
+    }
+
     pub fn is_serial(&self) -> bool {
         matches!(self.protocol, Protocol::Serial(_))
     }
@@ -304,6 +409,12 @@ impl Connection {
             Protocol::Ssh => format!("{}@{}", self.user, self.host),
             Protocol::Telnet(_) => format!("telnet · {}:{}", self.host, self.port),
             Protocol::Serial(o) => format!("serie · {} · {}", self.host, o.baud),
+            Protocol::Files(FilesKind::Sftp) => format!("sftp · {}@{}", self.user, self.host),
+            Protocol::Files(FilesKind::Ftp(o)) => {
+                let who = if o.anonymous { "anónimo" } else { self.user.as_str() };
+                format!("ftp · {who}@{}", self.host)
+            }
+            Protocol::Files(FilesKind::Smb) => format!("smb · \\\\{}\\{}", self.host, self.smb_share()),
         }
     }
 }
@@ -1070,5 +1181,35 @@ mod tests {
         store.clear_secrets().unwrap();
         assert_eq!(store.get_secret("conn:1").unwrap(), None);
         assert_eq!(store.meta("kdf_salt").unwrap(), None);
+    }
+
+    #[test]
+    fn files_connections_round_trip() {
+        let store = Store::open_in_memory().unwrap();
+        let kinds = [
+            FilesKind::Sftp,
+            FilesKind::Smb,
+            FilesKind::Ftp(FtpOptions { tls: FtpTls::Implicit, passive: false, anonymous: true, quiet: true }),
+        ];
+        for (n, kind) in kinds.into_iter().enumerate() {
+            let mut c = sample(&format!("files{n}"));
+            c.protocol = Protocol::Files(kind);
+            store.save_connection(&c).unwrap();
+        }
+        let loaded = store.list_connections().unwrap();
+        for kind in kinds {
+            assert!(loaded.iter().any(|c| c.protocol == Protocol::Files(kind) && c.is_files()));
+        }
+    }
+
+    #[test]
+    fn only_plain_ftp_and_telnet_are_insecure() {
+        let mut c = sample("x");
+        c.protocol = Protocol::Files(FilesKind::Ftp(FtpOptions::default()));
+        assert_eq!(c.insecure_protocol(), Some("FTP sin cifrar"));
+        c.protocol = Protocol::Files(FilesKind::Ftp(FtpOptions { tls: FtpTls::Explicit, ..FtpOptions::default() }));
+        assert_eq!(c.insecure_protocol(), None);
+        c.protocol = Protocol::Files(FilesKind::Smb);
+        assert_eq!(c.insecure_protocol(), None);
     }
 }

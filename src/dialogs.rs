@@ -7,7 +7,7 @@ use crate::cursor::HandExt;
 use crate::secrets::SecretKind;
 use crate::settings::{AccentChoice, CursorChoice, Settings, ThemeChoice, MAX_FONT_SIZE, MAX_SCROLLBACK, MIN_FONT_SIZE, MIN_SCROLLBACK};
 use crate::ssh::{HostKeyChange, HostKeyRequest, PromptRequest};
-use crate::store::{Encoding, Flow, Newline, Parity, Protocol, SerialOptions, TelnetOptions, BAUD_RATES, Auth, Connection, Forward, ForwardKind, Snippet};
+use crate::store::{Encoding, FilesKind, FtpOptions, FtpTls, Flow, Newline, Parity, Protocol, SerialOptions, TelnetOptions, BAUD_RATES, Auth, Connection, Forward, ForwardKind, Snippet};
 use crate::theme;
 
 /// Atajos de entorno: nombre del botón, etiqueta que se guarda y color de identidad.
@@ -105,6 +105,7 @@ pub struct FormErrors {
     pub port: Option<String>,
     pub user: Option<String>,
     pub key_path: Option<String>,
+    pub share: Option<String>,
     pub forwards: Vec<Option<String>>,
     /// Error al guardar que no pertenece a ningún campo.
     pub general: Option<String>,
@@ -120,7 +121,7 @@ impl Dialog {
 impl FormErrors {
     fn in_tab(&self, tab: EditTab) -> bool {
         match tab {
-            EditTab::General => self.name.is_some() || self.host.is_some() || self.port.is_some() || self.user.is_some(),
+            EditTab::General => self.name.is_some() || self.host.is_some() || self.port.is_some() || self.user.is_some() || self.share.is_some(),
             EditTab::Acceso => self.key_path.is_some(),
             EditTab::Avanzado => self.forwards.iter().any(Option::is_some),
         }
@@ -128,6 +129,14 @@ impl FormErrors {
 }
 
 pub struct ConnForm {
+    /// 0 no es de archivos; 1 SFTP; 2 FTP; 3 SMB.
+    pub files: u8,
+    pub ftp_tls: FtpTls,
+    pub ftp_passive: bool,
+    pub ftp_anonymous: bool,
+    pub ftp_quiet: bool,
+    pub smb_share: String,
+    pub smb_domain: String,
     /// Conexión por puerto serie; el puerto va en `host`.
     pub serial: bool,
     pub baud: String,
@@ -171,6 +180,13 @@ impl ConnForm {
     pub fn new() -> Self {
         let serial = SerialOptions::default();
         Self {
+            files: 0,
+            ftp_tls: FtpTls::None,
+            ftp_passive: true,
+            ftp_anonymous: false,
+            ftp_quiet: false,
+            smb_share: String::new(),
+            smb_domain: String::new(),
             serial: false,
             baud: serial.baud.to_string(),
             data_bits: serial.data_bits,
@@ -206,7 +222,17 @@ impl ConnForm {
     }
 
     pub fn is_ssh(&self) -> bool {
-        !self.telnet && !self.serial
+        !self.telnet && !self.serial && self.files == 0
+    }
+
+    /// Usa los campos de SSH (usuario, acceso, llave, salto): SSH y SFTP.
+    pub fn ssh_like(&self) -> bool {
+        self.is_ssh() || self.files == 1
+    }
+
+    /// Conexiones de una sola página (sin pestañas «Acceso» y «Avanzado»).
+    pub fn single_page(&self) -> bool {
+        !self.ssh_like()
     }
 
     pub fn from_connection(connection: &Connection, forwards: &[Forward]) -> Self {
@@ -215,14 +241,27 @@ impl ConnForm {
         let custom_env = !known && (!env.is_empty() || connection.color.is_some());
         let options = match connection.protocol {
             Protocol::Telnet(options) => Some(options),
-            Protocol::Ssh | Protocol::Serial(_) => None,
+            Protocol::Ssh | Protocol::Serial(_) | Protocol::Files(_) => None,
         };
         let serial = match connection.protocol {
             Protocol::Serial(options) => Some(options),
             _ => None,
         };
         let serial_defaults = serial.unwrap_or_default();
+        let (files, ftp) = match connection.protocol {
+            Protocol::Files(FilesKind::Sftp) => (1, FtpOptions::default()),
+            Protocol::Files(FilesKind::Ftp(options)) => (2, options),
+            Protocol::Files(FilesKind::Smb) => (3, FtpOptions::default()),
+            _ => (0, FtpOptions::default()),
+        };
         Self {
+            files,
+            ftp_tls: ftp.tls,
+            ftp_passive: ftp.passive,
+            ftp_anonymous: ftp.anonymous,
+            ftp_quiet: ftp.quiet,
+            smb_share: if files == 3 { connection.smb_share().to_string() } else { String::new() },
+            smb_domain: if files == 3 { connection.smb_domain().to_string() } else { String::new() },
             serial: serial.is_some(),
             baud: serial_defaults.baud.to_string(),
             data_bits: serial_defaults.data_bits,
@@ -277,8 +316,12 @@ impl ConnForm {
                 _ => errors.port = Some("Una velocidad mayor que 0".into()),
             }
         }
-        if user.is_empty() && !self.telnet && !self.serial {
+        let user_needed = self.ssh_like() || self.files == 3 || (self.files == 2 && !self.ftp_anonymous);
+        if user.is_empty() && user_needed {
             errors.user = Some("Indica el usuario".into());
+        }
+        if self.files == 3 && self.smb_share.trim().is_empty() {
+            errors.share = Some("Indica el recurso compartido".into());
         }
         let port = if self.serial {
             0
@@ -313,10 +356,17 @@ impl ConnForm {
             return None;
         }
         self.errors = FormErrors::default();
-        let telnet = self.telnet || self.serial;
+        let telnet = self.telnet || self.serial || self.files >= 2;
+        let anonymous = self.files == 2 && self.ftp_anonymous;
         let connection = Connection {
             id: self.id,
-            protocol: if self.serial {
+            protocol: if self.files > 0 {
+                Protocol::Files(match self.files {
+                    1 => FilesKind::Sftp,
+                    2 => FilesKind::Ftp(FtpOptions { tls: self.ftp_tls, passive: self.ftp_passive, anonymous: self.ftp_anonymous, quiet: self.ftp_quiet }),
+                    _ => FilesKind::Smb,
+                })
+            } else if self.serial {
                 Protocol::Serial(SerialOptions {
                     baud,
                     data_bits: self.data_bits,
@@ -334,10 +384,24 @@ impl ConnForm {
             name,
             host,
             port,
-            user: if telnet { String::new() } else { user },
-            auth: if telnet { Auth::Agent } else { self.auth },
-            key_path: (!telnet && self.auth == Auth::Key).then_some(key_path),
-            init_command: Some(self.init_command.trim().to_string()).filter(|c| !c.is_empty() && !telnet),
+            user: if anonymous { "anonymous".into() } else if self.telnet || self.serial { String::new() } else { user },
+            // FTP y SMB piden la contraseña al conectar; el anónimo no la pide.
+            auth: match self.files {
+                2 if anonymous => Auth::Agent,
+                2 | 3 => Auth::Password,
+                _ if telnet => Auth::Agent,
+                _ => self.auth,
+            },
+            key_path: if self.files == 3 {
+                Some(self.smb_domain.trim().to_string()).filter(|d| !d.is_empty())
+            } else {
+                (!telnet && self.auth == Auth::Key).then_some(key_path)
+            },
+            init_command: if self.files == 3 {
+                Some(self.smb_share.trim().trim_matches(['\\', '/']).to_string())
+            } else {
+                Some(self.init_command.trim().to_string()).filter(|c| !c.is_empty() && !telnet)
+            },
             jump: if telnet { None } else { self.jump },
             color: self.color,
             env: Some(self.env.trim().to_string()).filter(|e| !e.is_empty()),
@@ -549,6 +613,8 @@ pub struct TelnetWarning {
     pub slot: Option<u64>,
     pub purpose: Purpose,
     pub dont_ask: bool,
+    /// Protocolo que no cifra: «Telnet» o «FTP sin cifrar».
+    pub label: &'static str,
 }
 
 pub enum Dialog {
@@ -869,7 +935,7 @@ pub fn show(
         Dialog::TelnetWarning(warning) => {
             let spec = Spec::new("Conexión sin cifrar").width(440.0).accept("Conectar").icon(DialogIcon::Warning).no_enter();
             let action = shell(ctx, spec, |ui| {
-                ui.label(format!("«{}» usa Telnet: todo lo que escribas, contraseñas incluidas, viaja en texto claro y cualquiera en la red puede leerlo.", warning.connection.name));
+                ui.label(format!("«{}» usa {}: todo lo que envíes, contraseñas incluidas, viaja en texto claro y cualquiera en la red puede leerlo.", warning.connection.name, warning.label));
                 ui.label(RichText::new("Úsalo solo en redes de confianza o con equipos que no admiten SSH.").color(theme::subtext()));
                 ui.add_space(4.0);
                 ui.checkbox(&mut warning.dont_ask, "No volver a avisar para esta conexión").hand();
@@ -893,7 +959,7 @@ pub fn show(
         Dialog::Edit(form) => {
             let title = if form.id.is_some() { "Editar conexión" } else { "Nueva conexión" };
             let mut spec = Spec::new(title).width(544.0).accept("Guardar").no_enter();
-            if form.is_ssh() {
+            if form.ssh_like() {
                 spec = spec.extra("Probar conexión");
             }
             match shell(ctx, spec, |ui| edit_body(ui, form, connections)) {
@@ -1117,6 +1183,76 @@ fn environment_row(ui: &mut egui::Ui, form: &mut ConnForm) {
     }
 }
 
+/// El puerto por defecto sigue al protocolo mientras no se haya tocado.
+fn set_default_port(form: &mut ConnForm) {
+    let target = match (form.telnet, form.files) {
+        (true, _) => "23",
+        (_, 2) if form.ftp_tls == FtpTls::Implicit => "990",
+        (_, 2) => "21",
+        (_, 3) => "445",
+        _ => "22",
+    };
+    if matches!(form.port.trim(), "21" | "22" | "23" | "445" | "990") {
+        form.port = target.into();
+    }
+}
+
+/// Filas propias de FTP (cuenta y seguridad) y de SMB (recurso compartido, cuenta y dominio).
+fn files_rows(ui: &mut egui::Ui, form: &mut ConnForm) {
+    if form.files == 3 {
+        ui.add_space(ROW_GAP);
+        form_row(ui, "Recurso", |ui| {
+            let width = ui.available_width();
+            text_input(ui, &mut form.smb_share, width, "nombre del recurso compartido", &mut form.errors.share);
+            error_line(ui, &form.errors.share);
+        });
+    }
+    if form.files == 2 {
+        ui.add_space(ROW_GAP);
+        form_row(ui, "Cuenta", |ui| {
+            ui.checkbox(&mut form.ftp_anonymous, "Acceso anónimo").hand();
+        });
+    }
+    if form.files == 3 || !form.ftp_anonymous {
+        ui.add_space(ROW_GAP);
+        form_row(ui, "Usuario", |ui| {
+            let width = ui.available_width();
+            text_input(ui, &mut form.user, width, "usuario", &mut form.errors.user);
+            error_line(ui, &form.errors.user);
+        });
+    }
+    if form.files == 3 {
+        ui.add_space(ROW_GAP);
+        form_row(ui, "Dominio", |ui| {
+            let width = ui.available_width();
+            ui.add_sized([width, FIELD_HEIGHT], TextEdit::singleline(&mut form.smb_domain).hint_text("opcional").align(egui::Align2::LEFT_CENTER));
+        });
+    } else {
+        ui.add_space(ROW_GAP);
+        form_row(ui, "Seguridad", |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                for (tls, label) in [(FtpTls::None, "Sin cifrar"), (FtpTls::Explicit, "FTPS explícito"), (FtpTls::Implicit, "FTPS implícito")] {
+                    if ui.selectable_label(form.ftp_tls == tls, label).hand().clicked() && form.ftp_tls != tls {
+                        form.ftp_tls = tls;
+                        set_default_port(form);
+                    }
+                }
+            });
+        });
+        ui.add_space(ROW_GAP);
+        form_row(ui, "Modo", |ui| {
+            ui.checkbox(&mut form.ftp_passive, "Pasivo (recomendado tras un cortafuegos)").hand();
+        });
+        if form.ftp_tls == FtpTls::None {
+            ui.add_space(ROW_GAP);
+            form_row(ui, "", |ui| {
+                ui.label(RichText::new("FTP sin cifrar: la contraseña y los archivos viajan en texto claro.").small().color(theme::red()));
+            });
+        }
+    }
+}
+
 /// Filas del formulario de una conexión serie: puerto, velocidad, formato, flujo, Enter y eco.
 fn serial_rows(ui: &mut egui::Ui, form: &mut ConnForm) {
     form_row(ui, "Puerto", |ui| {
@@ -1203,14 +1339,16 @@ fn serial_rows(ui: &mut egui::Ui, form: &mut ConnForm) {
 fn edit_body(ui: &mut egui::Ui, form: &mut ConnForm, connections: &[Connection]) -> bool {
     // Pestañas con subrayado, igual que la barra lateral; un punto rojo marca las que tienen errores.
     // Telnet solo tiene una página.
-    if !form.is_ssh() {
+    if form.single_page() {
         form.tab = EditTab::General;
     }
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 20.0;
         ui.spacing_mut().button_padding.x = 0.0;
-        let tabs: &[(EditTab, &str)] = if !form.is_ssh() {
+        let tabs: &[(EditTab, &str)] = if form.single_page() {
             &[(EditTab::General, "General")]
+        } else if form.files == 1 {
+            &[(EditTab::General, "General"), (EditTab::Acceso, "Acceso")]
         } else {
             &[(EditTab::General, "General"), (EditTab::Acceso, "Acceso"), (EditTab::Avanzado, "Avanzado")]
         };
@@ -1248,20 +1386,31 @@ fn edit_body(ui: &mut egui::Ui, form: &mut ConnForm, connections: &[Connection])
             form_row(ui, "Protocolo", |ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 4.0;
-                    for (kind, label) in [(0, "SSH"), (1, "Telnet"), (2, "Serie")] {
-                        let current = if form.serial { 2 } else if form.telnet { 1 } else { 0 };
+                    for (kind, label) in [(0, "SSH"), (1, "Telnet"), (2, "Serie"), (3, "Archivos")] {
+                        let current = if form.files > 0 { 3 } else if form.serial { 2 } else if form.telnet { 1 } else { 0 };
                         if ui.selectable_label(current == kind, label).hand().clicked() && current != kind {
                             form.telnet = kind == 1;
                             form.serial = kind == 2;
-                            // El puerto por defecto sigue al protocolo mientras no se haya tocado.
-                            let target = if kind == 1 { "23" } else { "22" };
-                            if matches!(form.port.trim(), "22" | "23") {
-                                form.port = target.into();
-                            }
+                            form.files = if kind == 3 { 1 } else { 0 };
+                            set_default_port(form);
                         }
                     }
                 });
             });
+            if form.files > 0 {
+                ui.add_space(ROW_GAP);
+                form_row(ui, "Tipo", |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 4.0;
+                        for (kind, label) in [(1, "SFTP"), (2, "FTP"), (3, "SMB")] {
+                            if ui.selectable_label(form.files == kind, label).hand().clicked() && form.files != kind {
+                                form.files = kind;
+                                set_default_port(form);
+                            }
+                        }
+                    });
+                });
+            }
 
             ui.add_space(GROUP_GAP);
             if form.serial {
@@ -1279,6 +1428,8 @@ fn edit_body(ui: &mut egui::Ui, form: &mut ConnForm, connections: &[Connection])
             });
             }
             if form.serial {
+            } else if form.files >= 2 {
+                files_rows(ui, form);
             } else if !form.telnet {
                 ui.add_space(ROW_GAP);
                 form_row(ui, "Usuario", |ui| {

@@ -670,6 +670,8 @@ impl App {
 
     /// Reúne los secretos necesarios (pidiéndolos si hace falta) y abre la pestaña.
     fn begin_open(&mut self, connection: Connection, slot: Option<u64>, purpose: Purpose) {
+        // Las conexiones de archivos no tienen terminal: abrirlas es abrir su explorador.
+        let purpose = if connection.is_files() && matches!(purpose, Purpose::Terminal) { Purpose::Explorer(None, None) } else { purpose };
         if connection.is_serial() {
             if matches!(purpose, Purpose::Explorer(..)) {
                 self.notify("Un puerto serie no tiene explorador de archivos");
@@ -678,15 +680,27 @@ impl App {
             }
             return;
         }
-        if let Protocol::Telnet(options) = connection.protocol {
+        if let Some(label) = connection.insecure_protocol() {
+            let quiet = match connection.protocol {
+                Protocol::Telnet(options) => options.quiet,
+                Protocol::Files(store::FilesKind::Ftp(options)) => options.quiet,
+                _ => true,
+            };
+            let reconnecting = slot.is_some() || matches!(purpose, Purpose::Pane { target: PaneTarget::Replace(_), .. });
+            if !quiet && !reconnecting {
+                self.dialog = Some(Dialog::TelnetWarning(dialogs::TelnetWarning { connection, slot, purpose, dont_ask: false, label }));
+                return;
+            }
+        }
+        self.continue_open(connection, slot, purpose);
+    }
+
+    /// Pide lo que falte (contraseñas) y abre la conexión.
+    fn continue_open(&mut self, connection: Connection, slot: Option<u64>, purpose: Purpose) {
+        if connection.is_telnet() {
             // Telnet no tiene credenciales guardadas ni explorador de archivos.
             if matches!(purpose, Purpose::Explorer(..)) {
                 self.notify("Telnet no tiene explorador de archivos");
-                return;
-            }
-            let reconnecting = slot.is_some() || matches!(purpose, Purpose::Pane { target: PaneTarget::Replace(_), .. });
-            if !options.quiet && !reconnecting {
-                self.dialog = Some(Dialog::TelnetWarning(dialogs::TelnetWarning { connection, slot, purpose, dont_ask: false }));
             } else {
                 self.finish_open(connection, Credentials::default(), slot, purpose);
             }
@@ -1699,12 +1713,12 @@ impl App {
                 }
                 TabKind::Connection(id) => {
                     if let Some(connection) = self.connections.iter().find(|c| c.id == Some(id)).cloned() {
-                        self.begin_open(connection, None, Purpose::Terminal);
+                        self.continue_open(connection, None, Purpose::Terminal);
                     }
                 }
                 TabKind::Explorer(id) => {
                     if let Some(connection) = self.connections.iter().find(|c| c.id == Some(id)).cloned() {
-                        self.begin_open(connection, None, Purpose::Explorer(saved.local_path, saved.remote_path));
+                        self.continue_open(connection, None, Purpose::Explorer(saved.local_path, saved.remote_path));
                     }
                 }
             }
@@ -1762,7 +1776,7 @@ impl App {
         match (outcome, dialog) {
             (Outcome::None, dialog) => self.dialog = Some(dialog),
             (Outcome::Submit, Dialog::Error(ErrorInfo { retry: Some(Retry::Open(connection, slot, purpose)), .. })) => {
-                self.begin_open(connection, slot, purpose);
+                self.continue_open(connection, slot, purpose);
             }
             (Outcome::Cancel, Dialog::Prompt(request, _)) => {
                 let _ = request.reply.send(None);
@@ -1845,13 +1859,15 @@ impl App {
             }
             (Outcome::Submit, Dialog::TelnetWarning(mut warning)) => {
                 if warning.dont_ask {
-                    if let Protocol::Telnet(options) = &mut warning.connection.protocol {
-                        options.quiet = true;
+                    match &mut warning.connection.protocol {
+                        Protocol::Telnet(options) => options.quiet = true,
+                        Protocol::Files(store::FilesKind::Ftp(options)) => options.quiet = true,
+                        _ => {}
                     }
                     let _ = self.store.lock().unwrap().save_connection(&warning.connection);
                     self.refresh_connections();
                 }
-                self.finish_open(warning.connection, Credentials::default(), warning.slot, warning.purpose);
+                self.continue_open(warning.connection, warning.slot, warning.purpose);
             }
             (Outcome::Forget, Dialog::HostKeyChanged(change)) => {
                 let entries = known_hosts::load(&ssh::default_known_hosts()).map(|all| known_hosts::entries_for(&all, &change.host, change.port)).unwrap_or_default();
@@ -1881,7 +1897,7 @@ impl App {
                 if prompt.save && !secret.is_empty() {
                     self.save_queue.push_back((account_for(id, prompt.kind), secret));
                 }
-                self.begin_open(prompt.connection, prompt.slot, prompt.purpose);
+                self.continue_open(prompt.connection, prompt.slot, prompt.purpose);
             }
             (Outcome::Submit, Dialog::Unlock(mut prompt)) => {
                 let Some(master) = self.secrets.master().cloned() else { return };
@@ -1893,7 +1909,7 @@ impl App {
                     match master.unlock(&prompt.input) {
                         Ok(()) => {
                             match prompt.then {
-                                Pending::Open(connection, slot, purpose) => self.begin_open(connection, slot, purpose),
+                                Pending::Open(connection, slot, purpose) => self.continue_open(connection, slot, purpose),
                                 Pending::Save { account, secret } => self.save_secret(account, secret),
                             }
                             return;
@@ -2258,8 +2274,8 @@ impl App {
                                 let name_font = FontId::new(14.0, strong_family());
                                 let name_width = painter.layout_no_wrap(connection.name.clone(), name_font.clone(), Color32::PLACEHOLDER).size().x;
                                 painter.text(Pos2::new(rect.min.x, rect.min.y + 9.0), Align2::LEFT_TOP, &connection.name, name_font, theme::text());
-                                let lock_width = if connection.is_telnet() { 18.0 } else { 0.0 };
-                                if connection.is_telnet() {
+                                let lock_width = if connection.insecure_protocol().is_some() { 18.0 } else { 0.0 };
+                                if connection.insecure_protocol().is_some() {
                                     painter.text(
                                         Pos2::new(rect.min.x + name_width + 12.0, rect.min.y + 19.0),
                                         Align2::CENTER_CENTER,
@@ -3181,7 +3197,7 @@ impl eframe::App for App {
             .tabs
             .iter()
             .map(|t| {
-                let insecure = matches!(t.kind, TabKind::Connection(id) if self.connections.iter().any(|c| c.id == Some(id) && c.is_telnet()));
+                let insecure = matches!(t.kind, TabKind::Connection(id) if self.connections.iter().any(|c| c.id == Some(id) && c.insecure_protocol().is_some()));
                 (t.title(), self.identity_for(t.kind), t.attention, insecure)
             })
             .collect();

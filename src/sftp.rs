@@ -284,6 +284,7 @@ mod tests {
             .block_on(connect(&connection, &Credentials::default(), events, Arc::new(|| {}), known_hosts))
             .expect("conexión SFTP");
         let sftp = client.session.clone();
+        let fs: Arc<dyn crate::remotefs::RemoteFs> = Arc::new(client);
 
         let remote = sshd.dir.join("remote");
         let local = sshd.dir.join("local");
@@ -318,7 +319,7 @@ mod tests {
         let big: Vec<u8> = (0..300_000u32).map(|n| (n % 251) as u8).collect();
         std::fs::write(local.join("proj/a.txt"), b"version uno").unwrap();
         std::fs::write(local.join("proj/sub/b.bin"), &big).unwrap();
-        let upload = transfer::upload(runtime.handle(), sftp.clone(), vec![local.join("proj")], remote_path.clone(), transfer_events.clone(), Arc::new(|| {}));
+        let upload = transfer::upload(runtime.handle(), fs.clone(), vec![local.join("proj")], remote_path.clone(), transfer_events.clone(), Arc::new(|| {}));
         assert_eq!(wait(&upload), TransferState::Done);
         assert_eq!(upload.progress(), (big.len() as u64 + 11, big.len() as u64 + 11));
         assert_eq!(std::fs::read(remote.join("proj/a.txt")).unwrap(), b"version uno");
@@ -326,7 +327,7 @@ mod tests {
 
         // Segunda subida con el archivo cambiado: el destino existe y se renombra, sin pisar el original.
         std::fs::write(local.join("proj/a.txt"), b"version dos").unwrap();
-        let again = transfer::upload(runtime.handle(), sftp.clone(), vec![local.join("proj")], remote_path.clone(), transfer_events.clone(), Arc::new(|| {}));
+        let again = transfer::upload(runtime.handle(), fs.clone(), vec![local.join("proj")], remote_path.clone(), transfer_events.clone(), Arc::new(|| {}));
         assert_eq!(wait(&again), TransferState::Done);
         assert_eq!(std::fs::read(remote.join("proj/a.txt")).unwrap(), b"version uno");
         assert_eq!(std::fs::read(remote.join("proj/a (1).txt")).unwrap(), b"version dos");
@@ -334,7 +335,7 @@ mod tests {
         let downloads = local.join("descargas");
         std::fs::create_dir_all(&downloads).unwrap();
         let source = (join(&remote_path, "proj"), true);
-        let download = transfer::download(runtime.handle(), sftp.clone(), vec![source], downloads.clone(), transfer_events, Arc::new(|| {}));
+        let download = transfer::download(runtime.handle(), fs.clone(), vec![source], downloads.clone(), transfer_events, Arc::new(|| {}));
         assert_eq!(wait(&download), TransferState::Done);
         assert_eq!(std::fs::read(downloads.join("proj/sub/b.bin")).unwrap(), big);
         assert_eq!(std::fs::read(downloads.join("proj/a (1).txt")).unwrap(), b"version dos");

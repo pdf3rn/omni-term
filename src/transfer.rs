@@ -5,10 +5,10 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 
-use russh_sftp::client::SftpSession;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::oneshot;
 
+use crate::remotefs::RemoteFs;
 use crate::sftp;
 
 const CHUNK: usize = 64 * 1024;
@@ -169,7 +169,7 @@ where
 /// Sube archivos y carpetas locales a `remote_dir`.
 pub fn upload(
     runtime: &tokio::runtime::Handle,
-    sftp: Arc<SftpSession>,
+    fs: Arc<dyn RemoteFs>,
     sources: Vec<PathBuf>,
     remote_dir: String,
     events: Sender<TransferEvent>,
@@ -178,7 +178,7 @@ pub fn upload(
     let transfer = Transfer::new(describe(sources.iter().map(|p| p.to_string_lossy().into_owned())), true);
     let handle = transfer.clone();
     runtime.spawn(async move {
-        let result = run_upload(&handle, &sftp, sources, &remote_dir, Context { events, wake: wake.clone(), policy: None }).await;
+        let result = run_upload(&handle, fs.as_ref(), sources, &remote_dir, Context { events, wake: wake.clone(), policy: None }).await;
         handle.finish(result);
         wake();
     });
@@ -187,7 +187,7 @@ pub fn upload(
 
 async fn run_upload(
     transfer: &Transfer,
-    sftp: &SftpSession,
+    fs: &dyn RemoteFs,
     sources: Vec<PathBuf>,
     remote_dir: &str,
     mut context: Context,
@@ -201,35 +201,35 @@ async fn run_upload(
             return Ok(());
         }
         if item.is_dir {
-            if !sftp.try_exists(item.target.clone()).await.unwrap_or(false) {
-                sftp::make_dir(sftp, &item.target).await?;
+            if !fs.exists(&item.target).await {
+                fs.make_dir(&item.target).await?;
             }
             continue;
         }
         let mut target = item.target.clone();
-        if sftp.try_exists(target.clone()).await.unwrap_or(false) {
+        if fs.exists(&target).await {
             match context.resolve(sftp::file_name(&target)).await {
                 Resolution::Skip => {
                     transfer.done.fetch_add(item.size, Ordering::Relaxed);
                     continue;
                 }
                 Resolution::Replace => {}
-                Resolution::Rename => target = free_remote_name(sftp, &target).await,
+                Resolution::Rename => target = free_remote_name(fs, &target).await,
             }
         }
         let mut local = tokio::fs::File::open(&item.source).await?;
-        let mut remote = sftp.create(target).await?;
+        let mut remote = fs.open_write(&target).await?;
         copy(&mut local, &mut remote, transfer).await?;
     }
     Ok(())
 }
 
-async fn free_remote_name(sftp: &SftpSession, target: &str) -> String {
+async fn free_remote_name(fs: &dyn RemoteFs, target: &str) -> String {
     let dir = sftp::parent(target);
     let name = sftp::file_name(target);
     for n in 1.. {
         let candidate = sftp::join(&dir, &numbered(name, n));
-        if !sftp.try_exists(candidate.clone()).await.unwrap_or(false) {
+        if !fs.exists(&candidate).await {
             return candidate;
         }
     }
@@ -262,7 +262,7 @@ fn plan_local(sources: &[PathBuf], remote_dir: &str) -> anyhow::Result<Vec<Item>
 /// Baja rutas remotas (con indicación de si son carpetas) a `local_dir`.
 pub fn download(
     runtime: &tokio::runtime::Handle,
-    sftp: Arc<SftpSession>,
+    fs: Arc<dyn RemoteFs>,
     sources: Vec<(String, bool)>,
     local_dir: PathBuf,
     events: Sender<TransferEvent>,
@@ -271,7 +271,7 @@ pub fn download(
     let transfer = Transfer::new(describe(sources.iter().map(|(path, _)| path.clone())), false);
     let handle = transfer.clone();
     runtime.spawn(async move {
-        let result = run_download(&handle, &sftp, sources, &local_dir, Context { events, wake: wake.clone(), policy: None }).await;
+        let result = run_download(&handle, fs.as_ref(), sources, &local_dir, Context { events, wake: wake.clone(), policy: None }).await;
         handle.finish(result);
         wake();
     });
@@ -280,7 +280,7 @@ pub fn download(
 
 async fn run_download(
     transfer: &Transfer,
-    sftp: &SftpSession,
+    fs: &dyn RemoteFs,
     sources: Vec<(String, bool)>,
     local_dir: &Path,
     mut context: Context,
@@ -294,12 +294,12 @@ async fn run_download(
     while let Some((path, is_dir, target)) = stack.pop() {
         if is_dir {
             items.push(Item { source: path.clone(), target: target.to_string_lossy().into_owned(), is_dir: true, size: 0 });
-            let children = sftp::list(sftp, &path).await?;
+            let children = fs.list(&path).await?;
             for child in children.into_iter().rev() {
                 stack.push((sftp::join(&path, &child.name), child.is_dir, target.join(&child.name)));
             }
         } else {
-            let size = sftp.metadata(path.clone()).await.ok().and_then(|m| m.size).unwrap_or(0);
+            let size = fs.size(&path).await;
             items.push(Item { source: path, target: target.to_string_lossy().into_owned(), is_dir: false, size });
         }
     }
@@ -324,7 +324,7 @@ async fn run_download(
                 Resolution::Rename => target = free_local_name(&target),
             }
         }
-        let mut remote = sftp.open(item.source).await?;
+        let mut remote = fs.open_read(&item.source).await?;
         let mut local = tokio::fs::File::create(&target).await?;
         copy(&mut remote, &mut local, transfer).await?;
     }

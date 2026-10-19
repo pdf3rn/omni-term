@@ -294,7 +294,7 @@ pub fn spawn(handle: &tokio::runtime::Handle, connection: Connection, size: (usi
     let (tx, mut rx) = unbounded_channel::<Message>();
     let options = match connection.protocol {
         Protocol::Telnet(options) => options,
-        Protocol::Ssh | Protocol::Serial(_) => TelnetOptions::default(),
+        Protocol::Ssh | Protocol::Serial(_) | Protocol::Files(_) => TelnetOptions::default(),
     };
     let mut telnet = Telnet::new(options, (size.0 as u16, size.1 as u16));
     handle.spawn(async move {
