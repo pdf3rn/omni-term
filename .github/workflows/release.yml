@@ -101,7 +101,7 @@ jobs:
         run: sha256sum *.tar.gz *.zip > SHA256SUMS
 
       - name: Atestación de procedencia
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: |
             dist/*.tar.gz
