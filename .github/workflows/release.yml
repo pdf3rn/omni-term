@@ -24,7 +24,7 @@ jobs:
           - { os: macos-14, target: macos-arm64 }
           - { os: macos-13, target: macos-x86_64 }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Dependencias del sistema (Linux)
         if: runner.os == 'Linux'
