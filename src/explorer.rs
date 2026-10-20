@@ -1338,9 +1338,10 @@ mod tests {
         assert_eq!(labels, ["/", "var", "log", "nginx"]);
         assert_eq!(remote[2].1, "/var/log");
         assert_eq!(segments(Side::Remote, "/").len(), 1);
-        let local = segments(Side::Local, "/home/pedro");
-        assert_eq!(local.last().unwrap().1, "/home/pedro");
-        assert_eq!(local[0].1, "/");
+        let local = segments(Side::Local, "/home/user");
+        // Los tramos locales usan el separador del sistema: se comparan como rutas, no como texto.
+        assert_eq!(Path::new(&local.last().unwrap().1), Path::new("/home/user"));
+        assert_eq!(Path::new(&local[0].1), Path::new("/"));
     }
 
     #[test]
