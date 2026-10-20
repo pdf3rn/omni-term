@@ -37,9 +37,10 @@ pub enum Command {
     Palette,
     Fullscreen,
     KnownHosts,
+    Containers,
 }
 
-pub const COMMANDS: [(Command, &str); 26] = [
+pub const COMMANDS: [(Command, &str); 27] = [
     (Command::NewTab, "Nueva pestaña de terminal local"),
     (Command::NewConnection, "Nueva conexión"),
     (Command::ImportConfig, "Importar conexiones de ~/.ssh/config"),
@@ -66,6 +67,7 @@ pub const COMMANDS: [(Command, &str); 26] = [
     (Command::About, "Acerca de omni-term"),
     (Command::Fullscreen, "Pantalla completa"),
     (Command::KnownHosts, "Hosts conocidos"),
+    (Command::Containers, "Administrador de contenedores"),
 ];
 
 pub enum Target {

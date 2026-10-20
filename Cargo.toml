@@ -31,6 +31,7 @@ rfd = "0.17.2"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 russh = { version = "0.64.1", default-features = false, features = ["ring", "flate2", "rsa"] }
 russh-sftp = "3.0.1"
+serde_json = "1"
 serialport = { version = "4.10.1", default-features = false }
 sha2 = "0.10"
 smb = "0.10"

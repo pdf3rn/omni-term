@@ -640,6 +640,14 @@ pub enum Dialog {
     HostKey(HostKeyRequest),
     Prompt(PromptRequest, Vec<String>),
     ConfirmReset(Pending),
+    ConfirmContainer(ContainerConfirm),
+}
+
+/// Detener o reiniciar un contenedor, pendiente de confirmar.
+pub struct ContainerConfirm {
+    pub endpoint: crate::docker::Endpoint,
+    pub container: crate::docker::Container,
+    pub action: crate::docker::Action,
 }
 
 pub enum Outcome {
@@ -1018,6 +1026,19 @@ pub fn show(
         Dialog::SnippetVars(prompt) => {
             let accept = if prompt.run { "Insertar y ejecutar" } else { "Insertar" };
             let action = shell(ctx, Spec::new(prompt.title.clone()).accept(accept), |ui| vars_body(ui, prompt));
+            plain(action, Outcome::Submit)
+        }
+        Dialog::ConfirmContainer(confirm) => {
+            use crate::docker::Action;
+            let (title, accept, effect) = match confirm.action {
+                Action::Restart => ("Reiniciar el contenedor", "Reiniciar", "se reiniciará y perderá las conexiones abiertas"),
+                _ => ("Detener el contenedor", "Detener", "dejará de responder"),
+            };
+            let spec = Spec::new(title).width(400.0).accept(accept).icon(DialogIcon::Warning);
+            let action = shell(ctx, spec, |ui| {
+                ui.label(format!("«{}» ({}) {effect}.", confirm.container.name, confirm.container.image));
+                false
+            });
             plain(action, Outcome::Submit)
         }
         Dialog::ConfirmReset(_) => {

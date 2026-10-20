@@ -9,7 +9,9 @@ use eframe::egui::{
 };
 use zeroize::Zeroizing;
 
+use crate::containers::{self, ContainersView};
 use crate::cursor::HandExt;
+use crate::docker;
 use crate::dialogs::{self, CloseAction, CloseConfirm, ConnForm, Dialog, ErrorInfo, Outcome, PaneTarget, Pending, Purpose, Retry, SecretPrompt, SnippetForm, TestState, UnlockPrompt, VarsPrompt};
 use crate::layout::{Dir, Tree};
 use crate::explorer::Explorer;
@@ -89,6 +91,7 @@ enum Body {
         tunnels: Option<Tunnels>,
     },
     Explorer(Box<Explorer>),
+    Containers(Box<ContainersView>),
 }
 
 struct Tab {
@@ -116,6 +119,7 @@ impl Tab {
     /// Qué está haciendo la pestaña que se perdería al cerrarla, si algo.
     fn busy_reason(&self) -> Option<String> {
         match &self.body {
+            Body::Containers(_) => None,
             Body::Explorer(explorer) => {
                 let n = explorer.running_transfers();
                 (n > 0).then(|| if n == 1 { "1 transferencia en curso".to_string() } else { format!("{n} transferencias en curso") })
@@ -141,7 +145,7 @@ impl Tab {
     fn pane_mut(&mut self) -> Option<&mut Pane> {
         match &mut self.body {
             Body::Terminal { panes, focused, .. } => panes.get_mut(*focused),
-            Body::Explorer(_) => None,
+            Body::Explorer(_) | Body::Containers(_) => None,
         }
     }
 
@@ -149,14 +153,14 @@ impl Tab {
     fn pane(&self) -> Option<&Pane> {
         match &self.body {
             Body::Terminal { panes, focused, .. } => panes.get(*focused),
-            Body::Explorer(_) => None,
+            Body::Explorer(_) | Body::Containers(_) => None,
         }
     }
 
     fn tunnels(&self) -> Option<Tunnels> {
         match &self.body {
             Body::Terminal { tunnels, .. } => tunnels.clone(),
-            Body::Explorer(_) => None,
+            Body::Explorer(_) | Body::Containers(_) => None,
         }
     }
 
@@ -171,6 +175,7 @@ impl Tab {
                 if title.is_empty() { self.label.clone() } else { title }
             }
             Body::Explorer(explorer) => explorer.label(),
+            Body::Containers(view) => view.label(),
         }
     }
 }
@@ -478,6 +483,48 @@ impl App {
         Ok(())
     }
 
+    /// Abre el administrador de contenedores, o vuelve a él si ya hay uno abierto.
+    fn open_containers(&mut self) {
+        if let Some(index) = self.tabs.iter().position(|t| t.kind == TabKind::Containers) {
+            self.active = index;
+            return;
+        }
+        let view = ContainersView::new(self.runtime.handle().clone(), self.wake());
+        let id = self.take_tab_id();
+        self.tabs.push(Tab { id, kind: TabKind::Containers, label: "Contenedores".into(), custom: None, attention: false, body: Body::Containers(Box::new(view)) });
+        self.active = self.tabs.len() - 1;
+    }
+
+    /// Terminal dentro de un contenedor, en una pestaña nueva.
+    fn open_container_terminal(&mut self, endpoint: docker::Endpoint, container: &docker::Container) {
+        let wake = self.wake();
+        let handle = self.runtime.handle().clone();
+        let (cols, rows) = self.grid;
+        let options = self.term_options();
+        let (id, name) = (container.id.clone(), container.name.clone());
+        let started = Session::start(cols, rows, options, move || wake(), move |feed| Ok(docker::spawn(&handle, endpoint, id, name.clone(), (cols, rows), feed)));
+        match started {
+            Ok(session) => {
+                let tab_id = self.take_tab_id();
+                let body = Body::terminal(Pane::new(session, self.debug_keys, 1), None);
+                self.tabs.push(Tab { id: tab_id, kind: TabKind::Container, label: container.name.clone(), custom: None, attention: false, body });
+                self.active = self.tabs.len() - 1;
+            }
+            Err(error) => self.dialog = Some(Dialog::failure("No se pudo abrir el terminal", format!("{error:#}"))),
+        }
+    }
+
+    /// Ejecuta una acción confirmada sobre un contenedor con el administrador abierto.
+    fn container_action(&mut self, confirm: dialogs::ContainerConfirm) {
+        let view = self.tabs.iter().find_map(|t| match &t.body {
+            Body::Containers(view) => Some(view),
+            _ => None,
+        });
+        if let Some(view) = view {
+            view.act(confirm.endpoint, &confirm.container, confirm.action);
+        }
+    }
+
     fn take_tab_id(&mut self) -> u64 {
         self.next_tab_id += 1;
         self.next_tab_id
@@ -554,7 +601,7 @@ impl App {
                     self.begin_open(connection, None, Purpose::Pane { tab: tab_id, target: PaneTarget::Split(dir) });
                 }
             }
-            TabKind::Explorer(_) => {}
+            TabKind::Explorer(_) | TabKind::Containers | TabKind::Container => {}
         }
     }
 
@@ -838,7 +885,7 @@ impl App {
                 .find(|c| c.id == Some(id))
                 .and_then(|c| c.color)
                 .map(theme::identity),
-            TabKind::Local => None,
+            TabKind::Local | TabKind::Containers | TabKind::Container => None,
         }
     }
 
@@ -847,7 +894,7 @@ impl App {
             TabKind::Connection(id) | TabKind::Explorer(id) => {
                 self.connections.iter().find(|c| c.id == Some(id)).and_then(|c| c.env.clone())
             }
-            TabKind::Local => None,
+            TabKind::Local | TabKind::Containers | TabKind::Container => None,
         }
     }
 
@@ -1330,6 +1377,7 @@ impl App {
             Command::ImportConfig => self.import_ssh_config(),
             Command::Settings => self.dialog = Some(Dialog::Settings(Default::default())),
             Command::KnownHosts => self.dialog = Some(Dialog::Settings(dialogs::SettingsTab::Hosts)),
+            Command::Containers => self.open_containers(),
             Command::Shortcuts => self.dialog = Some(Dialog::Settings(dialogs::SettingsTab::Atajos)),
             Command::About => self.dialog = Some(Dialog::About),
             Command::Palette => self.palette = Some(Palette::default()),
@@ -1475,6 +1523,7 @@ impl App {
                         item(ui, "Pestaña siguiente", "Ctrl+Tab", several, Command::NextTab);
                         item(ui, "Pestaña anterior", "Ctrl+Mayús+Tab", several, Command::PrevTab);
                         item(ui, "Explorador de archivos de esta conexión", "", on_connection, Command::Files);
+                        item(ui, "Contenedores", "", true, Command::Containers);
                         ui.separator();
                         ui.add_enabled_ui(!recents.is_empty(), |ui| {
                             ui.menu_button("Conexiones recientes", |ui| {
@@ -1733,6 +1782,7 @@ impl App {
                         self.continue_open(connection, None, Purpose::Explorer(saved.local_path, saved.remote_path));
                     }
                 }
+                TabKind::Containers | TabKind::Container => {}
             }
         } else if let Some(active) = self.restore_active.take() {
             if self.tabs.is_empty() {
@@ -1746,18 +1796,22 @@ impl App {
         if self.restore_active.is_some() {
             return;
         }
+        // Los contenedores son efímeros: ni el administrador ni sus terminales se restauran.
+        let persisted = |t: &Tab| !matches!(t.kind, TabKind::Containers | TabKind::Container);
         let tabs: Vec<SavedTab> = self
             .tabs
             .iter()
+            .filter(|t| persisted(t))
             .map(|t| match &t.body {
                 Body::Explorer(explorer) => {
                     let (local, remote) = explorer.paths();
                     SavedTab { kind: t.kind, local_path: Some(local), remote_path: Some(remote).filter(|r| !r.is_empty()) }
                 }
-                Body::Terminal { .. } => SavedTab::plain(t.kind),
+                Body::Terminal { .. } | Body::Containers(_) => SavedTab::plain(t.kind),
             })
             .collect();
-        let layout = (tabs, self.active);
+        let active = self.tabs.iter().take(self.active + 1).filter(|t| persisted(t)).count().saturating_sub(1);
+        let layout = (tabs, active);
         if layout != self.saved_layout {
             if let Err(error) = self.store.lock().unwrap().save_layout(&layout.0, layout.1) {
                 eprintln!("no se pudo guardar la sesión: {error:#}");
@@ -1793,7 +1847,7 @@ impl App {
             (Outcome::Cancel, Dialog::Prompt(request, _)) => {
                 let _ = request.reply.send(None);
             }
-            (Outcome::Cancel, Dialog::Secret(_) | Dialog::Unlock(_) | Dialog::Edit(_) | Dialog::Error(_) | Dialog::HostKeyChanged(_) | Dialog::Settings(_) | Dialog::About | Dialog::ConfirmClose(_) | Dialog::TelnetWarning(_) | Dialog::Snippet(_) | Dialog::SnippetVars(_) | Dialog::ConfirmReset(_)) => {}
+            (Outcome::Cancel, Dialog::Secret(_) | Dialog::ConfirmContainer(_) | Dialog::Unlock(_) | Dialog::Edit(_) | Dialog::Error(_) | Dialog::HostKeyChanged(_) | Dialog::Settings(_) | Dialog::About | Dialog::ConfirmClose(_) | Dialog::TelnetWarning(_) | Dialog::Snippet(_) | Dialog::SnippetVars(_) | Dialog::ConfirmReset(_)) => {}
             (Outcome::Cancel, dialog) => self.dialog = Some(dialog),
             (Outcome::Submit, Dialog::Prompt(request, answers)) => {
                 let _ = request.reply.send(Some(answers));
@@ -1902,6 +1956,7 @@ impl App {
                 self.ask_unlock(then);
             }
             (Outcome::ResetMasterKey, Dialog::Unlock(prompt)) => self.dialog = Some(Dialog::ConfirmReset(prompt.then)),
+            (Outcome::Submit, Dialog::ConfirmContainer(confirm)) => self.container_action(confirm),
             (Outcome::Submit, Dialog::Secret(prompt)) => {
                 let secret = Zeroizing::new(prompt.input);
                 let id = prompt.asking.id.unwrap_or_default();
@@ -2780,13 +2835,14 @@ enum PlusChoice {
     Local,
     Connect(Connection),
     Files(Connection),
+    Containers,
     All,
 }
 
 /// Contenido del menú del «+»: terminal local primero, luego conexiones recientes y «Ver todas».
 fn plus_menu(ui: &mut egui::Ui, recents: &[Connection], selected: &mut usize, choice: &mut Option<PlusChoice>) {
     ui.set_width(310.0);
-    let rows = recents.len() + 2;
+    let rows = recents.len() + 3;
     let (down, up, enter) = ui.ctx().input_mut(|i| {
         (
             i.consume_key(Modifiers::NONE, Key::ArrowDown),
@@ -2860,6 +2916,13 @@ fn plus_menu(ui: &mut egui::Ui, recents: &[Connection], selected: &mut usize, ch
     }
 
     ui.add_space(4.0);
+    let containers_index = rows - 2;
+    let (rect, clicked) = row(ui, containers_index, selected);
+    ui.painter().text(rect.min + Vec2::new(20.0, 20.0), Align2::CENTER_CENTER, icons::DOTS, FontId::proportional(16.0), theme::subtext());
+    ui.painter().text(rect.min + Vec2::new(42.0, 20.0), Align2::LEFT_CENTER, "Contenedores", FontId::new(14.0, FontFamily::Proportional), theme::text());
+    if clicked {
+        picked = Some(containers_index);
+    }
     let index = rows - 1;
     let (rect, clicked) = row(ui, index, selected);
     ui.painter().text(rect.min + Vec2::new(20.0, 20.0), Align2::CENTER_CENTER, icons::SEARCH, FontId::proportional(16.0), theme::subtext());
@@ -2872,6 +2935,7 @@ fn plus_menu(ui: &mut egui::Ui, recents: &[Connection], selected: &mut usize, ch
     let result = match (files_for, picked) {
         (Some(index), _) => recents.get(index - 1).cloned().map(PlusChoice::Files),
         (None, Some(0)) => Some(PlusChoice::Local),
+        (None, Some(index)) if index == rows - 2 => Some(PlusChoice::Containers),
         (None, Some(index)) if index == rows - 1 => Some(PlusChoice::All),
         (None, Some(index)) => recents.get(index - 1).cloned().map(PlusChoice::Connect),
         (None, None) => None,
@@ -3394,6 +3458,7 @@ impl eframe::App for App {
             Some(PlusChoice::Local) => self.open_queue.push_back(SavedTab::plain(TabKind::Local)),
             Some(PlusChoice::Connect(connection)) => self.begin_open(connection, None, Purpose::Terminal),
             Some(PlusChoice::Files(connection)) => self.begin_open(connection, None, Purpose::Explorer(None, None)),
+            Some(PlusChoice::Containers) => self.open_containers(),
             Some(PlusChoice::All) => self.palette = Some(Palette::default()),
             None => {}
         }
@@ -3518,6 +3583,8 @@ impl eframe::App for App {
             let input_enabled = self.dialog.is_none() && self.pending_ui.is_empty() && self.palette.is_none() && !self.sidebar_nav;
             let font_size = self.settings.font_size;
             let mut disconnected = false;
+            let mut container_request = None;
+            let mut messages: Vec<String> = Vec::new();
             let mut request = None;
             let mut snippet_text: Option<String> = None;
             match &mut self.tabs[active].body {
@@ -3579,6 +3646,20 @@ impl eframe::App for App {
                     }
                 }
                 Body::Explorer(explorer) => explorer.show(ui, area.shrink2(Vec2::new(8.0, 8.0))),
+                Body::Containers(view) => {
+                    container_request = view.show(ui, area.shrink2(Vec2::new(16.0, 12.0)));
+                    messages = view.take_messages();
+                }
+            }
+            for message in messages {
+                self.notify(message);
+            }
+            match container_request {
+                Some(containers::Request::Terminal(endpoint, container)) => self.open_container_terminal(endpoint, &container),
+                Some(containers::Request::Confirm(endpoint, container, action)) => {
+                    self.dialog = Some(Dialog::ConfirmContainer(dialogs::ContainerConfirm { endpoint, container, action }));
+                }
+                None => {}
             }
             if let Some(text) = snippet_text {
                 self.dialog = Some(Dialog::Snippet(SnippetForm::new(text)));
@@ -3600,7 +3681,7 @@ impl eframe::App for App {
                 self.window_title = title;
             }
 
-            if disconnected {
+            if disconnected && self.tabs[active].kind != TabKind::Container {
                 let mut clicked = false;
                 egui::Area::new(egui::Id::NULL.with("reconnect"))
                     .pivot(Align2::CENTER_BOTTOM)

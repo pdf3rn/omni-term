@@ -3,6 +3,8 @@
 
 mod adb;
 mod cursor;
+mod containers;
+mod docker;
 mod dialogs;
 mod explorer;
 mod ftp;

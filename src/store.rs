@@ -501,6 +501,9 @@ pub enum TabKind {
     Local,
     Connection(i64),
     Explorer(i64),
+    /// Administrador de contenedores y terminales dentro de uno: no se guardan en la sesión.
+    Containers,
+    Container,
 }
 
 /// Una pestaña tal como se guarda: su tipo y, en el explorador, las dos rutas.
@@ -836,7 +839,7 @@ impl Store {
         tx.execute("DELETE FROM layout_tabs", [])?;
         for (position, tab) in tabs.iter().enumerate() {
             let (kind, connection_id) = match tab.kind {
-                TabKind::Local => ("local", None),
+                TabKind::Local | TabKind::Containers | TabKind::Container => ("local", None),
                 TabKind::Connection(id) => ("connection", Some(id)),
                 TabKind::Explorer(id) => ("explorer", Some(id)),
             };
