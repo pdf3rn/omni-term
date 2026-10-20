@@ -20,7 +20,7 @@ Use [Conventional Commits](https://www.conventionalcommits.org/): `feat:`, `fix:
 
 Versions follow [Semantic Versioning](https://semver.org/) and are automatic:
 
-1. Every push to `master` makes [release-plz](https://release-plz.dev) open or update a `chore(release)` pull request with the new version and the `CHANGELOG.md` entry.
+1. Every push to `main` makes [release-plz](https://release-plz.dev) open or update a `chore(release)` pull request with the new version and the `CHANGELOG.md` entry.
 2. Merging that pull request creates the `vX.Y.Z` tag.
 3. The tag runs `release.yml`, which builds Linux, Windows and macOS binaries and publishes them.
 
