@@ -1,10 +1,15 @@
 //! Capa común de «sistema de archivos remoto»: el explorador y las transferencias no saben
 //! si hablan SFTP, FTP o SMB.
 
+use std::future::Future;
+use std::io;
+use std::pin::Pin;
 use std::sync::{mpsc as std_mpsc, Arc};
+use std::task::{Context, Poll};
 
 use async_trait::async_trait;
-use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::io::{AsyncRead, AsyncWrite, DuplexStream, ReadBuf};
+use tokio::task::JoinHandle;
 
 use crate::sftp::{self, Entry, Sftp};
 use crate::ssh::{Credentials, UiEvent};
@@ -106,9 +111,63 @@ pub async fn connect(
     match connection.protocol {
         Protocol::Files(FilesKind::Ftp(_)) => crate::ftp::connect(connection, credentials).await,
         Protocol::Files(FilesKind::Smb) => crate::smb::connect(connection, credentials).await,
+        Protocol::Adb => crate::adb::connect(connection).await,
         _ => {
             let client = sftp::connect(connection, credentials, events, wake, known_hosts).await?;
             Ok(Arc::new(client))
+        }
+    }
+}
+
+/// Extremo de la tubería hacia la tarea que habla el protocolo remoto: al terminar (EOF al leer, `shutdown` al escribir)
+/// espera el resultado de la tarea, para que un fallo de red llegue como error y no como archivo truncado.
+pub struct PipeEnd {
+    inner: DuplexStream,
+    task: Option<JoinHandle<io::Result<()>>>,
+}
+
+impl PipeEnd {
+    pub fn new(inner: DuplexStream, task: JoinHandle<io::Result<()>>) -> Self {
+        Self { inner, task: Some(task) }
+    }
+}
+
+impl PipeEnd {
+    fn poll_task(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        let Some(task) = self.task.as_mut() else { return Poll::Ready(Ok(())) };
+        match Pin::new(task).poll(cx) {
+            Poll::Ready(result) => {
+                self.task = None;
+                Poll::Ready(result.unwrap_or_else(|e| Err(io::Error::other(e.to_string()))))
+            }
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+impl AsyncRead for PipeEnd {
+    fn poll_read(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<io::Result<()>> {
+        let before = buf.filled().len();
+        match Pin::new(&mut self.inner).poll_read(cx, buf) {
+            Poll::Ready(Ok(())) if buf.filled().len() == before => self.poll_task(cx),
+            other => other,
+        }
+    }
+}
+
+impl AsyncWrite for PipeEnd {
+    fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.inner).poll_write(cx, buf)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        match Pin::new(&mut self.inner).poll_shutdown(cx) {
+            Poll::Ready(Ok(())) => self.poll_task(cx),
+            other => other,
         }
     }
 }

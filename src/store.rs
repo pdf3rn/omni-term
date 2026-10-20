@@ -323,6 +323,8 @@ pub enum Protocol {
     Telnet(TelnetOptions),
     Serial(SerialOptions),
     Files(FilesKind),
+    /// Dispositivo Android por el servidor `adb`: el número de serie (o `ip:puerto`) va en `host`.
+    Adb,
 }
 
 impl Protocol {
@@ -333,6 +335,7 @@ impl Protocol {
             Protocol::Telnet(o) => ("telnet", !o.negotiate, o.encoding.as_str(), o.quiet, None),
             Protocol::Serial(o) => ("serial", false, "utf8", false, Some(o.to_text())),
             Protocol::Files(kind) => ("files", false, "utf8", false, Some(kind.to_text())),
+            Protocol::Adb => ("adb", false, "utf8", false, None),
         }
     }
 
@@ -341,6 +344,7 @@ impl Protocol {
             "telnet" => Protocol::Telnet(TelnetOptions { negotiate: !raw, encoding: Encoding::parse(encoding), quiet }),
             "serial" => Protocol::Serial(SerialOptions::parse(serial.unwrap_or(""))),
             "files" => Protocol::Files(FilesKind::parse(serial.unwrap_or(""))),
+            "adb" => Protocol::Adb,
             _ => Protocol::Ssh,
         }
     }
@@ -395,6 +399,10 @@ impl Connection {
         }
     }
 
+    pub fn is_adb(&self) -> bool {
+        self.protocol == Protocol::Adb
+    }
+
     pub fn is_serial(&self) -> bool {
         matches!(self.protocol, Protocol::Serial(_))
     }
@@ -409,6 +417,8 @@ impl Connection {
             Protocol::Ssh => format!("{}@{}", self.user, self.host),
             Protocol::Telnet(_) => format!("telnet · {}:{}", self.host, self.port),
             Protocol::Serial(o) => format!("serie · {} · {}", self.host, o.baud),
+            Protocol::Adb if self.host.is_empty() => "adb · el dispositivo conectado".to_string(),
+            Protocol::Adb => format!("adb · {}", self.host),
             Protocol::Files(FilesKind::Sftp) => format!("sftp · {}@{}", self.user, self.host),
             Protocol::Files(FilesKind::Ftp(o)) => {
                 let who = if o.anonymous { "anónimo" } else { self.user.as_str() };

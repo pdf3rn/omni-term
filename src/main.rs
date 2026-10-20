@@ -1,6 +1,7 @@
 // En Windows el binario de release no abre una consola detrás de la ventana.
 #![cfg_attr(all(not(debug_assertions), target_os = "windows"), windows_subsystem = "windows")]
 
+mod adb;
 mod cursor;
 mod dialogs;
 mod explorer;

@@ -433,6 +433,14 @@ impl App {
         Session::start(cols, rows, options, move || wake(), move |feed| Ok(telnet::spawn(&handle, connection, (cols, rows), feed)))
     }
 
+    fn adb_session(&mut self, connection: Connection) -> anyhow::Result<Session> {
+        let wake = self.wake();
+        let handle = self.runtime.handle().clone();
+        let (cols, rows) = self.grid;
+        let options = self.term_options();
+        Session::start(cols, rows, options, move || wake(), move |feed| Ok(crate::adb::spawn(&handle, connection, (cols, rows), feed)))
+    }
+
     fn serial_session(&mut self, connection: Connection) -> anyhow::Result<Session> {
         let wake = self.wake();
         let (cols, rows) = self.grid;
@@ -440,18 +448,20 @@ impl App {
         Session::start(cols, rows, options, move || wake(), move |feed| Ok(crate::serial::spawn(&connection, feed)))
     }
 
-    /// ¿La pestaña activa es una conexión SSH? Solo esas tienen explorador de archivos.
-    fn active_is_ssh(&self) -> bool {
+    /// ¿La pestaña activa es una conexión con explorador de archivos (SSH o un dispositivo Android)?
+    fn active_has_explorer(&self) -> bool {
         match self.tabs.get(self.active).map(|t| t.kind) {
-            Some(TabKind::Connection(id)) => self.connections.iter().any(|c| c.id == Some(id) && c.is_ssh()),
+            Some(TabKind::Connection(id)) => self.connections.iter().any(|c| c.id == Some(id) && (c.is_ssh() || c.is_adb())),
             _ => false,
         }
     }
 
-    /// Sesión de terminal de una conexión: SSH, Telnet o puerto serie.
+    /// Sesión de terminal de una conexión: SSH, Telnet, puerto serie o Android.
     fn connection_session(&mut self, connection: Connection, credentials: Credentials, tunnels: Tunnels) -> anyhow::Result<Session> {
         if connection.is_serial() {
             self.serial_session(connection)
+        } else if connection.is_adb() {
+            self.adb_session(connection)
         } else if connection.is_telnet() {
             self.telnet_session(connection)
         } else {
@@ -3339,7 +3349,7 @@ impl eframe::App for App {
                         }
                         if let Some(TabKind::Connection(id)) = self.tabs.get(self.active).map(|t| t.kind) {
                             let files = Button::new(RichText::new(icons::FOLDER).size(17.0).color(theme::subtext())).fill(Color32::TRANSPARENT);
-                            if self.active_is_ssh() && ui.add(files).on_hover_text("Abrir el explorador de archivos de esta conexión").clicked() {
+                            if self.active_has_explorer() && ui.add(files).on_hover_text("Abrir el explorador de archivos de esta conexión").clicked() {
                                 files_tab = Some(id);
                             }
                         }

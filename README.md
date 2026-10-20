@@ -15,6 +15,7 @@ A native, cross-platform terminal written in Rust, built like an IDE: local shel
 **Connections**
 - **SSH** with password, key (with passphrase), `ssh-agent` and interactive (2FA) authentication, jump hosts (`ProxyJump`), host key verification against `~/.ssh/known_hosts`, and a known-hosts browser.
 - **Telnet** and **serial** ports (baud, parity, flow control, live line controls).
+- **Android (ADB)**: a shell and the file explorer for a device connected by USB or Wi-Fi, through the `adb` server (needs Android platform-tools installed).
 - Saved connections with a color and environment ("production", "staging") shown in the sidebar, tab, a band under the tabs and the window title, so you don't type into the wrong server.
 - Port forwarding per connection: `-L`, `-R` and `-D` (SOCKS5 proxy).
 - Snippets with search and `{{name}}` / `{{name=default}}` variables.
@@ -72,6 +73,7 @@ omni-term is below 1.0. These parts have only been tested against local servers:
 
 - FTPS with real certificates (self-signed certificates are rejected).
 - SMB uploads, renames and deletes against a fully conformant server (tested with a local test server only).
+- Android (ADB) has only been tested against a simulated `adb` server, not a real device. Files larger than 4 GB are not supported yet.
 
 Bug reports are welcome. For vulnerabilities, see [SECURITY.md](SECURITY.md).
 

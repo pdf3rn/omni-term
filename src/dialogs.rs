@@ -126,6 +126,8 @@ impl Dialog {
     }
 }
 
+pub type AdbDevices = std::sync::Arc<std::sync::Mutex<Option<Result<Vec<crate::adb::Device>, String>>>>;
+
 pub struct ConnForm {
     /// 0 no es de archivos; 1 SFTP; 2 FTP; 3 SMB.
     pub files: u8,
@@ -135,6 +137,10 @@ pub struct ConnForm {
     pub ftp_quiet: bool,
     pub smb_share: String,
     pub smb_domain: String,
+    /// Dispositivo Android por `adb`; el número de serie (o `ip:puerto`) va en `host`.
+    pub adb: bool,
+    /// Resultado de la última búsqueda de dispositivos, que corre en segundo plano.
+    pub adb_devices: Option<AdbDevices>,
     /// Conexión por puerto serie; el puerto va en `host`.
     pub serial: bool,
     pub baud: String,
@@ -186,6 +192,8 @@ impl ConnForm {
             ftp_quiet: false,
             smb_share: String::new(),
             smb_domain: String::new(),
+            adb: false,
+            adb_devices: None,
             serial: false,
             baud: serial.baud.to_string(),
             data_bits: serial.data_bits,
@@ -221,7 +229,7 @@ impl ConnForm {
     }
 
     pub fn is_ssh(&self) -> bool {
-        !self.telnet && !self.serial && self.files == 0
+        !self.telnet && !self.serial && !self.adb && self.files == 0
     }
 
     /// Usa los campos de SSH (usuario, acceso, llave, salto): SSH y SFTP.
@@ -235,7 +243,7 @@ impl ConnForm {
         let custom_env = !known && (!env.is_empty() || connection.color.is_some());
         let options = match connection.protocol {
             Protocol::Telnet(options) => Some(options),
-            Protocol::Ssh | Protocol::Serial(_) | Protocol::Files(_) => None,
+            _ => None,
         };
         let serial = match connection.protocol {
             Protocol::Serial(options) => Some(options),
@@ -256,6 +264,8 @@ impl ConnForm {
             ftp_quiet: ftp.quiet,
             smb_share: if files == 3 { connection.smb_share().to_string() } else { String::new() },
             smb_domain: if files == 3 { connection.smb_domain().to_string() } else { String::new() },
+            adb: connection.is_adb(),
+            adb_devices: None,
             serial: serial.is_some(),
             baud: serial_defaults.baud.to_string(),
             data_bits: serial_defaults.data_bits,
@@ -300,7 +310,7 @@ impl ConnForm {
         if name.is_empty() {
             errors.name = Some("Pon un nombre para reconocerla".into());
         }
-        if host.is_empty() {
+        if host.is_empty() && !self.adb {
             errors.host = Some(if self.serial { "Indica el puerto, por ejemplo /dev/ttyUSB0" } else { "Indica el servidor" }.into());
         }
         let mut baud = 0;
@@ -317,7 +327,7 @@ impl ConnForm {
         if self.files == 3 && self.smb_share.trim().trim_matches(['\\', '/']).is_empty() {
             errors.share = Some("Indica el recurso compartido".into());
         }
-        let port = if self.serial {
+        let port = if self.serial || self.adb {
             0
         } else {
             match self.port.trim().parse::<u16>() {
@@ -352,7 +362,7 @@ impl ConnForm {
             return None;
         }
         self.errors = FormErrors::default();
-        let telnet = self.telnet || self.serial || self.files >= 2;
+        let telnet = self.telnet || self.serial || self.adb || self.files >= 2;
         let anonymous = self.files == 2 && self.ftp_anonymous;
         let connection = Connection {
             id: self.id,
@@ -362,6 +372,8 @@ impl ConnForm {
                     2 => FilesKind::Ftp(FtpOptions { tls: self.ftp_tls, passive: self.ftp_passive, anonymous: self.ftp_anonymous, quiet: self.ftp_quiet }),
                     _ => FilesKind::Smb,
                 })
+            } else if self.adb {
+                Protocol::Adb
             } else if self.serial {
                 Protocol::Serial(SerialOptions {
                     baud,
@@ -380,7 +392,7 @@ impl ConnForm {
             name,
             host,
             port,
-            user: if anonymous { "anonymous".into() } else if self.telnet || self.serial { String::new() } else { user },
+            user: if anonymous { "anonymous".into() } else if self.telnet || self.serial || self.adb { String::new() } else { user },
             // FTP y SMB piden la contraseña al conectar; el anónimo no la pide.
             auth: match self.files {
                 2 if anonymous => Auth::Agent,
@@ -1287,6 +1299,54 @@ fn files_rows(ui: &mut egui::Ui, form: &mut ConnForm) {
 }
 
 /// Filas del formulario de una conexión serie: puerto, velocidad, formato, flujo, Enter y eco.
+fn adb_rows(ui: &mut egui::Ui, form: &mut ConnForm) {
+    form_row(ui, "Dispositivo", |ui| {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            let width = (ui.available_width() - 90.0 - 8.0).max(120.0);
+            text_input(ui, &mut form.host, width, "vacío: el único conectado", &mut form.errors.host);
+            let detect = ui.add(egui::Button::new("Detectar").fill(Color32::TRANSPARENT).stroke(egui::Stroke::new(1.0, theme::selection())).min_size(egui::vec2(90.0, FIELD_HEIGHT)));
+            if detect.clicked() {
+                let slot: AdbDevices = std::sync::Arc::new(std::sync::Mutex::new(None));
+                let result = slot.clone();
+                let ctx = ui.ctx().clone();
+                std::thread::spawn(move || {
+                    *result.lock().unwrap() = Some(crate::adb::detect());
+                    ctx.request_repaint();
+                });
+                form.adb_devices = Some(slot);
+            }
+            egui::Popup::menu(&detect).show(|ui| {
+                ui.set_min_width(300.0);
+                let found = form.adb_devices.as_ref().map(|slot| slot.lock().unwrap().clone());
+                match found {
+                    None | Some(None) => {
+                        ui.label(RichText::new("Buscando dispositivos…").color(theme::subtext()));
+                    }
+                    Some(Some(Err(error))) => {
+                        ui.label(RichText::new(error).color(theme::red()));
+                    }
+                    Some(Some(Ok(devices))) if devices.is_empty() => {
+                        ui.label(RichText::new("No hay dispositivos. Activa la depuración USB y enchufa el móvil.").color(theme::subtext()));
+                    }
+                    Some(Some(Ok(devices))) => {
+                        for device in devices {
+                            let label = if device.description.is_empty() { device.serial.clone() } else { format!("{}   {}", device.serial, device.description) };
+                            let label = if device.state == "device" { label } else { format!("{label}   ({})", device.state) };
+                            if ui.button(label).clicked() {
+                                form.host = device.serial;
+                                ui.close();
+                            }
+                        }
+                    }
+                }
+            });
+        });
+        error_line(ui, &form.errors.host);
+        ui.label(RichText::new("Para un móvil por Wi-Fi escribe ip:puerto (por ejemplo 192.168.1.5:5555).").small().color(theme::subtext()));
+    });
+}
+
 fn serial_rows(ui: &mut egui::Ui, form: &mut ConnForm) {
     form_row(ui, "Puerto", |ui| {
         ui.horizontal(|ui| {
@@ -1378,32 +1438,36 @@ enum ConnKind {
     Sftp,
     Ftp,
     Smb,
+    Adb,
 }
 
 impl ConnKind {
     /// (tipo, nombre, grupo): el selector pone un encabezado cada vez que cambia el grupo.
-    const ALL: [(ConnKind, &'static str, &'static str); 6] = [
+    const ALL: [(ConnKind, &'static str, &'static str); 7] = [
         (ConnKind::Ssh, "SSH", "Terminal"),
         (ConnKind::Telnet, "Telnet", "Terminal"),
         (ConnKind::Serial, "Puerto serie", "Terminal"),
         (ConnKind::Sftp, "SFTP", "Archivos"),
         (ConnKind::Ftp, "FTP / FTPS", "Archivos"),
         (ConnKind::Smb, "SMB", "Archivos"),
+        (ConnKind::Adb, "Android (ADB)", "Otros"),
     ];
 
     fn of(form: &ConnForm) -> Self {
-        match (form.files, form.serial, form.telnet) {
+        match (form.files, form.adb, form.serial, form.telnet) {
             (1, ..) => ConnKind::Sftp,
             (2, ..) => ConnKind::Ftp,
             (3, ..) => ConnKind::Smb,
-            (_, true, _) => ConnKind::Serial,
-            (_, _, true) => ConnKind::Telnet,
+            (_, true, ..) => ConnKind::Adb,
+            (_, _, true, _) => ConnKind::Serial,
+            (_, _, _, true) => ConnKind::Telnet,
             _ => ConnKind::Ssh,
         }
     }
 
     fn apply(self, form: &mut ConnForm) {
         form.telnet = self == ConnKind::Telnet;
+        form.adb = self == ConnKind::Adb;
         form.serial = self == ConnKind::Serial;
         form.files = match self {
             ConnKind::Sftp => 1,
@@ -1420,7 +1484,7 @@ impl ConnKind {
 }
 
 /// Categorías del raíl izquierdo: (grupo de `ConnKind::ALL`, icono). Una categoría nueva es una fila más.
-const CATEGORIES: [(&str, &str); 2] = [("Terminal", crate::icons::TERMINAL), ("Archivos", crate::icons::FOLDER)];
+const CATEGORIES: [(&str, &str); 3] = [("Terminal", crate::icons::TERMINAL), ("Archivos", crate::icons::FOLDER), ("Otros", crate::icons::DOTS)];
 
 const RAIL_BUTTON: f32 = 56.0;
 const RAIL_WIDTH: f32 = RAIL_BUTTON + 16.0;
@@ -1660,6 +1724,8 @@ fn edit_body(ui: &mut egui::Ui, form: &mut ConnForm, connections: &[Connection])
                 .show(ui, |ui| {
                     // La barra flotante no debe tapar el borde de los campos.
                     ui.set_max_width(ui.available_width() - 10.0);
+                    // Altura mínima para que el diálogo no salte al cambiar entre tipos de distinta longitud.
+                    ui.set_min_height(380.0_f32.min(room));
                     form_fields(ui, form, connections)
                 })
                 .inner
@@ -1690,6 +1756,10 @@ fn form_fields(ui: &mut egui::Ui, form: &mut ConnForm, connections: &[Connection
         serial_rows(ui, form);
         return false;
     }
+    if kind == ConnKind::Adb {
+        adb_rows(ui, form);
+        return false;
+    }
     form_row(ui, "Servidor", |ui| {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
@@ -1704,7 +1774,7 @@ fn form_fields(ui: &mut egui::Ui, form: &mut ConnForm, connections: &[Connection
         ConnKind::Ssh | ConnKind::Sftp => ssh_access_rows(ui, form, connections),
         ConnKind::Ftp | ConnKind::Smb => files_rows(ui, form),
         ConnKind::Telnet => telnet_rows(ui, form),
-        ConnKind::Serial => {}
+        ConnKind::Serial | ConnKind::Adb => {}
     }
     if kind == ConnKind::Ssh {
         ui.add_space(GROUP_GAP);

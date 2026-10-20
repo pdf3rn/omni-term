@@ -1,9 +1,7 @@
 //! SMB 2/3 sobre la crate `smb` (Rust puro, sin SMB1).
 
 use std::io;
-use std::pin::Pin;
 use std::sync::Arc;
-use std::task::{Context, Poll};
 use std::time::Duration;
 
 use anyhow::Context as _;
@@ -13,10 +11,10 @@ use smb::{
     Client, ClientConfig, CreateOptions, Directory, FileAccessMask, FileAttributes, FileCreateArgs, FileDispositionInformation,
     FileIdBothDirectoryInformation, FileRenameInformation, ReadAt, Resource, UncPath, WriteAt,
 };
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream, ReadBuf};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::task::JoinHandle;
 
-use crate::remotefs::{Reader, RemoteFs, Writer};
+use crate::remotefs::{PipeEnd, Reader, RemoteFs, Writer};
 use crate::sftp::{self, Entry};
 use crate::ssh::Credentials;
 use crate::store::Connection;
@@ -206,7 +204,7 @@ impl RemoteFs for SmbFs {
             let _ = file.close().await;
             result
         });
-        Ok(Box::new(PipeEnd { inner: user_side, task: Some(task) }))
+        Ok(Box::new(PipeEnd::new(user_side, task)))
     }
 
     async fn open_write(&self, path: &str) -> anyhow::Result<Writer> {
@@ -245,54 +243,7 @@ impl RemoteFs for SmbFs {
             let _ = file.close().await;
             result
         });
-        Ok(Box::new(PipeEnd { inner: user_side, task: Some(task) }))
-    }
-}
-
-/// Extremo de la tubería hacia la tarea que habla SMB: al terminar (EOF al leer, `shutdown` al escribir)
-/// espera el resultado de la tarea, para que un fallo de red llegue como error y no como archivo truncado.
-struct PipeEnd {
-    inner: DuplexStream,
-    task: Option<JoinHandle<io::Result<()>>>,
-}
-
-impl PipeEnd {
-    fn poll_task(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        let Some(task) = self.task.as_mut() else { return Poll::Ready(Ok(())) };
-        match Pin::new(task).poll(cx) {
-            Poll::Ready(result) => {
-                self.task = None;
-                Poll::Ready(result.unwrap_or_else(|e| Err(io::Error::other(e.to_string()))))
-            }
-            Poll::Pending => Poll::Pending,
-        }
-    }
-}
-
-impl AsyncRead for PipeEnd {
-    fn poll_read(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<io::Result<()>> {
-        let before = buf.filled().len();
-        match Pin::new(&mut self.inner).poll_read(cx, buf) {
-            Poll::Ready(Ok(())) if buf.filled().len() == before => self.poll_task(cx),
-            other => other,
-        }
-    }
-}
-
-impl AsyncWrite for PipeEnd {
-    fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<io::Result<usize>> {
-        Pin::new(&mut self.inner).poll_write(cx, buf)
-    }
-
-    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.inner).poll_flush(cx)
-    }
-
-    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        match Pin::new(&mut self.inner).poll_shutdown(cx) {
-            Poll::Ready(Ok(())) => self.poll_task(cx),
-            other => other,
-        }
+        Ok(Box::new(PipeEnd::new(user_side, task)))
     }
 }
 
