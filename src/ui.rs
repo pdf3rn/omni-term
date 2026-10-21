@@ -3162,6 +3162,7 @@ fn tab(
     insecure: bool,
     count: usize,
     can_duplicate: bool,
+    can_rename: bool,
     max_width: f32,
     menu: &mut Option<(usize, TabAction)>,
 ) -> TabOutcome {
@@ -3222,7 +3223,7 @@ fn tab(
     }
     response.context_menu(|ui| {
         for (label, action, enabled) in [
-            ("Renombrar", TabAction::Rename, true),
+            ("Renombrar", TabAction::Rename, can_rename),
             ("Duplicar", TabAction::Duplicate, can_duplicate),
             ("Cerrar otras", TabAction::CloseOthers, count > 1),
             ("Cerrar a la derecha", TabAction::CloseRight, index + 1 < count),
@@ -3238,7 +3239,7 @@ fn tab(
         clicked: response.clicked() && !close_clicked,
         closed: close_clicked,
         dragged: response.dragged() && !close_clicked,
-        rename: response.double_clicked() && !close_clicked,
+        rename: can_rename && response.double_clicked() && !close_clicked,
         rect,
     }
 }
@@ -3400,7 +3401,8 @@ impl eframe::App for App {
                             continue;
                         }
                         let can_duplicate = !matches!(self.tabs[i].kind, TabKind::Explorer(_) | TabKind::Settings | TabKind::Containers);
-                        let outcome = tab(ui, title, i == self.active, i, *identity, *attention, *insecure, self.tabs.len(), can_duplicate, tab_cap, &mut tab_menu);
+                        let can_rename = self.tabs[i].kind != TabKind::Settings;
+                        let outcome = tab(ui, title, i == self.active, i, *identity, *attention, *insecure, self.tabs.len(), can_duplicate, can_rename, tab_cap, &mut tab_menu);
                         tab_rects.push(outcome.rect);
                         if i == self.active && self.tabs.get(i).is_some_and(|t| t.id != self.tab_strip_seen) {
                             ui.scroll_to_rect(outcome.rect.expand2(Vec2::new(24.0, 0.0)), None);
