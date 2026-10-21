@@ -503,7 +503,7 @@ impl Explorer {
                 .pivot(Align2::CENTER_CENTER)
                 .fixed_pos(Pos2::new(remote_rect.center().x, remote_rect.center().y))
                 .show(&ctx, |ui| {
-                    retry = ui.add(Button::new(RichText::new("Reintentar").color(theme::base())).fill(theme::accent())).clicked();
+                    retry = crate::ui::solid_add(ui, Button::new(RichText::new("Reintentar").color(theme::base())), theme::accent()).clicked();
                 });
             if retry {
                 self.connect();
@@ -595,7 +595,7 @@ impl Explorer {
                 let selected = self.narrow_side == side;
                 let color = if selected { theme::text() } else { theme::subtext() };
                 let font = FontId::new(14.0, if selected { crate::ui::strong_family() } else { FontFamily::Proportional });
-                let response = ui.add(Button::new(RichText::new(label).font(font).color(color)).fill(Color32::TRANSPARENT)).hand();
+                let response = ui.add(Button::new(RichText::new(label).font(font).color(color)).frame_when_inactive(false)).hand();
                 if selected {
                     let y = response.rect.max.y + 1.0;
                     ui.painter().line_segment([Pos2::new(response.rect.min.x, y), Pos2::new(response.rect.max.x, y)], egui::Stroke::new(2.0, theme::accent()));
@@ -730,11 +730,11 @@ impl Explorer {
         ui.horizontal(|ui| {
             let caret = if self.transfers_open { icons::CARET_DOWN } else { icons::CARET_RIGHT };
             let title = if running > 0 { format!("{caret}  Transferencias · {running} en curso") } else { format!("{caret}  Transferencias") };
-            let header = ui.add(Button::new(RichText::new(title).small().color(theme::subtext())).fill(Color32::TRANSPARENT));
+            let header = ui.add(Button::new(RichText::new(title).small().color(theme::subtext())).frame_when_inactive(false));
             if header.on_hover_text("Mostrar u ocultar la lista").hand().clicked() {
                 self.transfers_open = !self.transfers_open;
             }
-            if ui.add(Button::new(RichText::new("Quitar terminadas").small()).fill(Color32::TRANSPARENT)).hand().clicked() {
+            if ui.add(Button::new(RichText::new("Quitar terminadas").small()).frame_when_inactive(false)).hand().clicked() {
                 self.transfers.retain(|t| t.state() == TransferState::Running);
             }
         });
@@ -760,7 +760,7 @@ impl Explorer {
                     };
                     ui.add(ProgressBar::new(if state == TransferState::Done { 1.0 } else { fraction }).desired_width(180.0));
                     ui.label(RichText::new(text).small().color(theme::subtext()));
-                    if state == TransferState::Running && ui.add(Button::new(icons::X).fill(Color32::TRANSPARENT)).on_hover_text("Cancelar").hand().clicked() {
+                    if state == TransferState::Running && ui.add(Button::new(icons::X).frame_when_inactive(false)).on_hover_text("Cancelar").hand().clicked() {
                         transfer.cancel();
                     }
                 });

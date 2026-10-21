@@ -858,26 +858,26 @@ pub fn shell(ctx: &egui::Context, spec: Spec, body: impl FnOnce(&mut egui::Ui) -
         foot.spacing_mut().item_spacing.x = 8.0;
         let size = egui::vec2(0.0, 30.0);
         for (index, label) in spec.extras.iter().enumerate() {
-            let extra = egui::Button::new(label.as_str()).min_size(size).fill(Color32::TRANSPARENT).stroke(egui::Stroke::new(1.0, theme::selection()));
-            if foot.add(extra).clicked() {
+            let extra = egui::Button::new(label.as_str()).min_size(size);
+            if crate::ui::outline_add(&mut foot, extra, false).clicked() {
                 action = Action::Extra(index);
             }
         }
         foot.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let fill = if spec.tone == Tone::Danger { theme::red() } else { theme::accent() };
-            let primary = |label: &str| egui::Button::new(RichText::new(label).color(theme::base())).min_size(size).fill(fill);
+            let primary = |label: &str| egui::Button::new(RichText::new(label).color(theme::base())).min_size(size);
             match &spec.accept {
                 Some(label) => {
-                    if ui.add_enabled(spec.accept_enabled, primary(label)).clicked() {
+                    if ui.add_enabled_ui(spec.accept_enabled, |ui| crate::ui::solid_add(ui, primary(label), fill)).inner.clicked() {
                         action = Action::Accept;
                     }
-                    let cancel = egui::Button::new(spec.cancel.as_str()).min_size(size).fill(Color32::TRANSPARENT).stroke(egui::Stroke::new(1.0, theme::selection()));
-                    if ui.add(cancel).clicked() {
+                    let cancel = egui::Button::new(spec.cancel.as_str()).min_size(size);
+                    if crate::ui::outline_add(ui, cancel, false).clicked() {
                         action = Action::Cancel;
                     }
                 }
                 None => {
-                    if ui.add(primary(&spec.cancel)).clicked() {
+                    if crate::ui::solid_add(ui, primary(&spec.cancel), fill).clicked() {
                         action = Action::Cancel;
                     }
                 }
@@ -905,7 +905,7 @@ fn secret_field(ui: &mut egui::Ui, value: &mut String, reveal: &mut bool, hint: 
         let width = (ui.available_width() - 76.0).max(80.0);
         let field = ui.add(TextEdit::singleline(value).password(!*reveal).hint_text(hint).desired_width(width));
         let label = if *reveal { "Ocultar" } else { "Mostrar" };
-        if ui.add(egui::Button::new(RichText::new(label).small()).fill(Color32::TRANSPARENT)).clicked() {
+        if ui.add(egui::Button::new(RichText::new(label).small()).frame_when_inactive(false)).clicked() {
             *reveal = !*reveal;
         }
         field
@@ -1318,7 +1318,7 @@ fn adb_rows(ui: &mut egui::Ui, form: &mut ConnForm) {
             ui.spacing_mut().item_spacing.x = 8.0;
             let width = (ui.available_width() - 90.0 - 8.0).max(120.0);
             text_input(ui, &mut form.host, width, "vacío: el único conectado", &mut form.errors.host);
-            let detect = ui.add(egui::Button::new("Detectar").fill(Color32::TRANSPARENT).stroke(egui::Stroke::new(1.0, theme::selection())).min_size(egui::vec2(90.0, FIELD_HEIGHT)));
+            let detect = crate::ui::outline_add(ui, egui::Button::new("Detectar").min_size(egui::vec2(90.0, FIELD_HEIGHT)), false);
             if detect.clicked() {
                 let slot: AdbDevices = std::sync::Arc::new(std::sync::Mutex::new(None));
                 let result = slot.clone();
@@ -1366,7 +1366,7 @@ fn serial_rows(ui: &mut egui::Ui, form: &mut ConnForm) {
             ui.spacing_mut().item_spacing.x = 8.0;
             let width = (ui.available_width() - 90.0 - 8.0).max(120.0);
             text_input(ui, &mut form.host, width, if cfg!(windows) { "COM3" } else { "/dev/ttyUSB0" }, &mut form.errors.host);
-            let detect = ui.add(egui::Button::new("Detectar").fill(Color32::TRANSPARENT).stroke(egui::Stroke::new(1.0, theme::selection())).min_size(egui::vec2(90.0, FIELD_HEIGHT)));
+            let detect = crate::ui::outline_add(ui, egui::Button::new("Detectar").min_size(egui::vec2(90.0, FIELD_HEIGHT)), false);
             if detect.clicked() {
                 form.ports = crate::serial::detect_ports();
             }
@@ -1391,7 +1391,7 @@ fn serial_rows(ui: &mut egui::Ui, form: &mut ConnForm) {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
             text_input(ui, &mut form.baud, 100.0, "115200", &mut form.errors.port);
-            let speeds = ui.add(egui::Button::new(format!("{}  baudios", crate::icons::CARET_DOWN)).fill(Color32::TRANSPARENT).stroke(egui::Stroke::new(1.0, theme::selection())).min_size(egui::vec2(0.0, FIELD_HEIGHT)));
+            let speeds = crate::ui::outline_add(ui, egui::Button::new(format!("{}  baudios", crate::icons::CARET_DOWN)).min_size(egui::vec2(0.0, FIELD_HEIGHT)), false);
             egui::Popup::menu(&speeds).show(|ui| {
                 for rate in BAUD_RATES {
                     if ui.button(rate.to_string()).clicked() {
@@ -1707,7 +1707,7 @@ fn advanced_rows(ui: &mut egui::Ui, form: &mut ConnForm) {
                 form.forwards.remove(index);
                 form.errors.forwards.remove(index);
             }
-            if ui.add(egui::Button::new("+ Añadir túnel").fill(Color32::TRANSPARENT).stroke(egui::Stroke::new(1.0, theme::surface()))).clicked() {
+            if crate::ui::outline_add(ui, egui::Button::new("+ Añadir túnel"), false).clicked() {
                 form.forwards.push(ForwardRow::new());
                 form.errors.forwards.push(None);
             }

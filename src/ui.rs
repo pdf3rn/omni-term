@@ -1083,7 +1083,7 @@ impl App {
                         Frame::popup(ui.style()).inner_margin(Margin::symmetric(14, 10)).show(ui, |ui| {
                             ui.horizontal(|ui| {
                                 ui.label(&toast.text);
-                                if toast.undo.is_some() && ui.add(Button::new(RichText::new("Deshacer").color(theme::accent())).fill(Color32::TRANSPARENT)).clicked() {
+                                if toast.undo.is_some() && ui.add(Button::new(RichText::new("Deshacer").color(theme::accent())).frame_when_inactive(false)).clicked() {
                                     undone = Some(index);
                                 }
                                 if ui.add(Button::new(icons::X).frame(false)).on_hover_text("Cerrar").clicked() {
@@ -1316,15 +1316,16 @@ impl App {
         child.label(RichText::new("Abre un terminal o conéctate a un servidor guardado.").color(theme::subtext()));
         child.add_space(4.0);
         child.horizontal(|ui| {
-            let primary = Button::new(RichText::new("Nuevo terminal local").color(theme::base())).fill(theme::accent());
-            if ui.add(primary).clicked() {
+            ui.spacing_mut().button_padding = Vec2::new(10.0, 4.0);
+            ui.spacing_mut().item_spacing.x = 6.0;
+            // Outline: el acento marca la acción principal en el borde y el texto, sin relleno.
+            if outline_button(ui, RichText::new("Nuevo terminal local").size(13.0).color(theme::accent()), true).clicked() {
                 action = Some(EmptyAction::Local);
             }
-            let secondary = |label: &str| Button::new(label).fill(Color32::TRANSPARENT).stroke(Stroke::new(1.0, theme::selection()));
-            if ui.add(secondary("Nueva conexión")).clicked() {
+            if outline_button(ui, RichText::new("Nueva conexión").size(13.0), false).clicked() {
                 action = Some(EmptyAction::NewConnection);
             }
-            if ui.add(secondary("Contenedores")).clicked() {
+            if outline_button(ui, RichText::new("Contenedores").size(13.0), false).clicked() {
                 action = Some(EmptyAction::Containers);
             }
         });
@@ -1333,7 +1334,7 @@ impl App {
         let recents: Vec<Connection> = self.recent_connections().into_iter().take(4).collect();
         if recents.is_empty() {
             child.label(RichText::new("Aún no hay conexiones guardadas.").color(theme::subtext()));
-            if child.add(Button::new("Importar de ~/.ssh/config").fill(Color32::TRANSPARENT).stroke(Stroke::new(1.0, theme::selection()))).clicked() {
+            if outline_button(child, RichText::new("Importar de ~/.ssh/config").size(13.0), false).clicked() {
                 action = Some(EmptyAction::Import);
             }
         } else {
@@ -2219,7 +2220,7 @@ impl App {
                             let selected = self.sidebar_view == view;
                             let color = if selected { theme::text() } else { theme::subtext() };
                             let font = FontId::new(13.0, if selected { strong_family() } else { FontFamily::Proportional });
-                            let button = Button::new(RichText::new(label).font(font).color(color)).fill(Color32::TRANSPARENT);
+                            let button = Button::new(RichText::new(label).font(font).color(color)).frame_when_inactive(false);
                             let response = ui.add(button);
                             if selected {
                                 let y = response.rect.max.y + 1.0;
@@ -2285,9 +2286,8 @@ impl App {
                         let title = if connections_view { "Guardadas" } else { "Guardados" };
                         ui.label(RichText::new(title).small().color(theme::subtext()));
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            let add = Button::new(RichText::new(icons::PLUS).size(16.0)).fill(Color32::TRANSPARENT).min_size(Vec2::splat(26.0));
-                            if connections_view {
-                                let add = ui.add(add).on_hover_text("Nueva conexión o importar");
+                                                        if connections_view {
+                                let add = compact_icon(ui, icons::PLUS, 16.0, theme::text()).on_hover_text("Nueva conexión o importar");
                                 egui::Popup::menu(&add).show(|ui| {
                                     if ui.button("Nueva conexión").clicked() {
                                         new_connection = true;
@@ -2298,7 +2298,7 @@ impl App {
                                         ui.close();
                                     }
                                 });
-                            } else if ui.add(add).on_hover_text("Nuevo snippet").clicked() {
+                            } else if compact_icon(ui, icons::PLUS, 16.0, theme::text()).on_hover_text("Nuevo snippet").clicked() {
                                 new_snippet = true;
                             }
                         });
@@ -2538,10 +2538,7 @@ impl App {
                         });
                     } else {
                         if !self.snippets.is_empty() {
-                            if ui
-                                .add(Button::new(RichText::new("Guardar selección").small().color(theme::subtext())).fill(Color32::TRANSPARENT).stroke(Stroke::new(1.0, theme::surface())))
-                                .clicked()
-                            {
+                            if outline_add(ui, Button::new(RichText::new("Guardar selección").small().color(theme::subtext())), false).clicked() {
                                 snippet_from_selection = true;
                             }
                             ui.add_space(4.0);
@@ -2664,7 +2661,7 @@ impl App {
 
                     // Pie: solo avisos; el estado normal de los secretos no hace falta mostrarlo.
                     ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
-                        if ui.add(Button::new(format!("{}  Ajustes", icons::GEAR)).fill(Color32::TRANSPARENT).stroke(Stroke::new(1.0, theme::surface()))).clicked() {
+                        if outline_add(ui, Button::new(format!("{}  Ajustes", icons::GEAR)), false).clicked() {
                             open_settings = true;
                         }
                         if keyring_fallback {
@@ -2879,17 +2876,12 @@ fn empty_state(ui: &mut egui::Ui, title: &str, body: &str, primary: &str, second
     ui.label(RichText::new(body).small().color(theme::subtext()));
     ui.add_space(14.0);
     let width = ui.available_width();
-    let create = ui
-        .add(Button::new(RichText::new(primary).color(theme::base())).fill(theme::accent()).min_size(Vec2::new(width, 32.0)))
-        .clicked();
+    let create = solid_add(ui, Button::new(RichText::new(primary).color(theme::base())).min_size(Vec2::new(width, 32.0)), theme::accent()).clicked();
     let mut other = false;
     if let Some(label) = secondary {
         ui.add_space(4.0);
-        let button = Button::new(RichText::new(label).color(theme::text()))
-            .fill(Color32::TRANSPARENT)
-            .stroke(Stroke::new(1.0, theme::selection()))
-            .min_size(Vec2::new(width, 32.0));
-        other = ui.add(button).clicked();
+        let button = Button::new(RichText::new(label).color(theme::text())).min_size(Vec2::new(width, 32.0));
+        other = outline_add(ui, button, false).clicked();
     }
     (create, other)
 }
@@ -2942,6 +2934,53 @@ enum PlusChoice {
     Files(Connection),
     Containers,
     All,
+}
+
+/// Botón con borde y sin relleno que reacciona al ratón: en reposo es transparente y al pasar
+/// por encima se tiñe (con el acento si es el principal). `fill()` en `Button` anularía ese efecto.
+fn outline_button(ui: &mut egui::Ui, text: RichText, accent: bool) -> egui::Response {
+    outline_add(ui, Button::new(text), accent)
+}
+
+/// Botón de icono compacto (26 px) con fondo solo al pasar el ratón; los botones de egui
+/// heredan la altura mínima de los controles y quedan demasiado grandes para un icono suelto.
+fn compact_icon(ui: &mut egui::Ui, glyph: &str, size: f32, color: Color32) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(Vec2::splat(26.0), Sense::click());
+    let response = response.hand();
+    if response.hovered() {
+        ui.painter().rect_filled(rect, CornerRadius::same(CONTROL_RADIUS), theme::selection());
+    }
+    ui.painter().text(rect.center(), Align2::CENTER_CENTER, glyph, FontId::proportional(size), color);
+    response
+}
+
+/// Botón de acción principal con relleno que se aclara al pasar el ratón (un `fill()` explícito lo impediría).
+pub(crate) fn solid_add(ui: &mut egui::Ui, button: Button<'_>, color: Color32) -> egui::Response {
+    ui.scope(|ui| {
+        let widgets = &mut ui.visuals_mut().widgets;
+        widgets.inactive.weak_bg_fill = color;
+        widgets.hovered.weak_bg_fill = color.lerp_to_gamma(Color32::WHITE, 0.18);
+        widgets.active.weak_bg_fill = color.lerp_to_gamma(Color32::WHITE, 0.32);
+        ui.add(button).hand()
+    })
+    .inner
+}
+
+/// Igual que `outline_button` para un botón ya construido (con su tamaño mínimo, por ejemplo).
+pub(crate) fn outline_add(ui: &mut egui::Ui, button: Button<'_>, accent: bool) -> egui::Response {
+    ui.scope(|ui| {
+        let (rest, hover) = if accent { (theme::accent(), theme::accent()) } else { (theme::selection(), theme::subtext()) };
+        let width = if accent { 1.5 } else { 1.0 };
+        let widgets = &mut ui.visuals_mut().widgets;
+        widgets.inactive.bg_stroke = Stroke::new(width, rest);
+        widgets.hovered.bg_stroke = Stroke::new(width, hover);
+        widgets.active.bg_stroke = Stroke::new(width, hover);
+        widgets.inactive.weak_bg_fill = Color32::TRANSPARENT;
+        widgets.hovered.weak_bg_fill = if accent { theme::accent().gamma_multiply(0.18) } else { theme::surface() };
+        widgets.active.weak_bg_fill = if accent { theme::accent().gamma_multiply(0.3) } else { theme::selection() };
+        ui.add(button).hand()
+    })
+    .inner
 }
 
 /// Qué se pidió en la pantalla sin pestañas.
@@ -3434,7 +3473,7 @@ impl eframe::App for App {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 2.0;
                     let hint = if self.sidebar_collapsed { "Mostrar la barra lateral (Ctrl+Shift+B)" } else { "Ocultar la barra lateral (Ctrl+Shift+B)" };
-                    let toggle = ui.add(Button::new(RichText::new(icons::SIDEBAR).size(17.0).color(theme::subtext())).fill(Color32::TRANSPARENT).min_size(Vec2::splat(28.0)));
+                    let toggle = compact_icon(ui, icons::SIDEBAR, 17.0, theme::subtext());
                     if toggle.on_hover_text(hint).clicked() {
                         toggle_sidebar_button = true;
                     }
@@ -3499,7 +3538,7 @@ impl eframe::App for App {
                     });
                         });
                     ui.add_space(6.0);
-                    let plus = ui.add(Button::new(RichText::new(icons::PLUS).size(16.0)).fill(Color32::TRANSPARENT).min_size(Vec2::splat(28.0)));
+                    let plus = compact_icon(ui, icons::PLUS, 16.0, theme::text());
                     let plus = plus.on_hover_text("Nueva pestaña (Ctrl+Shift+T)");
                     let popup_id = egui::Popup::default_response_id(&plus);
                     if std::mem::take(&mut open_plus_menu) {
@@ -3512,7 +3551,7 @@ impl eframe::App for App {
                         plus_menu(ui, &plus_recents, &mut plus_selected, &mut plus_choice);
                     });
                     if overflowing {
-                        let list = ui.add(Button::new(RichText::new(icons::CARET_DOWN).size(14.0).color(theme::subtext())).fill(Color32::TRANSPARENT).min_size(Vec2::splat(28.0)));
+                        let list = compact_icon(ui, icons::CARET_DOWN, 14.0, theme::subtext());
                         let list = list.on_hover_text("Todas las pestañas");
                         egui::Popup::menu(&list).width(260.0).show(|ui| {
                             for (i, (title, _, _, _)) in tab_labels.iter().enumerate() {
@@ -3548,8 +3587,7 @@ impl eframe::App for App {
                             });
                         }
                         if let Some(TabKind::Connection(id)) = self.tabs.get(self.active).map(|t| t.kind) {
-                            let files = Button::new(RichText::new(icons::FOLDER).size(17.0).color(theme::subtext())).fill(Color32::TRANSPARENT);
-                            if self.active_has_explorer() && ui.add(files).on_hover_text("Abrir el explorador de archivos de esta conexión").clicked() {
+                            if self.active_has_explorer() && compact_icon(ui, icons::FOLDER, 17.0, theme::subtext()).on_hover_text("Abrir el explorador de archivos de esta conexión").clicked() {
                                 files_tab = Some(id);
                             }
                         }
@@ -3837,8 +3875,8 @@ impl eframe::App for App {
                         Frame::popup(ui.style()).inner_margin(Margin::symmetric(14, 10)).show(ui, |ui| {
                             ui.horizontal(|ui| {
                                 ui.label("Sesión desconectada");
-                                let button = Button::new(RichText::new("Reconectar").color(theme::base())).fill(theme::accent());
-                                clicked = ui.add(button).clicked();
+                                let button = Button::new(RichText::new("Reconectar").color(theme::base()));
+                                clicked = solid_add(ui, button, theme::accent()).clicked();
                             });
                         });
                     });
