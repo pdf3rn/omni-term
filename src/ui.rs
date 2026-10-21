@@ -92,6 +92,7 @@ enum Body {
     },
     Explorer(Box<Explorer>),
     Containers(Box<ContainersView>),
+    Settings(dialogs::SettingsTab),
 }
 
 struct Tab {
@@ -119,7 +120,7 @@ impl Tab {
     /// Qué está haciendo la pestaña que se perdería al cerrarla, si algo.
     fn busy_reason(&self) -> Option<String> {
         match &self.body {
-            Body::Containers(_) => None,
+            Body::Containers(_) | Body::Settings(_) => None,
             Body::Explorer(explorer) => {
                 let n = explorer.running_transfers();
                 (n > 0).then(|| if n == 1 { "1 transferencia en curso".to_string() } else { format!("{n} transferencias en curso") })
@@ -145,7 +146,7 @@ impl Tab {
     fn pane_mut(&mut self) -> Option<&mut Pane> {
         match &mut self.body {
             Body::Terminal { panes, focused, .. } => panes.get_mut(*focused),
-            Body::Explorer(_) | Body::Containers(_) => None,
+            Body::Explorer(_) | Body::Containers(_) | Body::Settings(_) => None,
         }
     }
 
@@ -153,14 +154,14 @@ impl Tab {
     fn pane(&self) -> Option<&Pane> {
         match &self.body {
             Body::Terminal { panes, focused, .. } => panes.get(*focused),
-            Body::Explorer(_) | Body::Containers(_) => None,
+            Body::Explorer(_) | Body::Containers(_) | Body::Settings(_) => None,
         }
     }
 
     fn tunnels(&self) -> Option<Tunnels> {
         match &self.body {
             Body::Terminal { tunnels, .. } => tunnels.clone(),
-            Body::Explorer(_) | Body::Containers(_) => None,
+            Body::Explorer(_) | Body::Containers(_) | Body::Settings(_) => None,
         }
     }
 
@@ -176,6 +177,7 @@ impl Tab {
             }
             Body::Explorer(explorer) => explorer.label(),
             Body::Containers(view) => view.label(),
+            Body::Settings(_) => "Ajustes".to_string(),
         }
     }
 }
@@ -483,6 +485,19 @@ impl App {
         Ok(())
     }
 
+    /// Abre la pestaña de ajustes en la sección pedida, o vuelve a ella si ya está abierta.
+    fn open_settings(&mut self, section: dialogs::SettingsTab) {
+        self.known_hosts.loaded = false;
+        if let Some(index) = self.tabs.iter().position(|t| t.kind == TabKind::Settings) {
+            self.tabs[index].body = Body::Settings(section);
+            self.active = index;
+            return;
+        }
+        let id = self.take_tab_id();
+        self.tabs.push(Tab { id, kind: TabKind::Settings, label: "Ajustes".into(), custom: None, attention: false, body: Body::Settings(section) });
+        self.active = self.tabs.len() - 1;
+    }
+
     /// Abre el administrador de contenedores, o vuelve a él si ya hay uno abierto.
     fn open_containers(&mut self) {
         if let Some(index) = self.tabs.iter().position(|t| t.kind == TabKind::Containers) {
@@ -601,7 +616,7 @@ impl App {
                     self.begin_open(connection, None, Purpose::Pane { tab: tab_id, target: PaneTarget::Split(dir) });
                 }
             }
-            TabKind::Explorer(_) | TabKind::Containers | TabKind::Container => {}
+            TabKind::Explorer(_) | TabKind::Containers | TabKind::Container | TabKind::Settings => {}
         }
     }
 
@@ -885,7 +900,7 @@ impl App {
                 .find(|c| c.id == Some(id))
                 .and_then(|c| c.color)
                 .map(theme::identity),
-            TabKind::Local | TabKind::Containers | TabKind::Container => None,
+            TabKind::Local | TabKind::Containers | TabKind::Container | TabKind::Settings => None,
         }
     }
 
@@ -894,7 +909,7 @@ impl App {
             TabKind::Connection(id) | TabKind::Explorer(id) => {
                 self.connections.iter().find(|c| c.id == Some(id)).and_then(|c| c.env.clone())
             }
-            TabKind::Local | TabKind::Containers | TabKind::Container => None,
+            TabKind::Local | TabKind::Containers | TabKind::Container | TabKind::Settings => None,
         }
     }
 
@@ -1375,10 +1390,10 @@ impl App {
             Command::NewTab => self.open_queue.push_back(SavedTab::plain(TabKind::Local)),
             Command::NewConnection => self.dialog = Some(Dialog::Edit(ConnForm::new())),
             Command::ImportConfig => self.import_ssh_config(),
-            Command::Settings => self.dialog = Some(Dialog::Settings(Default::default())),
-            Command::KnownHosts => self.dialog = Some(Dialog::Settings(dialogs::SettingsTab::Hosts)),
+            Command::Settings => self.open_settings(dialogs::SettingsTab::General),
+            Command::KnownHosts => self.open_settings(dialogs::SettingsTab::Hosts),
             Command::Containers => self.open_containers(),
-            Command::Shortcuts => self.dialog = Some(Dialog::Settings(dialogs::SettingsTab::Atajos)),
+            Command::Shortcuts => self.open_settings(dialogs::SettingsTab::Atajos),
             Command::About => self.dialog = Some(Dialog::About),
             Command::Palette => self.palette = Some(Palette::default()),
             Command::Fullscreen => {
@@ -1486,7 +1501,7 @@ impl App {
                         item(ui, "Importar de ~/.ssh/config", "", true, Command::ImportConfig);
                         ui.separator();
                         item(ui, "Cerrar pestaña", "", !self.tabs.is_empty(), Command::CloseTab);
-                        item(ui, "Ajustes", "", true, Command::Settings);
+                        item(ui, "Ajustes", "Ctrl+,", true, Command::Settings);
                         item(ui, "Hosts conocidos", "", true, Command::KnownHosts);
                         ui.separator();
                         item(ui, "Salir", "", true, Command::Quit);
@@ -1782,7 +1797,7 @@ impl App {
                         self.continue_open(connection, None, Purpose::Explorer(saved.local_path, saved.remote_path));
                     }
                 }
-                TabKind::Containers | TabKind::Container => {}
+                TabKind::Containers | TabKind::Container | TabKind::Settings => {}
             }
         } else if let Some(active) = self.restore_active.take() {
             if self.tabs.is_empty() {
@@ -1797,7 +1812,7 @@ impl App {
             return;
         }
         // Los contenedores son efímeros: ni el administrador ni sus terminales se restauran.
-        let persisted = |t: &Tab| !matches!(t.kind, TabKind::Containers | TabKind::Container);
+        let persisted = |t: &Tab| !matches!(t.kind, TabKind::Containers | TabKind::Container | TabKind::Settings);
         let tabs: Vec<SavedTab> = self
             .tabs
             .iter()
@@ -1807,7 +1822,7 @@ impl App {
                     let (local, remote) = explorer.paths();
                     SavedTab { kind: t.kind, local_path: Some(local), remote_path: Some(remote).filter(|r| !r.is_empty()) }
                 }
-                Body::Terminal { .. } | Body::Containers(_) => SavedTab::plain(t.kind),
+                Body::Terminal { .. } | Body::Containers(_) | Body::Settings(_) => SavedTab::plain(t.kind),
             })
             .collect();
         let active = self.tabs.iter().take(self.active + 1).filter(|t| persisted(t)).count().saturating_sub(1);
@@ -1820,11 +1835,12 @@ impl App {
         }
     }
 
-    fn handle_dialog(&mut self, ctx: &egui::Context) {
-        let Some(mut dialog) = self.dialog.take() else { return };
+    /// Dibuja la página de ajustes y aplica lo que el usuario haya cambiado, al instante.
+    fn settings_page(&mut self, ui: &mut egui::Ui, area: Rect, mut section: dialogs::SettingsTab) -> dialogs::SettingsTab {
         let mut forced = Secrets::is_master_forced(&self.store.lock().unwrap());
         let (forced_before, settings_before) = (forced, self.settings.clone());
-        let outcome = dialogs::show(ctx, &mut dialog, &mut forced, &self.connections, &mut self.settings, &mut self.known_hosts);
+        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(area).layout(egui::Layout::top_down(egui::Align::Min)));
+        dialogs::settings_page(&mut child, &mut section, &mut self.settings, &mut forced, &mut self.known_hosts, &self.connections);
         if let Some(entry) = self.known_hosts.delete.take() {
             self.forget_known_hosts(vec![entry], None);
         }
@@ -1838,6 +1854,12 @@ impl App {
                 Err(error) => self.dialog = Some(Dialog::failure("No se pudo guardar el ajuste", format!("{error:#}"))),
             }
         }
+        section
+    }
+
+    fn handle_dialog(&mut self, ctx: &egui::Context) {
+        let Some(mut dialog) = self.dialog.take() else { return };
+        let outcome = dialogs::show(ctx, &mut dialog, &self.connections);
 
         match (outcome, dialog) {
             (Outcome::None, dialog) => self.dialog = Some(dialog),
@@ -1847,7 +1869,7 @@ impl App {
             (Outcome::Cancel, Dialog::Prompt(request, _)) => {
                 let _ = request.reply.send(None);
             }
-            (Outcome::Cancel, Dialog::Secret(_) | Dialog::ConfirmContainer(_) | Dialog::Unlock(_) | Dialog::Edit(_) | Dialog::Error(_) | Dialog::HostKeyChanged(_) | Dialog::Settings(_) | Dialog::About | Dialog::ConfirmClose(_) | Dialog::TelnetWarning(_) | Dialog::Snippet(_) | Dialog::SnippetVars(_) | Dialog::ConfirmReset(_)) => {}
+            (Outcome::Cancel, Dialog::Secret(_) | Dialog::ConfirmContainer(_) | Dialog::Unlock(_) | Dialog::Edit(_) | Dialog::Error(_) | Dialog::HostKeyChanged(_) | Dialog::About | Dialog::ConfirmClose(_) | Dialog::TelnetWarning(_) | Dialog::Snippet(_) | Dialog::SnippetVars(_) | Dialog::ConfirmReset(_)) => {}
             (Outcome::Cancel, dialog) => self.dialog = Some(dialog),
             (Outcome::Submit, Dialog::Prompt(request, answers)) => {
                 let _ = request.reply.send(Some(answers));
@@ -2164,6 +2186,7 @@ impl App {
                             }
                             let glyph = match (&tab.body, tab.kind) {
                                 (Body::Explorer(_), _) => icons::FOLDER,
+                                (Body::Settings(_), _) => icons::GEAR,
                                 (_, TabKind::Local) => icons::TERMINAL,
                                 _ => icons::ARROW_RIGHT,
                             };
@@ -2647,7 +2670,7 @@ impl App {
         }
 
         if open_settings {
-            self.dialog = Some(Dialog::Settings(Default::default()));
+            self.open_settings(dialogs::SettingsTab::General);
         }
         if let Some((snippet, run)) = insert {
             self.insert_snippet(&snippet, run);
@@ -3242,6 +3265,9 @@ impl eframe::App for App {
         if ctx.input_mut(|i| i.consume_key(Modifiers::CTRL | Modifiers::SHIFT, Key::P)) && self.dialog.is_none() {
             self.palette = if self.palette.is_some() { None } else { Some(Palette::default()) };
         }
+        if ctx.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::Comma)) {
+            self.open_settings(dialogs::SettingsTab::General);
+        }
         if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F11)) {
             self.run_command(Command::Fullscreen);
         }
@@ -3373,7 +3399,7 @@ impl eframe::App for App {
                             tab_rects.push(field.rect);
                             continue;
                         }
-                        let can_duplicate = !matches!(self.tabs[i].kind, TabKind::Explorer(_));
+                        let can_duplicate = !matches!(self.tabs[i].kind, TabKind::Explorer(_) | TabKind::Settings | TabKind::Containers);
                         let outcome = tab(ui, title, i == self.active, i, *identity, *attention, *insecure, self.tabs.len(), can_duplicate, tab_cap, &mut tab_menu);
                         tab_rects.push(outcome.rect);
                         if i == self.active && self.tabs.get(i).is_some_and(|t| t.id != self.tab_strip_seen) {
@@ -3620,7 +3646,12 @@ impl eframe::App for App {
             let mut messages: Vec<String> = Vec::new();
             let mut request = None;
             let mut snippet_text: Option<String> = None;
+            if let Body::Settings(section) = self.tabs[active].body {
+                let section = self.settings_page(ui, area.shrink2(Vec2::new(24.0, 16.0)), section);
+                self.tabs[active].body = Body::Settings(section);
+            }
             match &mut self.tabs[active].body {
+                Body::Settings(_) => {}
                 Body::Terminal { panes, focused, .. } => {
                     let gap = if panes.len() > 1 { SPLIT_GAP } else { 0.0 };
                     let (leaves, handles) = panes.layout(text_area, gap);

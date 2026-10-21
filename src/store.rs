@@ -530,6 +530,8 @@ pub enum TabKind {
     /// Administrador de contenedores y terminales dentro de uno: no se guardan en la sesión.
     Containers,
     Container,
+    /// Página de ajustes: tampoco se restaura.
+    Settings,
 }
 
 /// Una pestaña tal como se guarda: su tipo y, en el explorador, las dos rutas.
@@ -865,7 +867,7 @@ impl Store {
         tx.execute("DELETE FROM layout_tabs", [])?;
         for (position, tab) in tabs.iter().enumerate() {
             let (kind, connection_id) = match tab.kind {
-                TabKind::Local | TabKind::Containers | TabKind::Container => ("local", None),
+                TabKind::Local | TabKind::Containers | TabKind::Container | TabKind::Settings => ("local", None),
                 TabKind::Connection(id) => ("connection", Some(id)),
                 TabKind::Explorer(id) => ("explorer", Some(id)),
             };
