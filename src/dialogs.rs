@@ -585,7 +585,7 @@ pub struct CloseConfirm {
     pub dont_ask: bool,
 }
 
-/// Lista de `known_hosts` del diálogo de ajustes, leída una vez y recargada al cambiar.
+/// Lista de `known_hosts` de la página de ajustes, leída una vez y recargada al cambiar.
 #[derive(Default)]
 pub struct KnownHostsView {
     entries: Vec<crate::known_hosts::KnownHost>,
@@ -628,7 +628,6 @@ pub struct TelnetWarning {
 pub enum Dialog {
     Error(ErrorInfo),
     HostKeyChanged(HostKeyChange),
-    Settings(SettingsTab),
     About,
     ConfirmClose(CloseConfirm),
     TelnetWarning(TelnetWarning),
@@ -936,16 +935,9 @@ fn plain(action: Action, accepted: Outcome) -> Outcome {
 pub fn show(
     ctx: &egui::Context,
     dialog: &mut Dialog,
-    master_forced: &mut bool,
     connections: &[Connection],
-    settings: &mut Settings,
-    hosts: &mut KnownHostsView,
 ) -> Outcome {
     match dialog {
-        Dialog::Settings(tab) => {
-            let action = shell(ctx, Spec::new("Ajustes").width(520.0).cancel("Cerrar"), |ui| settings_body(ui, tab, settings, master_forced, hosts, connections));
-            plain(action, Outcome::None)
-        }
         Dialog::ConfirmClose(confirm) => {
             let title = match confirm.action {
                 CloseAction::Window => "Cerrar omni-term",
@@ -1809,6 +1801,7 @@ const SHORTCUTS: [(&str, &[(&str, &str)]); 4] = [
         "Pestañas",
         &[
             ("Ctrl+Shift+P", "Paleta de comandos"),
+            ("Ctrl+,", "Abrir los ajustes"),
             ("Alt+1 … 9", "Ir a la pestaña 1 … 9 (Alt+9, la última)"),
             ("Ctrl+Tab / Ctrl+Mayús+Tab", "Pestaña siguiente / anterior"),
             ("Doble clic en la pestaña", "Renombrarla"),
@@ -1842,75 +1835,91 @@ const SHORTCUTS: [(&str, &[(&str, &str)]); 4] = [
     ),
 ];
 
-fn settings_body(ui: &mut egui::Ui, tab: &mut SettingsTab, settings: &mut Settings, master_forced: &mut bool, hosts: &mut KnownHostsView, connections: &[Connection]) -> bool {
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 20.0;
-        ui.spacing_mut().button_padding.x = 0.0;
-        for (choice, label) in [(SettingsTab::General, "General"), (SettingsTab::Atajos, "Atajos"), (SettingsTab::Hosts, "Hosts conocidos")] {
-            let selected = *tab == choice;
-            let color = if selected { theme::text() } else { theme::subtext() };
-            let font = FontId::new(14.0, if selected { crate::ui::strong_family() } else { egui::FontFamily::Proportional });
-            let response = ui.add(egui::Button::new(RichText::new(label).font(font).color(color)).fill(Color32::TRANSPARENT));
-            if selected {
-                let y = response.rect.max.y + 1.0;
-                ui.painter().line_segment([egui::pos2(response.rect.min.x, y), egui::pos2(response.rect.max.x, y)], egui::Stroke::new(2.0, theme::accent()));
-            }
-            if response.clicked() {
-                *tab = choice;
-                hosts.loaded = false;
-            }
-        }
-    });
-    ui.add_space(10.0);
+/// Lista de secciones de la página de ajustes.
+const SETTINGS_SECTIONS: [(SettingsTab, &str); 3] = [(SettingsTab::General, "General"), (SettingsTab::Atajos, "Atajos de teclado"), (SettingsTab::Hosts, "Hosts conocidos")];
+const SETTINGS_MAX_WIDTH: f32 = 720.0;
 
-    let height = (ui.ctx().content_rect().height() - 250.0).clamp(220.0, 520.0);
-    egui::ScrollArea::vertical().max_height(height).auto_shrink([false, true]).show(ui, |ui| {
-        let section = |ui: &mut egui::Ui, text: &str| {
-            ui.add_space(6.0);
-            ui.label(RichText::new(text).small().color(theme::subtext()));
-        };
-        if *tab == SettingsTab::Hosts {
-            known_hosts_body(ui, hosts, connections);
-            return;
-        }
-        if *tab == SettingsTab::Atajos {
-            for (group, entries) in SHORTCUTS {
-                section(ui, group);
-                for (keys, what) in entries.iter() {
-                    ui.horizontal(|ui| {
-                        ui.allocate_ui_with_layout(egui::vec2(200.0, 20.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                            ui.label(RichText::new(*keys).color(theme::text()))
-                        });
-                        ui.label(RichText::new(*what).color(theme::subtext()));
-                    });
+/// Página de ajustes de una pestaña: lista de secciones a la izquierda y el contenido a la derecha.
+pub fn settings_page(ui: &mut egui::Ui, tab: &mut SettingsTab, settings: &mut Settings, master_forced: &mut bool, hosts: &mut KnownHostsView, connections: &[Connection]) {
+    ui.horizontal_top(|ui| {
+        ui.spacing_mut().item_spacing = egui::vec2(8.0, 4.0);
+        ui.vertical(|ui| {
+            ui.set_width(168.0);
+            for (choice, label) in SETTINGS_SECTIONS {
+                let selected = *tab == choice;
+                let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 32.0), egui::Sense::click());
+                let response = response.hand();
+                if selected {
+                    ui.painter().rect_filled(rect, egui::CornerRadius::same(6), theme::selection());
+                } else if response.hovered() {
+                    ui.painter().rect_filled(rect, egui::CornerRadius::same(6), theme::surface());
+                }
+                let font = FontId::new(14.0, if selected { crate::ui::strong_family() } else { egui::FontFamily::Proportional });
+                ui.painter().text(rect.min + egui::vec2(12.0, 16.0), egui::Align2::LEFT_CENTER, label, font, if selected { theme::text() } else { theme::subtext() });
+                if response.clicked() && !selected {
+                    *tab = choice;
+                    hosts.loaded = false;
                 }
             }
-            return;
+        });
+        ui.add_space(16.0);
+        ui.vertical(|ui| {
+            ui.set_max_width(SETTINGS_MAX_WIDTH);
+            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                ui.set_max_width(SETTINGS_MAX_WIDTH - 12.0);
+                settings_content(ui, *tab, settings, master_forced, hosts, connections);
+            });
+        });
+    });
+}
+
+fn settings_content(ui: &mut egui::Ui, tab: SettingsTab, settings: &mut Settings, master_forced: &mut bool, hosts: &mut KnownHostsView, connections: &[Connection]) {
+    if tab == SettingsTab::Hosts {
+        known_hosts_body(ui, hosts, connections);
+        return;
+    }
+    if tab == SettingsTab::Atajos {
+        for (group, entries) in SHORTCUTS {
+            settings_card(ui, group, |ui| {
+                for (index, (keys, what)) in entries.iter().enumerate() {
+                    setting_row(ui, what, None, index + 1 < entries.len(), |ui| {
+                        for (n, combo) in keys.split(" / ").enumerate() {
+                            if n > 0 {
+                                ui.label(RichText::new("/").color(theme::subtext()));
+                            }
+                            keycap(ui, combo);
+                        }
+                    });
+                }
+            });
         }
-        section(ui, "Apariencia");
-        ui.horizontal(|ui| {
-            ui.label("Tema");
+        return;
+    }
+    settings_card(ui, "Apariencia", |ui| {
+        setting_row(ui, "Tema", None, true, |ui| {
             ui.selectable_value(&mut settings.theme, ThemeChoice::Dark, "Oscuro");
             ui.selectable_value(&mut settings.theme, ThemeChoice::Light, "Claro");
             ui.selectable_value(&mut settings.theme, ThemeChoice::System, "Sistema");
         });
-        ui.horizontal(|ui| {
-            ui.label("Acento");
+        setting_row(ui, "Acento", Some("Color de lo seleccionado"), true, |ui| {
             for (choice, label) in AccentChoice::ALL {
                 ui.selectable_value(&mut settings.accent, choice, label);
             }
         });
-        ui.horizontal(|ui| {
-            ui.label("Densidad");
+        setting_row(ui, "Densidad", Some("Altura de las filas de las listas"), true, |ui| {
             ui.selectable_value(&mut settings.compact, false, "Cómoda");
             ui.selectable_value(&mut settings.compact, true, "Compacta");
         });
-        ui.checkbox(&mut settings.menu_bar, "Mostrar la barra de menú (si está oculta, Alt la muestra)").hand();
-        ui.checkbox(&mut settings.confirm_close, "Confirmar al cerrar pestañas con algo en ejecución").hand();
+        setting_row(ui, "Barra de menú", Some("Si está oculta, Alt la muestra"), true, |ui| {
+            toggle(ui, &mut settings.menu_bar);
+        });
+        setting_row(ui, "Confirmar al cerrar pestañas", Some("Solo si tienen algo en ejecución"), false, |ui| {
+            toggle(ui, &mut settings.confirm_close);
+        });
+    });
 
-        section(ui, "Terminal");
-        ui.horizontal(|ui| {
-            ui.label("Fuente");
+    settings_card(ui, "Terminal", |ui| {
+        setting_row(ui, "Fuente", None, true, |ui| {
             let name = settings
                 .font_path
                 .as_deref()
@@ -1926,50 +1935,126 @@ fn settings_body(ui: &mut egui::Ui, tab: &mut SettingsTab, settings: &mut Settin
                 settings.font_path = None;
             }
         });
-        ui.horizontal(|ui| {
-            ui.label("Tamaño de fuente");
+        setting_row(ui, "Tamaño de la letra", None, true, |ui| {
             ui.add(egui::Slider::new(&mut settings.font_size, MIN_FONT_SIZE..=MAX_FONT_SIZE).step_by(1.0).suffix(" pt"));
         });
-        ui.horizontal(|ui| {
-            ui.label("Cursor");
+        setting_row(ui, "Cursor", None, true, |ui| {
             ui.selectable_value(&mut settings.cursor, CursorChoice::Block, "Bloque");
             ui.selectable_value(&mut settings.cursor, CursorChoice::Beam, "Barra");
             ui.selectable_value(&mut settings.cursor, CursorChoice::Underline, "Subrayado");
         });
-        ui.checkbox(&mut settings.blink, "Cursor parpadeante").hand();
-        ui.horizontal(|ui| {
-            ui.label("Historial");
+        setting_row(ui, "Cursor parpadeante", None, true, |ui| {
+            toggle(ui, &mut settings.blink);
+        });
+        setting_row(ui, "Historial", Some("Se aplica a las sesiones nuevas"), false, |ui| {
             ui.add(egui::DragValue::new(&mut settings.scrollback).range(MIN_SCROLLBACK..=MAX_SCROLLBACK).speed(100.0).suffix(" líneas"));
         });
-        ui.label(RichText::new("El historial se aplica a las sesiones nuevas.").small().color(theme::subtext()));
+    });
 
-        section(ui, "Avisos");
+    settings_card(ui, "Avisos", |ui| {
         let mut notify = settings.notify_after > 0;
-        if ui.checkbox(&mut notify, "Avisar cuando termine la actividad de una pestaña en segundo plano").hand().changed() {
-            settings.notify_after = if notify { 15 } else { 0 };
-        }
+        setting_row(ui, "Avisar al terminar la actividad", Some("De una pestaña que no está a la vista"), notify, |ui| {
+            if toggle(ui, &mut notify).changed() {
+                settings.notify_after = if notify { 15 } else { 0 };
+            }
+        });
         if notify {
-            ui.horizontal(|ui| {
-                ui.label("Solo si duró al menos");
+            setting_row(ui, "Solo si duró al menos", None, false, |ui| {
                 ui.add(egui::DragValue::new(&mut settings.notify_after).range(1..=3600).suffix(" s"));
             });
         }
-
-        section(ui, "Secretos");
-        ui.checkbox(master_forced, "Usar siempre la clave maestra, aunque haya keyring").hand();
-        ui.label(RichText::new("Este cambio se aplica al reiniciar.").small().color(theme::subtext()));
-
     });
-    false
+
+    settings_card(ui, "Secretos", |ui| {
+        setting_row(ui, "Usar siempre la clave maestra", Some("Aunque haya keyring. Se aplica al reiniciar"), false, |ui| {
+            toggle(ui, master_forced);
+        });
+    });
+}
+
+/// Grupo de ajustes: título y una tarjeta con sus filas.
+fn settings_card(ui: &mut egui::Ui, title: &str, rows: impl FnOnce(&mut egui::Ui)) {
+    ui.add_space(GROUP_GAP);
+    ui.label(RichText::new(title).font(FontId::new(12.5, crate::ui::strong_family())).color(theme::subtext()));
+    ui.add_space(4.0);
+    egui::Frame::new()
+        .fill(theme::mantle())
+        .stroke(egui::Stroke::new(1.0, theme::surface()))
+        .corner_radius(egui::CornerRadius::same(8))
+        .inner_margin(egui::Margin::symmetric(14, 4))
+        .show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            ui.set_width(ui.available_width());
+            rows(ui);
+        });
+}
+
+const SETTING_LABEL_WIDTH: f32 = 290.0;
+
+/// Casilla con borde propio: sobre el fondo de una tarjeta clara la casilla vacía casi no se vería.
+fn toggle(ui: &mut egui::Ui, value: &mut bool) -> egui::Response {
+    ui.scope(|ui| {
+        let stroke = egui::Stroke::new(1.0, theme::subtext());
+        let widgets = &mut ui.visuals_mut().widgets;
+        widgets.inactive.bg_stroke = stroke;
+        widgets.hovered.bg_stroke = stroke;
+        ui.checkbox(value, "").hand()
+    })
+    .inner
+}
+
+/// Combinación de teclas con aspecto de tecla.
+fn keycap(ui: &mut egui::Ui, text: &str) {
+    egui::Frame::new()
+        .fill(theme::surface())
+        .corner_radius(egui::CornerRadius::same(5))
+        .inner_margin(egui::Margin::symmetric(8, 3))
+        .show(ui, |ui| {
+            ui.label(RichText::new(text).font(FontId::new(12.5, egui::FontFamily::Monospace)).color(theme::text()));
+        });
+}
+
+/// Una fila: el nombre (y una pista) a la izquierda y el control en una columna común a la derecha.
+fn setting_row(ui: &mut egui::Ui, label: &str, hint: Option<&str>, divider: bool, controls: impl FnOnce(&mut egui::Ui)) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 12.0;
+        ui.set_min_height(48.0);
+        ui.allocate_ui_with_layout(egui::vec2(SETTING_LABEL_WIDTH, 48.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+            ui.spacing_mut().item_spacing.y = 1.0;
+            ui.set_min_width(SETTING_LABEL_WIDTH);
+            let lines = if hint.is_some() { 2.0 } else { 1.0 };
+            ui.add_space((48.0 - lines * 17.0 - if hint.is_some() { 1.0 } else { 0.0 }) / 2.0);
+            ui.label(RichText::new(label).color(theme::text()));
+            if let Some(hint) = hint {
+                ui.label(RichText::new(hint).small().color(theme::subtext()));
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            controls(ui);
+        });
+    });
+    if divider {
+        let y = ui.cursor().min.y;
+        let x = ui.max_rect().x_range();
+        ui.painter().hline(x, y, egui::Stroke::new(1.0, theme::surface()));
+    }
 }
 
 fn known_hosts_body(ui: &mut egui::Ui, view: &mut KnownHostsView, connections: &[Connection]) {
     view.ensure_loaded();
-    ui.add(
-        TextEdit::singleline(&mut view.query)
-            .hint_text("Buscar por host, conexión o huella")
-            .desired_width(f32::INFINITY),
-    );
+    ui.scope(|ui| {
+        ui.visuals_mut().widgets.inactive.bg_stroke = egui::Stroke::new(1.0, theme::surface());
+        ui.add(
+            TextEdit::singleline(&mut view.query)
+                .hint_text("Buscar por host, conexión o huella")
+                .desired_width(f32::INFINITY)
+                .margin(egui::vec2(8.0, 6.0)),
+        );
+    });
+    if view.error.is_none() && !view.entries.is_empty() {
+        ui.label(RichText::new(format!("{} entradas en {}", view.entries.len(), crate::ssh::default_known_hosts().display())).small().color(theme::subtext()));
+    }
     ui.add_space(6.0);
     if let Some(error) = &view.error {
         ui.label(RichText::new(error).color(theme::red()));
