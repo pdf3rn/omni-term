@@ -1301,35 +1301,100 @@ impl App {
     }
 
     /// Pantalla sin pestañas: qué se puede hacer a continuación. Devuelve `true` si se pide un terminal local.
-    fn empty_state(&self, ui: &mut egui::Ui, area: Rect) -> bool {
-        let mut open = false;
-        let width = 360.0_f32.min(area.width());
-        let column = Rect::from_center_size(area.center(), Vec2::new(width, 0.0));
-        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_max(
-            Pos2::new(column.min.x, area.center().y - 140.0),
-            Pos2::new(column.max.x, area.max.y),
+    fn empty_state(&self, ui: &mut egui::Ui, area: Rect) -> Option<EmptyAction> {
+        let mut action = None;
+        let width = 480.0_f32.min(area.width());
+        // Centrado si hay sitio; en ventanas bajas empieza arriba y se desplaza.
+        let top = if area.height() > 640.0 { area.center().y - 290.0 } else { area.min.y + 8.0 };
+        let mut outer = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_max(
+            Pos2::new(area.center().x - width / 2.0, top),
+            Pos2::new(area.center().x + width / 2.0, area.max.y),
         )));
-        child.spacing_mut().item_spacing.y = 8.0;
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(&mut outer, |child| {
+        child.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
         child.label(RichText::new("No hay pestañas abiertas").font(FontId::new(20.0, strong_family())));
         child.label(RichText::new("Abre un terminal o conéctate a un servidor guardado.").color(theme::subtext()));
-        child.add_space(8.0);
-        let button = Button::new(RichText::new("Nuevo terminal local").color(theme::base())).fill(theme::accent());
-        if child.add(button).clicked() {
-            open = true;
-        }
-        child.add_space(16.0);
-        for (keys, what) in [
-            ("Doble clic", "en una conexión de la barra lateral para conectar"),
-            ("Ctrl+Shift+D / E", "dividir el panel a la derecha / hacia abajo"),
-            ("Ctrl+Shift+F", "buscar en la salida"),
-            ("Ctrl+= / Ctrl+−", "cambiar el tamaño de la letra"),
-        ] {
-            child.horizontal(|ui| {
-                ui.allocate_ui_with_layout(Vec2::new(128.0, 18.0), egui::Layout::left_to_right(egui::Align::Center), |ui| ui.label(RichText::new(keys).color(theme::text()).small()));
-                ui.label(RichText::new(what).color(theme::subtext()).small());
+        child.add_space(4.0);
+        child.horizontal(|ui| {
+            let primary = Button::new(RichText::new("Nuevo terminal local").color(theme::base())).fill(theme::accent());
+            if ui.add(primary).clicked() {
+                action = Some(EmptyAction::Local);
+            }
+            let secondary = |label: &str| Button::new(label).fill(Color32::TRANSPARENT).stroke(Stroke::new(1.0, theme::selection()));
+            if ui.add(secondary("Nueva conexión")).clicked() {
+                action = Some(EmptyAction::NewConnection);
+            }
+            if ui.add(secondary("Contenedores")).clicked() {
+                action = Some(EmptyAction::Containers);
+            }
+        });
+
+        child.add_space(12.0);
+        let recents: Vec<Connection> = self.recent_connections().into_iter().take(4).collect();
+        if recents.is_empty() {
+            child.label(RichText::new("Aún no hay conexiones guardadas.").color(theme::subtext()));
+            if child.add(Button::new("Importar de ~/.ssh/config").fill(Color32::TRANSPARENT).stroke(Stroke::new(1.0, theme::selection()))).clicked() {
+                action = Some(EmptyAction::Import);
+            }
+        } else {
+            child.label(RichText::new("Recientes").font(FontId::new(12.5, strong_family())).color(theme::subtext()));
+            Frame::new().fill(theme::mantle()).stroke(Stroke::new(1.0, theme::surface())).corner_radius(CornerRadius::same(8)).inner_margin(Margin::symmetric(6, 4)).show(child, |ui| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+                ui.set_width(ui.available_width());
+                for connection in &recents {
+                    let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 44.0), Sense::click());
+                    let response = response.hand();
+                    if response.hovered() {
+                        ui.painter().rect_filled(rect, CornerRadius::same(6), theme::surface());
+                    }
+                    let glyph = if connection.is_files() {
+                        icons::FOLDER
+                    } else if connection.is_adb() {
+                        icons::DOTS
+                    } else {
+                        icons::TERMINAL
+                    };
+                    ui.painter().text(Pos2::new(rect.min.x + 18.0, rect.center().y), Align2::CENTER_CENTER, glyph, FontId::proportional(17.0), theme::subtext());
+                    let clip = ui.painter().with_clip_rect(rect);
+                    let name_font = FontId::new(14.0, strong_family());
+                    let name = fit_text(&clip, &connection.name, &name_font, rect.width() - 48.0);
+                    clip.text(Pos2::new(rect.min.x + 38.0, rect.min.y + 7.0), Align2::LEFT_TOP, name, name_font, theme::text());
+                    let detail_font = FontId::new(12.0, FontFamily::Proportional);
+                    let detail = fit_text(&clip, &format!("{}  ·  {}", connection.kind_label(), connection.destination()), &detail_font, rect.width() - 48.0);
+                    clip.text(Pos2::new(rect.min.x + 38.0, rect.min.y + 25.0), Align2::LEFT_TOP, detail, detail_font, theme::subtext());
+                    if response.on_hover_text("Conectar").clicked() {
+                        action = Some(EmptyAction::Connect(connection.clone()));
+                    }
+                }
             });
         }
-        open
+
+        child.add_space(12.0);
+        child.label(RichText::new("Atajos").font(FontId::new(12.5, strong_family())).color(theme::subtext()));
+        for (keys, what) in [
+            ("Ctrl+Shift+P", "Paleta de comandos"),
+            ("Ctrl+Shift+D / E", "Dividir el panel a la derecha / hacia abajo"),
+            ("Ctrl+Shift+B", "Mostrar u ocultar la barra lateral"),
+            ("Ctrl+,", "Abrir los ajustes"),
+        ] {
+            child.horizontal(|ui| {
+                ui.allocate_ui_with_layout(Vec2::new(210.0, 24.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.set_min_width(210.0);
+                    for (n, combo) in keys.split(" / ").enumerate() {
+                        if n > 0 {
+                            ui.label(RichText::new("/").color(theme::subtext()));
+                        }
+                        dialogs::keycap(ui, combo);
+                    }
+                });
+                ui.label(RichText::new(what).color(theme::subtext()));
+            });
+        }
+        if child.add(Button::new(RichText::new("Ver todos los atajos").color(theme::accent())).frame(false)).clicked() {
+            action = Some(EmptyAction::Shortcuts);
+        }
+        });
+        action
     }
 
     /// Hasta 5 conexiones para el menú del «+»: las últimas usadas y, si faltan, las demás por nombre.
@@ -2879,6 +2944,16 @@ enum PlusChoice {
     All,
 }
 
+/// Qué se pidió en la pantalla sin pestañas.
+enum EmptyAction {
+    Local,
+    NewConnection,
+    Containers,
+    Import,
+    Shortcuts,
+    Connect(Connection),
+}
+
 /// Recorta `text` con «…» para que quepa en `width` píxeles.
 fn fit_text(painter: &egui::Painter, text: &str, font: &FontId, width: f32) -> String {
     let measure = |t: &str| painter.layout_no_wrap(t.to_string(), font.clone(), Color32::PLACEHOLDER).size().x;
@@ -3633,8 +3708,14 @@ impl eframe::App for App {
         let finished_restoring = self.restore_active.is_none();
         if self.tabs.is_empty() && finished_restoring && self.open_queue.is_empty() {
             ctx.send_viewport_cmd(ViewportCommand::Title("omni-term".to_string()));
-            if self.empty_state(ui, text_area) {
-                self.open_queue.push_back(SavedTab::plain(TabKind::Local));
+            match self.empty_state(ui, text_area) {
+                Some(EmptyAction::Local) => self.open_queue.push_back(SavedTab::plain(TabKind::Local)),
+                Some(EmptyAction::NewConnection) => self.run_command(Command::NewConnection),
+                Some(EmptyAction::Containers) => self.open_containers(),
+                Some(EmptyAction::Import) => self.run_command(Command::ImportConfig),
+                Some(EmptyAction::Shortcuts) => self.open_settings(dialogs::SettingsTab::Atajos),
+                Some(EmptyAction::Connect(connection)) => self.begin_open(connection, None, Purpose::Terminal),
+                None => {}
             }
         }
 
