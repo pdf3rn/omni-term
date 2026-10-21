@@ -2287,17 +2287,9 @@ impl App {
                         ui.label(RichText::new(title).small().color(theme::subtext()));
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                                         if connections_view {
-                                let add = compact_icon(ui, icons::PLUS, 16.0, theme::text()).on_hover_text("Nueva conexión o importar");
-                                egui::Popup::menu(&add).show(|ui| {
-                                    if ui.button("Nueva conexión").clicked() {
-                                        new_connection = true;
-                                        ui.close();
-                                    }
-                                    if ui.button("Importar de ~/.ssh/config").clicked() {
-                                        import = true;
-                                        ui.close();
-                                    }
-                                });
+                                if compact_icon(ui, icons::PLUS, 16.0, theme::text()).on_hover_text("Nueva conexión").clicked() {
+                                    new_connection = true;
+                                }
                             } else if compact_icon(ui, icons::PLUS, 16.0, theme::text()).on_hover_text("Nuevo snippet").clicked() {
                                 new_snippet = true;
                             }
