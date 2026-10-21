@@ -26,6 +26,44 @@ pub fn bold_family() -> FontFamily {
     FontFamily::Name("mono-bold".into())
 }
 
+pub fn italic_family() -> FontFamily {
+    FontFamily::Name("mono-italic".into())
+}
+
+pub fn bold_italic_family() -> FontFamily {
+    FontFamily::Name("mono-bold-italic".into())
+}
+
+/// Dibuja el subrayado de una celda según su estilo: simple, doble, ondulado, punteado o discontinuo.
+fn draw_underline(painter: &egui::Painter, rect: Rect, flags: Flags, color: Color32, ppp: f32) {
+    let px = 1.0 / ppp;
+    let base = rect.max.y - px;
+    let line = |y: f32| painter.rect_filled(Rect::from_min_max(Pos2::new(rect.min.x, y), Pos2::new(rect.max.x, y + px)), CornerRadius::ZERO, color);
+    if flags.contains(Flags::UNDERCURL) {
+        let steps = 12;
+        let points: Vec<Pos2> = (0..=steps)
+            .map(|i| {
+                let t = i as f32 / steps as f32;
+                Pos2::new(rect.min.x + t * rect.width(), base - 1.5 * px - 1.5 * px * (t * std::f32::consts::TAU).sin())
+            })
+            .collect();
+        painter.add(egui::Shape::line(points, egui::Stroke::new(1.2 * px, color)));
+    } else if flags.contains(Flags::DOUBLE_UNDERLINE) {
+        line(base);
+        line(base - 2.0 * px);
+    } else if flags.intersects(Flags::DOTTED_UNDERLINE | Flags::DASHED_UNDERLINE) {
+        let (on, off) = if flags.contains(Flags::DOTTED_UNDERLINE) { (2.0, 2.0) } else { (5.0, 3.0) };
+        let mut x = rect.min.x;
+        while x < rect.max.x {
+            let end = (x + on * px).min(rect.max.x);
+            painter.rect_filled(Rect::from_min_max(Pos2::new(x, base), Pos2::new(end, base + px)), CornerRadius::ZERO, color);
+            x += (on + off) * px;
+        }
+    } else {
+        line(base);
+    }
+}
+
 /// Tamaño de celda en puntos, alineado a píxeles físicos.
 fn cell_size(ui: &egui::Ui, font_size: f32) -> (f32, f32) {
     let font = FontId::new(font_size, FontFamily::Monospace);
@@ -184,6 +222,8 @@ impl Pane {
     fn terminal(&mut self, ui: &mut egui::Ui, area: Rect, font_size: f32) {
         let font = FontId::new(font_size, FontFamily::Monospace);
         let bold = FontId::new(font_size, bold_family());
+        let italic = FontId::new(font_size, italic_family());
+        let bold_italic = FontId::new(font_size, bold_italic_family());
         let ppp = ui.ctx().pixels_per_point();
         let (cell_w, cell_h) = cell_size(ui, font_size);
         let area = Rect::from_min_size(snap(area.min, ppp), area.size());
@@ -320,7 +360,7 @@ impl Pane {
         }
         self.refresh_search();
         let highlights = self.highlights(rows);
-        self.paint_grid(ui, area, &font, &bold, cell_w, cell_h, &highlights);
+        self.paint_grid(ui, area, &font, [&bold, &italic, &bold_italic], cell_w, cell_h, &highlights);
         self.scrollbar(ui, area, rows);
         self.search_bar(ui, area);
     }
@@ -774,7 +814,7 @@ impl Pane {
         ui: &egui::Ui,
         area: Rect,
         font: &FontId,
-        bold: &FontId,
+        faces: [&FontId; 3],
         cell_w: f32,
         cell_h: f32,
         highlights: &HashMap<i32, Vec<(usize, usize, bool)>>,
@@ -811,6 +851,7 @@ impl Pane {
             fg: Color32,
             bg: Color32,
             flags: Flags,
+            underline: Color32,
         }
 
         let mut glyphs: Vec<Glyph> = Vec::new();
@@ -825,10 +866,14 @@ impl Pane {
             }
             let wide = cell.flags.contains(Flags::WIDE_CHAR);
 
-            let (mut fg, mut bg) = (theme::resolve(cell.fg), theme::resolve(cell.bg));
+            let (mut fg, mut bg) = (theme::resolve_styled(cell.fg, cell.flags.contains(Flags::BOLD)), theme::resolve(cell.bg));
             if cell.flags.contains(Flags::INVERSE) {
                 std::mem::swap(&mut fg, &mut bg);
             }
+            if cell.flags.contains(Flags::DIM) {
+                fg = theme::dim(fg);
+            }
+            let underline = cell.underline_color().map(theme::resolve);
             let selected = content.selection.is_some_and(|s| s.contains(indexed.point));
             let at_cursor = cursor_visible && shape == CursorShape::Block && indexed.point == cursor.point;
 
@@ -875,6 +920,7 @@ impl Pane {
                     fg,
                     bg: shown_bg,
                     flags: cell.flags,
+                    underline: underline.unwrap_or(fg),
                 });
             }
         }
@@ -887,16 +933,16 @@ impl Pane {
         for g in &glyphs {
             let rect = cell_rect(g.line, g.col, if g.wide { 2 } else { 1 });
             if g.c != ' ' && !draw_cell_graphic(&painter, rect, g.c, g.fg, g.bg, ppp) {
-                let face = if g.flags.contains(Flags::BOLD) { bold } else { font };
+                let face = match (g.flags.contains(Flags::BOLD), g.flags.contains(Flags::ITALIC)) {
+                    (true, true) => faces[2],
+                    (true, false) => faces[0],
+                    (false, true) => faces[1],
+                    (false, false) => &font,
+                };
                 painter.text(rect.min, Align2::LEFT_TOP, g.c, face.clone(), g.fg);
             }
             if g.flags.intersects(Flags::ALL_UNDERLINES) {
-                let y = rect.max.y - 1.0 / ppp;
-                painter.rect_filled(
-                    Rect::from_min_max(Pos2::new(rect.min.x, y), Pos2::new(rect.max.x, y + 1.0 / ppp)),
-                    CornerRadius::ZERO,
-                    g.fg,
-                );
+                draw_underline(&painter, rect, g.flags, g.underline, ppp);
             }
             if g.flags.contains(Flags::STRIKEOUT) {
                 let y = snap_f(rect.center().y, ppp);

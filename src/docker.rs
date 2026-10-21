@@ -257,7 +257,7 @@ impl Client {
     async fn exec(&self, id: &str, size: (usize, usize)) -> anyhow::Result<(String, Stream)> {
         let command = json!({
             "AttachStdin": true, "AttachStdout": true, "AttachStderr": true, "Tty": true,
-            "Env": ["TERM=xterm-256color", format!("COLUMNS={}", size.0), format!("LINES={}", size.1)],
+            "Env": ["TERM=xterm-256color", "COLORTERM=truecolor", format!("COLUMNS={}", size.0), format!("LINES={}", size.1)],
             "Cmd": ["/bin/sh", "-c", "command -v bash >/dev/null 2>&1 && exec bash || exec sh"],
         });
         let (status, body) = self.call("POST", &format!("/containers/{id}/exec"), Some(&command), TIMEOUT).await?;
