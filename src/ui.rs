@@ -2337,33 +2337,65 @@ impl App {
                                     let bar = Rect::from_min_size(Pos2::new(rect.min.x - 8.0, rect.min.y + 7.0), Vec2::new(3.0, theme::row(ROW_HEIGHT) - 14.0));
                                     ui.painter().rect_filled(bar, CornerRadius::same(2), color);
                                 }
-                                let painter = ui.painter().with_clip_rect(rect);
+                                // Acciones al pasar el ratón: sustituyen a la hora, que vuelve a verse sin ratón encima.
+                                let more_rect = Rect::from_center_size(Pos2::new(rect.max.x - 12.0, rect.center().y), Vec2::splat(24.0));
+                                let edit_rect = Rect::from_center_size(Pos2::new(rect.max.x - 38.0, rect.center().y), Vec2::splat(24.0));
+                                let more = ui.interact(more_rect, response.id.with("more"), Sense::click()).on_hover_text("Más acciones").hand();
+                                let pencil = ui.interact(edit_rect, response.id.with("edit"), Sense::click()).on_hover_text("Editar").hand();
+                                let menu_open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&more));
+                                let actions = over || menu_open;
+
+                                // Icono de tipo con la insignia del estado de la sesión en su esquina.
+                                let icon_center = Pos2::new(rect.min.x + 9.0, rect.center().y);
+                                let kind_icon = if connection.is_files() {
+                                    icons::FOLDER
+                                } else if connection.is_adb() {
+                                    icons::DOTS
+                                } else {
+                                    icons::TERMINAL
+                                };
+                                ui.painter().text(icon_center, Align2::CENTER_CENTER, kind_icon, FontId::proportional(17.0), theme::subtext());
+                                let badge = match state {
+                                    LinkState::Open => Some(theme::accent()),
+                                    LinkState::Lost => Some(theme::red()),
+                                    LinkState::Closed => None,
+                                };
+                                if let Some(color) = badge {
+                                    let at = icon_center + Vec2::new(8.0, 8.0);
+                                    ui.painter().circle_filled(at, 5.5, if over { theme::surface() } else { theme::base() });
+                                    ui.painter().circle_filled(at, 3.5, color);
+                                }
+
+                                let text_x = rect.min.x + 28.0;
+                                let ago_font = FontId::new(11.5, FontFamily::Proportional);
+                                let ago_width = if ago.is_empty() || actions { 0.0 } else { ui.painter().layout_no_wrap(ago.clone(), ago_font.clone(), Color32::PLACEHOLDER).size().x + 10.0 };
+                                let right_limit = if actions { rect.max.x - 56.0 } else { rect.max.x - 4.0 };
+                                let first_line = ui.painter().with_clip_rect(Rect::from_min_max(rect.min, Pos2::new(right_limit - ago_width, rect.max.y)));
                                 let name_font = FontId::new(14.0, strong_family());
-                                let name_width = painter.layout_no_wrap(connection.name.clone(), name_font.clone(), Color32::PLACEHOLDER).size().x;
-                                painter.text(Pos2::new(rect.min.x, rect.min.y + 9.0), Align2::LEFT_TOP, &connection.name, name_font, theme::text());
-                                let lock_width = if connection.insecure_protocol().is_some() { 18.0 } else { 0.0 };
+                                let name_width = first_line.layout_no_wrap(connection.name.clone(), name_font.clone(), Color32::PLACEHOLDER).size().x;
+                                first_line.text(Pos2::new(text_x, rect.min.y + 9.0), Align2::LEFT_TOP, &connection.name, name_font, theme::text());
+                                let mut after_name = text_x + name_width + 8.0;
                                 if connection.insecure_protocol().is_some() {
-                                    painter.text(
-                                        Pos2::new(rect.min.x + name_width + 12.0, rect.min.y + 19.0),
-                                        Align2::CENTER_CENTER,
-                                        icons::LOCK_OPEN,
-                                        FontId::proportional(13.0),
-                                        theme::red(),
-                                    );
+                                    first_line.text(Pos2::new(after_name + 5.0, rect.min.y + 19.0), Align2::CENTER_CENTER, icons::LOCK_OPEN, FontId::proportional(13.0), theme::red());
+                                    after_name += 18.0;
                                 }
                                 if let Some(env) = connection.env.as_ref().filter(|_| !headed || searching) {
-                                    painter.text(
-                                        Pos2::new(rect.min.x + name_width + 8.0 + lock_width, rect.min.y + 11.0),
-                                        Align2::LEFT_TOP,
-                                        env,
-                                        FontId::new(12.0, strong_family()),
-                                        identity.unwrap_or_else(theme::subtext),
-                                    );
+                                    // Pastilla con el color de identidad: dice en qué entorno estás.
+                                    let tint = identity.unwrap_or_else(theme::subtext);
+                                    let font = FontId::new(11.0, strong_family());
+                                    let size = first_line.layout_no_wrap(env.clone(), font.clone(), Color32::PLACEHOLDER).size();
+                                    let pill = Rect::from_min_size(Pos2::new(after_name, rect.min.y + 11.0), size + Vec2::new(10.0, 3.0));
+                                    first_line.rect_filled(pill, CornerRadius::same(8), tint.gamma_multiply(0.2));
+                                    first_line.text(pill.center(), Align2::CENTER_CENTER, env, font, tint);
                                 }
-                                painter.text(
-                                    Pos2::new(rect.min.x, rect.min.y + 27.0),
+                                if ago_width > 0.0 {
+                                    ui.painter().text(Pos2::new(rect.max.x - 4.0, rect.min.y + 11.0), Align2::RIGHT_TOP, &ago, ago_font, theme::subtext());
+                                }
+                                let second_line = ui.painter().with_clip_rect(Rect::from_min_max(rect.min, Pos2::new(right_limit, rect.max.y)));
+                                second_line.text(
+                                    Pos2::new(text_x, rect.min.y + 27.0),
                                     Align2::LEFT_TOP,
-                                    if ago.is_empty() { connection.target() } else { format!("{}  ·  {ago}", connection.target()) },
+                                    format!("{}  ·  {}", connection.kind_label(), connection.destination()),
                                     FontId::new(12.0, FontFamily::Proportional),
                                     theme::subtext(),
                                 );
@@ -2378,13 +2410,7 @@ impl App {
                                 }
                                 response.context_menu(|ui| connection_menu(ui, connection, is_pinned, &mut row_action));
 
-                                // Acciones al pasar el ratón; sin ratón encima se ve el estado de la sesión.
-                                let more_rect = Rect::from_center_size(Pos2::new(rect.max.x - 12.0, rect.center().y), Vec2::splat(24.0));
-                                let edit_rect = Rect::from_center_size(Pos2::new(rect.max.x - 38.0, rect.center().y), Vec2::splat(24.0));
-                                let more = ui.interact(more_rect, response.id.with("more"), Sense::click()).on_hover_text("Más acciones").hand();
-                                let pencil = ui.interact(edit_rect, response.id.with("edit"), Sense::click()).on_hover_text("Editar").hand();
-                                let menu_open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&more));
-                                if over || menu_open {
+                                if actions {
                                     for (button, rect) in [(&pencil, edit_rect), (&more, more_rect)] {
                                         if button.hovered() || (menu_open && rect == more_rect) {
                                             ui.painter().rect_filled(rect, CornerRadius::same(CONTROL_RADIUS), theme::selection());
@@ -2392,16 +2418,6 @@ impl App {
                                     }
                                     for (glyph, rect, size) in [(icons::PENCIL, edit_rect, 16.0), (icons::DOTS, more_rect, 20.0)] {
                                         ui.painter().text(rect.center(), Align2::CENTER_CENTER, glyph, FontId::proportional(size), theme::text());
-                                    }
-                                } else {
-                                    match state {
-                                        LinkState::Open => {
-                                            ui.painter().circle_filled(Pos2::new(rect.max.x - 6.0, rect.center().y), 3.5, theme::accent());
-                                        }
-                                        LinkState::Lost => {
-                                            ui.painter().circle_filled(Pos2::new(rect.max.x - 6.0, rect.center().y), 3.5, theme::red());
-                                        }
-                                        LinkState::Closed => {}
                                     }
                                 }
                                 if pencil.clicked() {

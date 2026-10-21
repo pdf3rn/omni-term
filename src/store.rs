@@ -411,6 +411,32 @@ impl Connection {
         matches!(self.protocol, Protocol::Telnet(_))
     }
 
+    /// Tipo en una palabra, para la lista: «SSH», «SFTP», «ADB»…
+    pub fn kind_label(&self) -> &'static str {
+        match self.protocol {
+            Protocol::Ssh => "SSH",
+            Protocol::Telnet(_) => "Telnet",
+            Protocol::Serial(_) => "Serie",
+            Protocol::Files(FilesKind::Sftp) => "SFTP",
+            Protocol::Files(FilesKind::Ftp(_)) => "FTP",
+            Protocol::Files(FilesKind::Smb) => "SMB",
+            Protocol::Adb => "ADB",
+        }
+    }
+
+    /// A dónde conecta, sin el nombre del protocolo.
+    pub fn destination(&self) -> String {
+        match self.protocol {
+            Protocol::Ssh | Protocol::Files(FilesKind::Sftp) => format!("{}@{}", self.user, self.host),
+            Protocol::Telnet(_) => format!("{}:{}", self.host, self.port),
+            Protocol::Serial(o) => format!("{} · {}", self.host, o.baud),
+            Protocol::Files(FilesKind::Ftp(o)) => format!("{}@{}", if o.anonymous { "anónimo" } else { self.user.as_str() }, self.host),
+            Protocol::Files(FilesKind::Smb) => format!("\\\\{}\\{}", self.host, self.smb_share()),
+            Protocol::Adb if self.host.is_empty() => "el dispositivo conectado".to_string(),
+            Protocol::Adb => self.host.clone(),
+        }
+    }
+
     /// Destino para mostrar: `usuario@host` en SSH y `telnet · host:puerto` en Telnet.
     pub fn target(&self) -> String {
         match self.protocol {
