@@ -278,7 +278,7 @@ impl App {
             _ => Vec::new(),
         };
         let settings = Settings::load(&store.lock().unwrap());
-        let font_error = install_fonts(&cc.egui_ctx, settings.font_path.as_deref());
+        let font_error = install_fonts(&cc.egui_ctx, settings.font_family.as_deref());
         theme::set_accent(settings.accent.index());
         theme::set_compact(settings.compact);
         theme::set_bold_bright(settings.bold_bright);
@@ -375,9 +375,9 @@ impl App {
             next_toast: 0,
         };
         app.ssh_config_hosts = pending_ssh_config_hosts(&app.connections);
-        app.loaded_font = app.settings.font_path.clone();
+        app.loaded_font = app.settings.font_family.clone();
         if let Some(problem) = font_error {
-            app.settings.font_path = None;
+            app.settings.font_family = None;
             app.loaded_font = None;
             app.notify(problem);
         }
@@ -1127,12 +1127,12 @@ impl App {
     fn apply_settings(&mut self) {
         theme::set_bold_bright(self.settings.bold_bright);
         theme::set_ansi_scheme(self.settings.ansi.index());
-        if self.settings.font_path != self.loaded_font {
-            if let Some(problem) = install_fonts(&self.ctx, self.settings.font_path.as_deref()) {
-                self.settings.font_path = None;
+        if self.settings.font_family != self.loaded_font {
+            if let Some(problem) = install_fonts(&self.ctx, self.settings.font_family.as_deref()) {
+                self.settings.font_family = None;
                 self.notify(problem);
             }
-            self.loaded_font = self.settings.font_path.clone();
+            self.loaded_font = self.settings.font_family.clone();
         }
         let _ = self.settings.save(&self.store.lock().unwrap());
         let options = self.term_options();
@@ -3155,29 +3155,45 @@ fn credentials_for(kind: SecretKind, secret: Zeroizing<String>) -> Credentials {
     }
 }
 
-/// Instala las fuentes; con `custom` (archivo TTF/OTF) el terminal usa esa en lugar de JetBrains Mono.
-/// Si el archivo no se puede usar, se queda JetBrains Mono y se devuelve el motivo.
-fn install_fonts(ctx: &egui::Context, custom: Option<&str>) -> Option<String> {
+/// Instala las fuentes; con `family` (una familia instalada en el equipo) el terminal usa esa en lugar de JetBrains Mono.
+/// Si no se puede usar, se queda JetBrains Mono y se devuelve el motivo.
+fn install_fonts(ctx: &egui::Context, family: Option<&str>) -> Option<String> {
     let mut problem = None;
-    let custom_bytes: Option<&'static [u8]> = custom.and_then(|path| match std::fs::read(path) {
-        Ok(bytes) if ab_glyph::FontRef::try_from_slice(&bytes).is_ok() => Some(&*Box::leak(bytes.into_boxed_slice())),
+    let system = family.and_then(|name| match crate::fonts::load_family(name) {
+        Ok(faces) if faces.iter().all(|f| ab_glyph::FontRef::try_from_slice_and_index(&f.data, f.index).is_ok()) => Some(faces),
         Ok(_) => {
-            problem = Some(format!("{path} no es una fuente TTF u OTF válida"));
+            problem = Some(format!("La fuente «{name}» no se puede usar en el terminal"));
             None
         }
         Err(error) => {
-            problem = Some(format!("No se pudo leer {path}: {error}"));
+            problem = Some(error);
             None
         }
     });
     let mut fonts = FontDefinitions::default();
+    let bundled: [(&str, &'static [u8]); 4] = [
+        ("jb-regular", include_bytes!("../assets/JetBrainsMono-Regular.ttf")),
+        ("jb-bold", include_bytes!("../assets/JetBrainsMono-Bold.ttf")),
+        ("jb-italic", include_bytes!("../assets/JetBrainsMono-Italic.ttf")),
+        ("jb-bolditalic", include_bytes!("../assets/JetBrainsMono-BoldItalic.ttf")),
+    ];
+    match system {
+        Some(faces) => {
+            for ((name, _), face) in bundled.iter().zip(faces) {
+                let mut data = FontData::from_owned(face.data);
+                data.index = face.index;
+                fonts.font_data.insert((*name).into(), data.into());
+            }
+        }
+        None => {
+            for (name, bytes) in bundled {
+                fonts.font_data.insert(name.into(), FontData::from_static(bytes).into());
+            }
+        }
+    }
     let load = |name: &str, bytes: &'static [u8], fonts: &mut FontDefinitions| {
         fonts.font_data.insert(name.into(), FontData::from_static(bytes).into());
     };
-    load("jb-regular", custom_bytes.unwrap_or(include_bytes!("../assets/JetBrainsMono-Regular.ttf")), &mut fonts);
-    load("jb-bold", custom_bytes.unwrap_or(include_bytes!("../assets/JetBrainsMono-Bold.ttf")), &mut fonts);
-    load("jb-italic", custom_bytes.unwrap_or(include_bytes!("../assets/JetBrainsMono-Italic.ttf")), &mut fonts);
-    load("jb-bolditalic", custom_bytes.unwrap_or(include_bytes!("../assets/JetBrainsMono-BoldItalic.ttf")), &mut fonts);
     // La interfaz usa una sans neutra con buena cobertura de acentos; el terminal, JetBrains Mono.
     load("ui-regular", include_bytes!("../assets/NotoSans-Regular.ttf"), &mut fonts);
     load("ui-semibold", include_bytes!("../assets/NotoSans-SemiBold.ttf"), &mut fonts);

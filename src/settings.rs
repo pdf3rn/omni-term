@@ -91,8 +91,8 @@ pub struct Settings {
     pub compact: bool,
     /// Segundos de actividad en una pestaña en segundo plano a partir de los cuales se avisa; 0 lo apaga.
     pub notify_after: u32,
-    /// Fuente del terminal elegida por el usuario (archivo TTF/OTF); sin ella, JetBrains Mono.
-    pub font_path: Option<String>,
+    /// Familia instalada elegida para el terminal; sin ella, JetBrains Mono (incluida).
+    pub font_family: Option<String>,
     pub theme: ThemeChoice,
     pub font_size: f32,
     pub cursor: CursorChoice,
@@ -118,7 +118,7 @@ impl Default for Settings {
             confirm_close: true,
             compact: false,
             notify_after: 15,
-            font_path: None,
+            font_family: None,
             theme: ThemeChoice::Dark,
             font_size: DEFAULT_FONT_SIZE,
             cursor: CursorChoice::Block,
@@ -145,7 +145,7 @@ impl Settings {
             notify_after: text(store, "setting.notify_after")
                 .and_then(|t| t.parse::<u32>().ok())
                 .map_or(defaults.notify_after, |n| n.min(3600)),
-            font_path: text(store, "setting.font_path").filter(|p| !p.is_empty()),
+            font_family: text(store, "setting.font_family").filter(|f| !f.is_empty()),
             theme: match text(store, "setting.theme").as_deref() {
                 Some("system") => ThemeChoice::System,
                 Some("light") => ThemeChoice::Light,
@@ -187,7 +187,7 @@ impl Settings {
         store.set_meta("setting.confirm_close", if self.confirm_close { b"1" } else { b"0" })?;
         store.set_meta("setting.compact", if self.compact { b"1" } else { b"0" })?;
         store.set_meta("setting.notify_after", self.notify_after.to_string().as_bytes())?;
-        store.set_meta("setting.font_path", self.font_path.as_deref().unwrap_or("").as_bytes())?;
+        store.set_meta("setting.font_family", self.font_family.as_deref().unwrap_or("").as_bytes())?;
         store.set_meta("setting.theme", theme.as_bytes())?;
         store.set_meta("font_size", self.font_size.to_string().as_bytes())?;
         store.set_meta("setting.cursor", cursor.as_bytes())?;
@@ -218,7 +218,7 @@ mod tests {
             confirm_close: false,
             compact: true,
             notify_after: 45,
-            font_path: Some("/usr/share/fonts/mono.ttf".into()),
+            font_family: Some("Fira Code".into()),
             theme: ThemeChoice::Light,
             font_size: 18.0,
             cursor: CursorChoice::Beam,
