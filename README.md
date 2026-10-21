@@ -8,9 +8,9 @@ A native, cross-platform terminal written in Rust, built like an IDE: local shel
 
 **Terminal**
 - Tabs and split panes with draggable dividers; the session is restored when you reopen the app.
-- Mouse support for `vim`/`tmux`/`htop`, kitty keyboard protocol, history search, clickable links, true color, and block/box characters drawn as geometry.
+- Mouse support for `vim`/`tmux`/`htop`, kitty keyboard protocol, history search, clickable links, true color with italics, dim and all underline styles (curly, double, dotted, dashed, colored), answers to color queries (OSC 4/10/11) so editors pick the right theme, and block/box characters drawn as geometry.
 - Double-click selects a word, triple-click a line; context menu, primary selection on Linux.
-- Command palette, menu bar, light/dark/system theme, selectable accent, font size and cursor.
+- Command palette, menu bar, light/dark/system theme, selectable accent and ANSI palette (Catppuccin, GNOME, Tango), font size and cursor.
 
 **Connections**
 - **SSH** with password, key (with passphrase), `ssh-agent` and interactive (2FA) authentication, jump hosts (`ProxyJump`), host key verification against `~/.ssh/known_hosts`, and a known-hosts browser.

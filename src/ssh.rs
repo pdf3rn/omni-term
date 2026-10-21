@@ -446,6 +446,8 @@ async fn run(
         .request_pty(true, "xterm-256color", cols as u32, rows as u32, 0, 0, &[])
         .await
         .context("solicitando PTY")?;
+    // Los servidores solo la aceptan con `AcceptEnv`; sin ella se ignora y no hay nada que hacer.
+    let _ = channel.set_env(false, "COLORTERM", "truecolor").await;
     channel.request_shell(true).await.context("iniciando el shell")?;
     if let Some(command) = connection.init_command.as_deref().filter(|c| !c.is_empty()) {
         channel.data(format!("{command}\n").as_bytes()).await?;

@@ -50,9 +50,39 @@ impl AccentChoice {
     }
 }
 
+/// Paleta de los 16 colores ANSI que usan los programas del terminal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AnsiChoice {
+    Catppuccin,
+    Gnome,
+    Tango,
+}
+
+impl AnsiChoice {
+    pub const ALL: [(AnsiChoice, &'static str); 3] = [(AnsiChoice::Catppuccin, "Catppuccin"), (AnsiChoice::Gnome, "GNOME"), (AnsiChoice::Tango, "Tango")];
+
+    pub fn index(self) -> u8 {
+        self as u8
+    }
+
+    fn key(self) -> &'static str {
+        match self {
+            // La clave se queda como «pastel» para no perder lo ya guardado.
+            AnsiChoice::Catppuccin => "pastel",
+            AnsiChoice::Gnome => "gnome",
+            AnsiChoice::Tango => "tango",
+        }
+    }
+
+    fn from_key(key: &str) -> Option<Self> {
+        Self::ALL.iter().map(|(choice, _)| *choice).find(|c| c.key() == key)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Settings {
     pub accent: AccentChoice,
+    pub ansi: AnsiChoice,
     /// Barra de menú siempre visible; si no, `Alt` la muestra un momento.
     pub menu_bar: bool,
     /// Preguntar antes de cerrar pestañas (o la ventana) con algo en ejecución.
@@ -67,6 +97,8 @@ pub struct Settings {
     pub font_size: f32,
     pub cursor: CursorChoice,
     pub blink: bool,
+    /// La negrita aclara los colores ANSI 0-7.
+    pub bold_bright: bool,
     /// Líneas de historial de las sesiones nuevas.
     pub scrollback: usize,
 }
@@ -81,6 +113,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             accent: AccentChoice::Blue,
+            ansi: AnsiChoice::Catppuccin,
             menu_bar: true,
             confirm_close: true,
             compact: false,
@@ -90,6 +123,7 @@ impl Default for Settings {
             font_size: DEFAULT_FONT_SIZE,
             cursor: CursorChoice::Block,
             blink: false,
+            bold_bright: false,
             scrollback: 10_000,
         }
     }
@@ -104,6 +138,7 @@ impl Settings {
         let defaults = Self::default();
         Self {
             accent: text(store, "setting.accent").and_then(|k| AccentChoice::from_key(&k)).unwrap_or(defaults.accent),
+            ansi: text(store, "setting.ansi").and_then(|k| AnsiChoice::from_key(&k)).unwrap_or(defaults.ansi),
             menu_bar: text(store, "setting.menu_bar").map_or(defaults.menu_bar, |t| t == "1"),
             confirm_close: text(store, "setting.confirm_close").map_or(defaults.confirm_close, |t| t == "1"),
             compact: text(store, "setting.compact").map_or(defaults.compact, |t| t == "1"),
@@ -128,6 +163,7 @@ impl Settings {
                 _ => defaults.cursor,
             },
             blink: text(store, "setting.blink").map_or(defaults.blink, |t| t == "1"),
+            bold_bright: text(store, "setting.bold_bright").map_or(defaults.bold_bright, |t| t == "1"),
             scrollback: text(store, "setting.scrollback")
                 .and_then(|t| t.parse::<usize>().ok())
                 .map_or(defaults.scrollback, |n| n.clamp(MIN_SCROLLBACK, MAX_SCROLLBACK)),
@@ -146,6 +182,7 @@ impl Settings {
             CursorChoice::Underline => "underline",
         };
         store.set_meta("setting.accent", self.accent.key().as_bytes())?;
+        store.set_meta("setting.ansi", self.ansi.key().as_bytes())?;
         store.set_meta("setting.menu_bar", if self.menu_bar { b"1" } else { b"0" })?;
         store.set_meta("setting.confirm_close", if self.confirm_close { b"1" } else { b"0" })?;
         store.set_meta("setting.compact", if self.compact { b"1" } else { b"0" })?;
@@ -155,6 +192,7 @@ impl Settings {
         store.set_meta("font_size", self.font_size.to_string().as_bytes())?;
         store.set_meta("setting.cursor", cursor.as_bytes())?;
         store.set_meta("setting.blink", if self.blink { b"1" } else { b"0" })?;
+        store.set_meta("setting.bold_bright", if self.bold_bright { b"1" } else { b"0" })?;
         store.set_meta("setting.scrollback", self.scrollback.to_string().as_bytes())?;
         Ok(())
     }
@@ -175,6 +213,7 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         let settings = Settings {
             accent: AccentChoice::Mauve,
+            ansi: AnsiChoice::Gnome,
             menu_bar: false,
             confirm_close: false,
             compact: true,
@@ -184,6 +223,7 @@ mod tests {
             font_size: 18.0,
             cursor: CursorChoice::Beam,
             blink: true,
+            bold_bright: true,
             scrollback: 50_000,
         };
         settings.save(&store).unwrap();

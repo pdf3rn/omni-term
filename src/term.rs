@@ -57,6 +57,12 @@ impl EventListener for Proxy {
                     backend.write(text.as_bytes());
                 }
             }
+            // OSC 4/10/11/12: los programas (Neovim, bat, delta…) preguntan los colores para elegir tema.
+            Event::ColorRequest(index, format) => {
+                if let Some(backend) = self.backend.get().and_then(Weak::upgrade) {
+                    backend.write(format(crate::theme::query_color(index)).as_bytes());
+                }
+            }
             Event::Title(title) => *self.title.lock().unwrap() = title,
             Event::ResetTitle => self.title.lock().unwrap().clear(),
             _ => {}

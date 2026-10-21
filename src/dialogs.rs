@@ -5,7 +5,7 @@ use zeroize::Zeroizing;
 
 use crate::cursor::HandExt;
 use crate::secrets::SecretKind;
-use crate::settings::{AccentChoice, CursorChoice, Settings, ThemeChoice, MAX_FONT_SIZE, MAX_SCROLLBACK, MIN_FONT_SIZE, MIN_SCROLLBACK};
+use crate::settings::{AccentChoice, AnsiChoice, CursorChoice, Settings, ThemeChoice, MAX_FONT_SIZE, MAX_SCROLLBACK, MIN_FONT_SIZE, MIN_SCROLLBACK};
 use crate::ssh::{HostKeyChange, HostKeyRequest, PromptRequest};
 use crate::store::{Encoding, FilesKind, FtpOptions, FtpTls, Flow, Newline, Parity, Protocol, SerialOptions, TelnetOptions, BAUD_RATES, Auth, Connection, Forward, ForwardKind, Snippet};
 use crate::theme;
@@ -1945,6 +1945,14 @@ fn settings_content(ui: &mut egui::Ui, tab: SettingsTab, settings: &mut Settings
         });
         setting_row(ui, "Cursor parpadeante", None, true, |ui| {
             toggle(ui, &mut settings.blink);
+        });
+        setting_row(ui, "Paleta de colores", Some("Los 16 colores ANSI de los programas"), true, |ui| {
+            for (choice, label) in AnsiChoice::ALL {
+                ui.selectable_value(&mut settings.ansi, choice, label);
+            }
+        });
+        setting_row(ui, "Negrita brillante", Some("La negrita aclara los colores ANSI 0-7"), true, |ui| {
+            toggle(ui, &mut settings.bold_bright);
         });
         setting_row(ui, "Historial", Some("Se aplica a las sesiones nuevas"), false, |ui| {
             ui.add(egui::DragValue::new(&mut settings.scrollback).range(MIN_SCROLLBACK..=MAX_SCROLLBACK).speed(100.0).suffix(" líneas"));

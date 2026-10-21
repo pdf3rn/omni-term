@@ -61,6 +61,8 @@ static LIGHT: Palette = Palette {
 static USE_LIGHT: AtomicBool = AtomicBool::new(false);
 static ACCENT: AtomicU8 = AtomicU8::new(0);
 static COMPACT: AtomicBool = AtomicBool::new(false);
+static BOLD_BRIGHT: AtomicBool = AtomicBool::new(false);
+static ANSI_SCHEME: AtomicU8 = AtomicU8::new(0);
 
 /// Colores de acento elegibles: azul, gris, verde y malva (oscuro, claro).
 const ACCENTS: [(u32, u32); 4] = [(0x89b4fa, 0x1e66f5), (0xb9bbc6, 0x5c5c5c), (0xa6e3a1, 0x2d7a1c), (0xcba6f7, 0x8839ef)];
@@ -139,12 +141,43 @@ pub fn identity(index: u8) -> Color32 {
     rgb(set[(index as usize).min(5)])
 }
 
+/// Paletas ANSI alternativas, iguales en tema claro y oscuro (la 0, «Catppuccin», sale del tema).
+const ANSI_SCHEMES: [[(u8, u8, u8); 16]; 2] = [
+    // GNOME
+    [
+        triple(0x171421), triple(0xc01c28), triple(0x26a269), triple(0xa2734c),
+        triple(0x12488b), triple(0xa347ba), triple(0x2aa1b3), triple(0xd0cfcc),
+        triple(0x5e5c64), triple(0xf66151), triple(0x33da7a), triple(0xe9ad0c),
+        triple(0x2a7bde), triple(0xc061cb), triple(0x33c7de), triple(0xffffff),
+    ],
+    // Tango
+    [
+        triple(0x2e3436), triple(0xcc0000), triple(0x4e9a06), triple(0xc4a000),
+        triple(0x3465a4), triple(0x75507b), triple(0x06989a), triple(0xd3d7cf),
+        triple(0x555753), triple(0xef2929), triple(0x8ae234), triple(0xfce94f),
+        triple(0x729fcf), triple(0xad7fa8), triple(0x34e2e2), triple(0xeeeeec),
+    ],
+];
+
+/// Elige la paleta de los 16 colores ANSI: 0 Catppuccin (la del tema), 1 GNOME, 2 Tango.
+pub fn set_ansi_scheme(index: u8) {
+    ANSI_SCHEME.store(index, Ordering::Relaxed);
+}
+
 fn ansi(index: usize) -> Color32 {
-    let (r, g, b) = palette().ansi[index];
+    let (r, g, b) = match ANSI_SCHEME.load(Ordering::Relaxed) {
+        scheme @ 1..=2 => ANSI_SCHEMES[scheme as usize - 1][index],
+        _ => palette().ansi[index],
+    };
     Color32::from_rgb(r, g, b)
 }
 
-fn dim(color: Color32) -> Color32 {
+/// La negrita aclara los colores ANSI 0-7 (compatibilidad con terminales antiguos).
+pub fn set_bold_bright(on: bool) {
+    BOLD_BRIGHT.store(on, Ordering::Relaxed);
+}
+
+pub fn dim(color: Color32) -> Color32 {
     let scale = |c: u8| (c as f32 * 0.66) as u8;
     Color32::from_rgb(scale(color.r()), scale(color.g()), scale(color.b()))
 }
@@ -162,6 +195,29 @@ fn indexed(index: u8) -> Color32 {
             Color32::from_rgb(v, v, v)
         }
     }
+}
+
+/// Color de una celda; en negrita, los 8 ANSI básicos pasan a su versión brillante si está activado.
+pub fn resolve_styled(color: Color, bold: bool) -> Color32 {
+    if bold && BOLD_BRIGHT.load(Ordering::Relaxed) {
+        match color {
+            Color::Named(named) if (named as usize) < 8 => return ansi(named as usize + 8),
+            Color::Indexed(i) if i < 8 => return ansi(i as usize + 8),
+            _ => {}
+        }
+    }
+    resolve(color)
+}
+
+/// Color que se responde a una consulta OSC 4/10/11/12 del programa: 0-255 de la paleta, 256 texto, 257 fondo, 258 cursor.
+pub fn query_color(index: usize) -> Rgb {
+    let color = match index {
+        0..=255 => indexed(index as u8),
+        256 => text(),
+        257 => base(),
+        _ => cursor(),
+    };
+    Rgb { r: color.r(), g: color.g(), b: color.b() }
 }
 
 pub fn resolve(color: Color) -> Color32 {
@@ -218,6 +274,45 @@ mod tests {
         }
         set_light(false);
         set_accent(0);
+    }
+
+    #[test]
+    fn bold_makes_basic_colours_bright_only_when_enabled() {
+        use alacritty_terminal::vte::ansi::NamedColor;
+        let red = Color::Named(NamedColor::Red);
+        set_bold_bright(false);
+        assert_eq!(resolve_styled(red, true), resolve(red));
+        set_bold_bright(true);
+        assert_eq!(resolve_styled(red, true), ansi(9));
+        assert_eq!(resolve_styled(Color::Indexed(1), true), ansi(9));
+        assert_eq!(resolve_styled(red, false), resolve(red));
+        assert_eq!(resolve_styled(Color::Indexed(200), true), resolve(Color::Indexed(200)));
+        set_bold_bright(false);
+    }
+
+    #[test]
+    fn the_ansi_scheme_changes_the_sixteen_colours() {
+        set_ansi_scheme(0);
+        let pastel = ansi(3);
+        set_ansi_scheme(1);
+        assert_eq!(ansi(3), Color32::from_rgb(0xa2, 0x73, 0x4c));
+        set_ansi_scheme(2);
+        assert_eq!(ansi(4), Color32::from_rgb(0x34, 0x65, 0xa4));
+        set_ansi_scheme(0);
+        assert_eq!(ansi(3), pastel);
+    }
+
+    #[test]
+    fn colour_queries_answer_with_the_theme_colours() {
+        set_light(false);
+        let background = query_color(257);
+        assert_eq!((background.r, background.g, background.b), (base().r(), base().g(), base().b()));
+        let foreground = query_color(256);
+        assert_eq!((foreground.r, foreground.g, foreground.b), (text().r(), text().g(), text().b()));
+        let green = query_color(2);
+        assert_eq!((green.r, green.g, green.b), (ansi(2).r(), ansi(2).g(), ansi(2).b()));
+        let cube = query_color(196);
+        assert_eq!((cube.r, cube.g, cube.b), (255, 0, 0));
     }
 
     #[test]

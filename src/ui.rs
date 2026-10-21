@@ -281,6 +281,8 @@ impl App {
         let font_error = install_fonts(&cc.egui_ctx, settings.font_path.as_deref());
         theme::set_accent(settings.accent.index());
         theme::set_compact(settings.compact);
+        theme::set_bold_bright(settings.bold_bright);
+        theme::set_ansi_scheme(settings.ansi.index());
         let light = match settings.theme {
             ThemeChoice::Light => true,
             ThemeChoice::Dark => false,
@@ -1123,6 +1125,8 @@ impl App {
 
     /// Guarda los ajustes y los aplica a las sesiones abiertas.
     fn apply_settings(&mut self) {
+        theme::set_bold_bright(self.settings.bold_bright);
+        theme::set_ansi_scheme(self.settings.ansi.index());
         if self.settings.font_path != self.loaded_font {
             if let Some(problem) = install_fonts(&self.ctx, self.settings.font_path.as_deref()) {
                 self.settings.font_path = None;
@@ -3172,6 +3176,8 @@ fn install_fonts(ctx: &egui::Context, custom: Option<&str>) -> Option<String> {
     };
     load("jb-regular", custom_bytes.unwrap_or(include_bytes!("../assets/JetBrainsMono-Regular.ttf")), &mut fonts);
     load("jb-bold", custom_bytes.unwrap_or(include_bytes!("../assets/JetBrainsMono-Bold.ttf")), &mut fonts);
+    load("jb-italic", custom_bytes.unwrap_or(include_bytes!("../assets/JetBrainsMono-Italic.ttf")), &mut fonts);
+    load("jb-bolditalic", custom_bytes.unwrap_or(include_bytes!("../assets/JetBrainsMono-BoldItalic.ttf")), &mut fonts);
     // La interfaz usa una sans neutra con buena cobertura de acentos; el terminal, JetBrains Mono.
     load("ui-regular", include_bytes!("../assets/NotoSans-Regular.ttf"), &mut fonts);
     load("ui-semibold", include_bytes!("../assets/NotoSans-SemiBold.ttf"), &mut fonts);
@@ -3179,6 +3185,8 @@ fn install_fonts(ctx: &egui::Context, custom: Option<&str>) -> Option<String> {
     fonts.families.entry(FontFamily::Monospace).or_default().insert(0, "jb-regular".into());
     fonts.families.entry(FontFamily::Proportional).or_default().insert(0, "ui-regular".into());
     fonts.families.insert(bold_family(), vec!["jb-bold".into()]);
+    fonts.families.insert(pane::italic_family(), vec!["jb-italic".into()]);
+    fonts.families.insert(pane::bold_italic_family(), vec!["jb-bolditalic".into()]);
     fonts.families.insert(strong_family(), vec!["ui-semibold".into(), "ui-regular".into()]);
     // Los iconos van de último recurso: cualquier texto puede llevar uno sin cambiar de familia.
     for family in [FontFamily::Proportional, strong_family()] {
