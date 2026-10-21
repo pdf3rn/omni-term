@@ -1864,9 +1864,11 @@ pub fn settings_page(ui: &mut egui::Ui, tab: &mut SettingsTab, settings: &mut Se
         });
         ui.add_space(16.0);
         ui.vertical(|ui| {
-            ui.set_max_width(SETTINGS_MAX_WIDTH);
+            // Hasta 720 px, pero nunca más de lo que cabe: en ventanas estrechas el contenido se encoge.
+            let width = ui.available_width().min(SETTINGS_MAX_WIDTH);
+            ui.set_max_width(width);
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                ui.set_max_width(SETTINGS_MAX_WIDTH - 12.0);
+                ui.set_max_width(width - 12.0);
                 settings_content(ui, *tab, settings, master_forced, hosts, connections);
             });
         });
@@ -1919,21 +1921,8 @@ fn settings_content(ui: &mut egui::Ui, tab: SettingsTab, settings: &mut Settings
     });
 
     settings_card(ui, "Terminal", |ui| {
-        setting_row(ui, "Fuente", None, true, |ui| {
-            let name = settings
-                .font_path
-                .as_deref()
-                .and_then(|p| std::path::Path::new(p).file_name())
-                .map_or("JetBrains Mono (incluida)".to_string(), |n| n.to_string_lossy().into_owned());
-            ui.label(RichText::new(name).color(theme::subtext()));
-            if ui.button("Elegir archivo…").clicked() {
-                if let Some(file) = rfd::FileDialog::new().add_filter("Fuentes", &["ttf", "otf"]).pick_file() {
-                    settings.font_path = Some(file.to_string_lossy().into_owned());
-                }
-            }
-            if settings.font_path.is_some() && ui.button("Restaurar").clicked() {
-                settings.font_path = None;
-            }
+        setting_row(ui, "Fuente", Some("Monoespaciada, instalada en el equipo"), true, |ui| {
+            font_picker(ui, &mut settings.font_family);
         });
         setting_row(ui, "Tamaño de la letra", None, true, |ui| {
             ui.add(egui::Slider::new(&mut settings.font_size, MIN_FONT_SIZE..=MAX_FONT_SIZE).step_by(1.0).suffix(" pt"));
@@ -1976,6 +1965,55 @@ fn settings_content(ui: &mut egui::Ui, tab: SettingsTab, settings: &mut Settings
     settings_card(ui, "Secretos", |ui| {
         setting_row(ui, "Usar siempre la clave maestra", Some("Aunque haya keyring. Se aplica al reiniciar"), false, |ui| {
             toggle(ui, master_forced);
+        });
+    });
+}
+
+const DEFAULT_FONT: &str = "JetBrains Mono (incluida)";
+
+/// Botón con la fuente actual que abre una lista con búsqueda de las monoespaciadas instaladas.
+fn font_picker(ui: &mut egui::Ui, family: &mut Option<String>) {
+    let current = family.clone().unwrap_or_else(|| DEFAULT_FONT.to_string());
+    let button = crate::ui::outline_add(ui, egui::Button::new(format!("{current}  {}", crate::icons::CARET_DOWN)).min_size(egui::vec2(0.0, FIELD_HEIGHT)), false);
+    egui::Popup::menu(&button).show(|ui| {
+        ui.set_width(300.0);
+        // Filas compactas y con el mismo margen que el buscador (los valores por defecto de egui son para botones).
+        ui.spacing_mut().item_spacing.y = 2.0;
+        ui.spacing_mut().button_padding = egui::vec2(8.0, 3.0);
+        ui.spacing_mut().interact_size.y = 26.0;
+        let search_id = ui.make_persistent_id("font-search");
+        let mut query: String = ui.data_mut(|d| d.get_temp(search_id)).unwrap_or_default();
+        let field = ui
+            .scope(|ui| {
+                ui.visuals_mut().widgets.inactive.bg_stroke = egui::Stroke::new(1.0, theme::surface());
+                ui.add(TextEdit::singleline(&mut query).hint_text("Buscar fuente").desired_width(f32::INFINITY).margin(egui::vec2(8.0, 5.0)))
+            })
+            .inner;
+        if button.clicked() {
+            field.request_focus();
+        }
+        ui.data_mut(|d| d.insert_temp(search_id, query.clone()));
+        ui.add_space(6.0);
+        let needle = query.trim().to_lowercase();
+        let families = crate::fonts::monospace_families();
+        egui::ScrollArea::vertical().max_height(260.0).auto_shrink([false, true]).show(ui, |ui| {
+            // Deja sitio a la barra de desplazamiento flotante para que no tape el final de las filas.
+            ui.set_max_width(ui.available_width() - 10.0);
+            if needle.is_empty() || DEFAULT_FONT.to_lowercase().contains(&needle) {
+                if ui.selectable_label(family.is_none(), DEFAULT_FONT).hand().clicked() {
+                    *family = None;
+                    ui.close();
+                }
+            }
+            for name in families.iter().filter(|n| needle.is_empty() || n.to_lowercase().contains(&needle)) {
+                if ui.selectable_label(family.as_deref() == Some(name.as_str()), name).hand().clicked() {
+                    *family = Some(name.clone());
+                    ui.close();
+                }
+            }
+            if families.is_empty() {
+                ui.label(RichText::new("No se encontró ninguna fuente monoespaciada instalada.").color(theme::subtext()));
+            }
         });
     });
 }
@@ -2024,12 +2062,14 @@ pub fn keycap(ui: &mut egui::Ui, text: &str) {
 
 /// Una fila: el nombre (y una pista) a la izquierda y el control en una columna común a la derecha.
 fn setting_row(ui: &mut egui::Ui, label: &str, hint: Option<&str>, divider: bool, controls: impl FnOnce(&mut egui::Ui)) {
+    // La columna del nombre se estrecha en ventanas pequeñas para que los controles quepan.
+    let label_width = (ui.available_width() * 0.42).clamp(150.0, SETTING_LABEL_WIDTH);
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 12.0;
         ui.set_min_height(48.0);
-        ui.allocate_ui_with_layout(egui::vec2(SETTING_LABEL_WIDTH, 48.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+        ui.allocate_ui_with_layout(egui::vec2(label_width, 48.0), egui::Layout::top_down(egui::Align::Min), |ui| {
             ui.spacing_mut().item_spacing.y = 1.0;
-            ui.set_min_width(SETTING_LABEL_WIDTH);
+            ui.set_min_width(label_width);
             let lines = if hint.is_some() { 2.0 } else { 1.0 };
             ui.add_space((48.0 - lines * 17.0 - if hint.is_some() { 1.0 } else { 0.0 }) / 2.0);
             ui.label(RichText::new(label).color(theme::text()));
