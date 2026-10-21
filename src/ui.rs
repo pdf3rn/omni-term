@@ -2372,33 +2372,34 @@ impl App {
                                 let right_limit = if actions { rect.max.x - 56.0 } else { rect.max.x - 4.0 };
                                 let first_line = ui.painter().with_clip_rect(Rect::from_min_max(rect.min, Pos2::new(right_limit - ago_width, rect.max.y)));
                                 let name_font = FontId::new(14.0, strong_family());
-                                let name_width = first_line.layout_no_wrap(connection.name.clone(), name_font.clone(), Color32::PLACEHOLDER).size().x;
-                                first_line.text(Pos2::new(text_x, rect.min.y + 9.0), Align2::LEFT_TOP, &connection.name, name_font, theme::text());
+                                let pill_font = FontId::new(11.0, strong_family());
+                                let env = connection.env.as_ref().filter(|_| !headed || searching);
+                                let pill_size = env.map(|env| first_line.layout_no_wrap(env.clone(), pill_font.clone(), Color32::PLACEHOLDER).size() + Vec2::new(10.0, 3.0));
+                                let lock_width = if connection.insecure_protocol().is_some() { 18.0 } else { 0.0 };
+                                // El nombre cede sitio al candado y a la pastilla, que siempre se ven.
+                                let room = right_limit - ago_width - text_x - lock_width - pill_size.map_or(0.0, |s| s.x + 8.0);
+                                let name = fit_text(&first_line, &connection.name, &name_font, room);
+                                let name_width = first_line.layout_no_wrap(name.clone(), name_font.clone(), Color32::PLACEHOLDER).size().x;
+                                first_line.text(Pos2::new(text_x, rect.min.y + 9.0), Align2::LEFT_TOP, name, name_font, theme::text());
                                 let mut after_name = text_x + name_width + 8.0;
-                                if connection.insecure_protocol().is_some() {
+                                if lock_width > 0.0 {
                                     first_line.text(Pos2::new(after_name + 5.0, rect.min.y + 19.0), Align2::CENTER_CENTER, icons::LOCK_OPEN, FontId::proportional(13.0), theme::red());
-                                    after_name += 18.0;
+                                    after_name += lock_width;
                                 }
-                                if let Some(env) = connection.env.as_ref().filter(|_| !headed || searching) {
+                                if let (Some(env), Some(size)) = (env, pill_size) {
                                     // Pastilla con el color de identidad: dice en qué entorno estás.
                                     let tint = identity.unwrap_or_else(theme::subtext);
-                                    let font = FontId::new(11.0, strong_family());
-                                    let size = first_line.layout_no_wrap(env.clone(), font.clone(), Color32::PLACEHOLDER).size();
-                                    let pill = Rect::from_min_size(Pos2::new(after_name, rect.min.y + 11.0), size + Vec2::new(10.0, 3.0));
+                                    let pill = Rect::from_min_size(Pos2::new(after_name, rect.min.y + 11.0), size);
                                     first_line.rect_filled(pill, CornerRadius::same(8), tint.gamma_multiply(0.2));
-                                    first_line.text(pill.center(), Align2::CENTER_CENTER, env, font, tint);
+                                    first_line.text(pill.center(), Align2::CENTER_CENTER, env, pill_font, tint);
                                 }
                                 if ago_width > 0.0 {
                                     ui.painter().text(Pos2::new(rect.max.x - 4.0, rect.min.y + 11.0), Align2::RIGHT_TOP, &ago, ago_font, theme::subtext());
                                 }
                                 let second_line = ui.painter().with_clip_rect(Rect::from_min_max(rect.min, Pos2::new(right_limit, rect.max.y)));
-                                second_line.text(
-                                    Pos2::new(text_x, rect.min.y + 27.0),
-                                    Align2::LEFT_TOP,
-                                    format!("{}  ·  {}", connection.kind_label(), connection.destination()),
-                                    FontId::new(12.0, FontFamily::Proportional),
-                                    theme::subtext(),
-                                );
+                                let detail_font = FontId::new(12.0, FontFamily::Proportional);
+                                let detail = fit_text(&second_line, &format!("{}  ·  {}", connection.kind_label(), connection.destination()), &detail_font, right_limit - text_x);
+                                second_line.text(Pos2::new(text_x, rect.min.y + 27.0), Align2::LEFT_TOP, detail, detail_font, theme::subtext());
                                 let response = response.hand().on_hover_text(match state {
                                     LinkState::Closed => "Doble clic para conectar",
                                     LinkState::Open => "Sesión abierta. Doble clic para otra pestaña",
@@ -2853,6 +2854,22 @@ enum PlusChoice {
     Files(Connection),
     Containers,
     All,
+}
+
+/// Recorta `text` con «…» para que quepa en `width` píxeles.
+fn fit_text(painter: &egui::Painter, text: &str, font: &FontId, width: f32) -> String {
+    let measure = |t: &str| painter.layout_no_wrap(t.to_string(), font.clone(), Color32::PLACEHOLDER).size().x;
+    if measure(text) <= width {
+        return text.to_string();
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let (mut low, mut high) = (0, chars.len());
+    while low < high {
+        let mid = (low + high).div_ceil(2);
+        let candidate: String = chars[..mid].iter().collect::<String>().trim_end().to_string() + "…";
+        if measure(&candidate) <= width { low = mid } else { high = mid - 1 }
+    }
+    chars[..low].iter().collect::<String>().trim_end().to_string() + "…"
 }
 
 /// Contenido del menú del «+»: terminal local primero, luego conexiones recientes y «Ver todas».
