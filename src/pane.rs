@@ -554,7 +554,7 @@ impl Pane {
                             format!("{} de {}", state.current + 1, state.matches.len())
                         };
                         ui.label(egui::RichText::new(count).small().color(theme::subtext()));
-                        let small = |text: &str| egui::Button::new(egui::RichText::new(text).small()).fill(Color32::TRANSPARENT);
+                        let small = |text: &str| egui::Button::new(egui::RichText::new(text).small()).frame_when_inactive(false);
                         if ui.add(small("Anterior")).clicked() {
                             step = Some(false);
                         }
