@@ -2004,7 +2004,7 @@ fn toggle(ui: &mut egui::Ui, value: &mut bool) -> egui::Response {
 }
 
 /// Combinación de teclas con aspecto de tecla.
-fn keycap(ui: &mut egui::Ui, text: &str) {
+pub fn keycap(ui: &mut egui::Ui, text: &str) {
     egui::Frame::new()
         .fill(theme::surface())
         .corner_radius(egui::CornerRadius::same(5))
