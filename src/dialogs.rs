@@ -10,9 +10,6 @@ use crate::ssh::{HostKeyChange, HostKeyRequest, PromptRequest};
 use crate::store::{Encoding, FilesKind, FtpOptions, FtpTls, Flow, Newline, Parity, Protocol, SerialOptions, TelnetOptions, BAUD_RATES, Auth, Connection, Forward, ForwardKind, Snippet};
 use crate::theme;
 
-/// Pide desplazarse hasta el primer campo con error en el próximo dibujo del formulario.
-static REVEAL_ERROR: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
 /// Atajos de entorno: nombre del botón, etiqueta que se guarda y color de identidad.
 const ENVIRONMENTS: [(&str, &str, u8); 4] = [
     ("Producción", "producción", 0),
@@ -357,7 +354,7 @@ impl ConnForm {
             || errors.forwards.iter().any(Option::is_some);
         if has_error {
             self.advanced_open |= errors.forwards.iter().any(Option::is_some);
-            REVEAL_ERROR.store(true, std::sync::atomic::Ordering::Relaxed);
+            crate::ui_kit::request_reveal_error();
             self.errors = errors;
             return None;
         }
@@ -793,7 +790,7 @@ pub fn shell(ctx: &egui::Context, spec: Spec, body: impl FnOnce(&mut egui::Ui) -
     let strip = if theme::is_light() { theme::surface() } else { theme::base() };
     let frame = egui::Frame::popup(&ctx.global_style())
         .inner_margin(egui::Margin::ZERO)
-        .corner_radius(egui::CornerRadius::same(6));
+        .corner_radius(egui::CornerRadius::same(theme::radius::CONTROL));
     let icon = spec.icon.or((spec.tone == Tone::Danger).then_some(DialogIcon::Warning));
     let response = Modal::new(id()).frame(frame).show(ctx, |ui| {
         ui.set_width(spec.width);
@@ -802,14 +799,10 @@ pub fn shell(ctx: &egui::Context, spec: Spec, body: impl FnOnce(&mut egui::Ui) -
         // Franja del título, con la X para cerrar.
         let (title_rect, _) = ui.allocate_exact_size(egui::vec2(spec.width, 38.0), egui::Sense::hover());
         ui.painter().rect_filled(title_rect, egui::CornerRadius { nw: 6, ne: 6, sw: 0, se: 0 }, strip);
-        ui.painter().line_segment([title_rect.left_bottom(), title_rect.right_bottom()], egui::Stroke::new(1.0, theme::surface()));
-        ui.painter().text(title_rect.center(), egui::Align2::CENTER_CENTER, &spec.title, FontId::new(14.0, crate::ui::strong_family()), theme::text());
-        let close_rect = egui::Rect::from_center_size(egui::pos2(title_rect.max.x - 22.0, title_rect.center().y), egui::vec2(26.0, 26.0));
-        let close = ui.interact(close_rect, ui.auto_id_with("dialog-close"), egui::Sense::click()).hand();
-        if close.hovered() {
-            ui.painter().rect_filled(close_rect, egui::CornerRadius::same(6), theme::selection());
-        }
-        ui.painter().text(close_rect.center(), egui::Align2::CENTER_CENTER, crate::icons::X, FontId::proportional(14.0), theme::text());
+        ui.painter().line_segment([title_rect.left_bottom(), title_rect.right_bottom()], egui::Stroke::new(theme::stroke::HAIRLINE, theme::surface()));
+        ui.painter().text(title_rect.center(), egui::Align2::CENTER_CENTER, &spec.title, FontId::new(theme::size::BODY, crate::ui::strong_family()), theme::text());
+        let close_slot = egui::Rect::from_center_size(egui::pos2(title_rect.max.x - 22.0, title_rect.center().y), egui::vec2(26.0, 26.0));
+        let close = crate::ui_kit::IconButton::new(crate::icons::X).size(theme::size::ICON_SM).show_at(ui, close_slot, "dialog-close");
         if close.on_hover_text("Cerrar").clicked() {
             action = Action::Cancel;
         }
@@ -853,31 +846,31 @@ pub fn shell(ctx: &egui::Context, spec: Spec, body: impl FnOnce(&mut egui::Ui) -
         // Franja de botones.
         let (foot_rect, _) = ui.allocate_exact_size(egui::vec2(spec.width, 56.0), egui::Sense::hover());
         ui.painter().rect_filled(foot_rect, egui::CornerRadius { nw: 0, ne: 0, sw: 6, se: 6 }, strip);
-        ui.painter().line_segment([foot_rect.left_top(), foot_rect.right_top()], egui::Stroke::new(1.0, theme::surface()));
+        ui.painter().line_segment([foot_rect.left_top(), foot_rect.right_top()], egui::Stroke::new(theme::stroke::HAIRLINE, theme::surface()));
         let mut foot = ui.new_child(egui::UiBuilder::new().max_rect(foot_rect.shrink2(egui::vec2(14.0, 0.0))).layout(egui::Layout::left_to_right(egui::Align::Center)));
         foot.spacing_mut().item_spacing.x = 8.0;
         let size = egui::vec2(0.0, 30.0);
         for (index, label) in spec.extras.iter().enumerate() {
             let extra = egui::Button::new(label.as_str()).min_size(size);
-            if crate::ui::outline_add(&mut foot, extra, false).clicked() {
+            if crate::ui_kit::button_with(&mut foot, extra, crate::ui_kit::Variant::Secondary).clicked() {
                 action = Action::Extra(index);
             }
         }
         foot.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let fill = if spec.tone == Tone::Danger { theme::red() } else { theme::accent() };
-            let primary = |label: &str| egui::Button::new(RichText::new(label).color(theme::base())).min_size(size);
+            let variant = if spec.tone == Tone::Danger { crate::ui_kit::Variant::Danger } else { crate::ui_kit::Variant::Primary };
+            let primary = |label: &str| egui::Button::new(label).min_size(size);
             match &spec.accept {
                 Some(label) => {
-                    if ui.add_enabled_ui(spec.accept_enabled, |ui| crate::ui::solid_add(ui, primary(label), fill)).inner.clicked() {
+                    if ui.add_enabled_ui(spec.accept_enabled, |ui| crate::ui_kit::button_with(ui, primary(label), variant)).inner.clicked() {
                         action = Action::Accept;
                     }
                     let cancel = egui::Button::new(spec.cancel.as_str()).min_size(size);
-                    if crate::ui::outline_add(ui, cancel, false).clicked() {
+                    if crate::ui_kit::button_with(ui, cancel, crate::ui_kit::Variant::Secondary).clicked() {
                         action = Action::Cancel;
                     }
                 }
                 None => {
-                    if crate::ui::solid_add(ui, primary(&spec.cancel), fill).clicked() {
+                    if crate::ui_kit::button_with(ui, primary(&spec.cancel), variant).clicked() {
                         action = Action::Cancel;
                     }
                 }
@@ -905,7 +898,7 @@ fn secret_field(ui: &mut egui::Ui, value: &mut String, reveal: &mut bool, hint: 
         let width = (ui.available_width() - 76.0).max(80.0);
         let field = ui.add(TextEdit::singleline(value).password(!*reveal).hint_text(hint).desired_width(width));
         let label = if *reveal { "Ocultar" } else { "Mostrar" };
-        if ui.add(egui::Button::new(RichText::new(label).small()).frame_when_inactive(false)).clicked() {
+        if crate::ui_kit::button_with(ui, egui::Button::new(RichText::new(label).small()), crate::ui_kit::Variant::Ghost).clicked() {
             *reveal = !*reveal;
         }
         field
@@ -919,7 +912,7 @@ fn entered(ui: &egui::Ui, field: &egui::Response) -> bool {
 
 fn error_label(ui: &mut egui::Ui, error: &Option<String>) {
     if let Some(error) = error {
-        ui.add_space(4.0);
+        ui.add_space(theme::space::XS);
         ui.label(RichText::new(error).color(theme::red()));
     }
 }
@@ -955,7 +948,7 @@ pub fn show(
                     ui.label(RichText::new(format!("… y {} más", confirm.lines.len() - 6)).color(theme::subtext()));
                 }
                 ui.label("Se perderá lo que esté en curso.");
-                ui.add_space(4.0);
+                ui.add_space(theme::space::XS);
                 ui.checkbox(&mut confirm.dont_ask, "No volver a preguntar").hand();
                 false
             });
@@ -966,7 +959,7 @@ pub fn show(
             let action = shell(ctx, spec, |ui| {
                 ui.label(format!("«{}» usa {}: todo lo que envíes, contraseñas incluidas, viaja en texto claro y cualquiera en la red puede leerlo.", warning.connection.name, warning.label));
                 ui.label(RichText::new("Úsalo solo en redes de confianza o con equipos que no admiten SSH.").color(theme::subtext()));
-                ui.add_space(4.0);
+                ui.add_space(theme::space::XS);
                 ui.checkbox(&mut warning.dont_ask, "No volver a avisar para esta conexión").hand();
                 false
             });
@@ -974,9 +967,9 @@ pub fn show(
         }
         Dialog::About => {
             let action = shell(ctx, Spec::new("Acerca de omni-term").width(420.0).cancel("Cerrar"), |ui| {
-                ui.label(RichText::new(format!("omni-term {}", env!("CARGO_PKG_VERSION"))).font(FontId::new(16.0, crate::ui::strong_family())));
+                ui.label(RichText::new(format!("omni-term {}", env!("CARGO_PKG_VERSION"))).font(FontId::new(theme::size::HEADING, crate::ui::strong_family())));
                 ui.label(RichText::new("Terminal con SSH, SFTP, túneles y snippets, hecho con Rust y egui.").color(theme::subtext()));
-                ui.add_space(8.0);
+                ui.add_space(theme::space::M);
                 ui.label(RichText::new("Fuentes").small().color(theme::subtext()));
                 ui.label("JetBrains Mono y Noto Sans, bajo la licencia SIL Open Font License.");
                 ui.label(RichText::new("Iconos").small().color(theme::subtext()));
@@ -1106,95 +1099,14 @@ pub fn show(
     }
 }
 
-const LABEL_WIDTH: f32 = 112.0;
-const FIELD_HEIGHT: f32 = 28.0;
-/// Espacio entre filas de un mismo grupo y entre grupos distintos.
-const ROW_GAP: f32 = 8.0;
-const GROUP_GAP: f32 = 18.0;
-
-/// Fila de formulario: etiqueta alineada a la derecha y contenido que ocupa el resto.
-fn form_row(ui: &mut egui::Ui, label: &str, content: impl FnOnce(&mut egui::Ui)) {
-    ui.horizontal_top(|ui| {
-        ui.allocate_ui_with_layout(
-            egui::vec2(LABEL_WIDTH, FIELD_HEIGHT),
-            egui::Layout::right_to_left(egui::Align::Center),
-            |ui| {
-                ui.set_min_width(LABEL_WIDTH);
-                ui.label(label);
-            },
-        );
-        ui.vertical(content);
-    });
-}
-
-/// Campo de texto con el borde en rojo mientras tiene un error.
-fn text_input(ui: &mut egui::Ui, value: &mut String, width: f32, hint: &str, error: &mut Option<String>) -> egui::Response {
-    let broken = error.is_some();
-    let response = ui
-        .scope(|ui| {
-            if broken {
-                let stroke = egui::Stroke::new(1.5, theme::red());
-                let widgets = &mut ui.visuals_mut().widgets;
-                widgets.inactive.bg_stroke = stroke;
-                widgets.hovered.bg_stroke = stroke;
-            }
-            ui.add_sized(
-                [width, FIELD_HEIGHT],
-                TextEdit::singleline(value).hint_text(hint).align(egui::Align2::LEFT_CENTER),
-            )
-        })
-        .inner;
-    if response.changed() {
-        *error = None;
-    }
-    if broken && REVEAL_ERROR.swap(false, std::sync::atomic::Ordering::Relaxed) {
-        response.scroll_to_me(Some(egui::Align::Center));
-    }
-    response
-}
-
-fn error_line(ui: &mut egui::Ui, error: &Option<String>) {
-    if let Some(message) = error {
-        ui.label(RichText::new(message.as_str()).small().color(theme::red()));
-    }
-}
-
-/// Botón de entorno: punto de color, nombre y fondo si está elegido.
-fn chip(ui: &mut egui::Ui, label: &str, color: Option<Color32>, selected: bool) -> egui::Response {
-    let galley = ui.painter().layout_no_wrap(label.to_string(), FontId::new(13.0, egui::FontFamily::Proportional), Color32::PLACEHOLDER);
-    let dot = if color.is_some() { 14.0 } else { 0.0 };
-    let size = egui::vec2(galley.size().x + dot + 18.0, 28.0);
-    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
-    let response = response.hand();
-    let fill = if selected {
-        theme::selection()
-    } else if response.hovered() {
-        theme::surface()
-    } else {
-        Color32::TRANSPARENT
-    };
-    ui.painter().rect_filled(rect, egui::CornerRadius::same(6), fill);
-    if !selected {
-        ui.painter().rect_stroke(rect, egui::CornerRadius::same(6), egui::Stroke::new(1.0, theme::surface()), egui::StrokeKind::Inside);
-    }
-    let mut x = rect.min.x + 9.0;
-    if let Some(color) = color {
-        ui.painter().circle_filled(egui::pos2(x + 4.0, rect.center().y), 4.5, color);
-        x += dot;
-    }
-    let text_color = if selected { theme::text() } else { theme::subtext() };
-    ui.painter().galley(egui::pos2(x, rect.center().y - galley.size().y / 2.0), galley, text_color);
-    response
-}
-
 fn environment_row(ui: &mut egui::Ui, form: &mut ConnForm) {
-    form_row(ui, "Entorno", |ui| {
+    crate::ui_kit::form_row(ui, "Entorno", |ui| {
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = egui::vec2(3.0, 6.0);
             let none = form.env.trim().is_empty() && form.color.is_none();
             for (name, env, color) in ENVIRONMENTS {
                 let selected = !form.custom_env && form.env.eq_ignore_ascii_case(env) && form.color == Some(color);
-                if chip(ui, name, Some(theme::identity(color)), selected).on_hover_text(if selected { "Clic para quitarlo" } else { "Pone la etiqueta y el color" }).clicked() {
+                if crate::ui_kit::chip(ui, name, Some(theme::identity(color)), selected).on_hover_text(if selected { "Clic para quitarlo" } else { "Pone la etiqueta y el color" }).clicked() {
                     // Pulsar el elegido lo quita: sin entorno ni color.
                     if selected {
                         form.env.clear();
@@ -1207,29 +1119,29 @@ fn environment_row(ui: &mut egui::Ui, form: &mut ConnForm) {
                 }
             }
             let custom_selected = form.custom_env || (!none && !ENVIRONMENTS.iter().any(|(_, e, c)| form.env.eq_ignore_ascii_case(e) && form.color == Some(*c)));
-            if chip(ui, "Otro…", None, custom_selected).on_hover_text("Elegir la etiqueta y el color a mano").clicked() {
+            if crate::ui_kit::chip(ui, "Otro…", None, custom_selected).on_hover_text("Elegir la etiqueta y el color a mano").clicked() {
                 form.custom_env = true;
             }
         });
     });
     if form.custom_env {
-        ui.add_space(ROW_GAP);
-        form_row(ui, "Etiqueta", |ui| {
+        ui.add_space(theme::space::ROW);
+        crate::ui_kit::form_row(ui, "Etiqueta", |ui| {
             let width = ui.available_width();
-            ui.add_sized([width, FIELD_HEIGHT], TextEdit::singleline(&mut form.env).hint_text("por ejemplo, pre-producción").align(egui::Align2::LEFT_CENTER));
+            ui.add_sized([width, theme::height::FIELD], TextEdit::singleline(&mut form.env).hint_text("por ejemplo, pre-producción").align(egui::Align2::LEFT_CENTER));
         });
-        ui.add_space(ROW_GAP);
-        form_row(ui, "Color", |ui| {
+        ui.add_space(theme::space::ROW);
+        crate::ui_kit::form_row(ui, "Color", |ui| {
             ui.horizontal(|ui| {
                 for choice in std::iter::once(None).chain((0..6).map(Some)) {
                     let (rect, response) = ui.allocate_exact_size(egui::vec2(24.0, 24.0), egui::Sense::click());
                     let response = response.hand();
                     match choice.map(theme::identity) {
                         Some(color) => ui.painter().circle_filled(rect.center(), 8.0, color),
-                        None => ui.painter().circle_stroke(rect.center(), 8.0, egui::Stroke::new(1.5, theme::subtext())),
+                        None => ui.painter().circle_stroke(rect.center(), 8.0, egui::Stroke::new(theme::stroke::MEDIUM, theme::subtext())),
                     };
                     if form.color == choice {
-                        ui.painter().circle_stroke(rect.center(), 11.0, egui::Stroke::new(2.0, theme::text()));
+                        ui.painter().circle_stroke(rect.center(), 11.0, egui::Stroke::new(theme::stroke::THICK, theme::text()));
                     }
                     let name = choice.map_or("Sin color", |i| theme::IDENTITY_NAMES[i as usize]);
                     if response.on_hover_text(name).clicked() {
@@ -1258,36 +1170,36 @@ fn set_default_port(form: &mut ConnForm) {
 /// Filas propias de FTP (cuenta y seguridad) y de SMB (recurso compartido, cuenta y dominio).
 fn files_rows(ui: &mut egui::Ui, form: &mut ConnForm) {
     if form.files == 3 {
-        ui.add_space(ROW_GAP);
-        form_row(ui, "Recurso", |ui| {
+        ui.add_space(theme::space::ROW);
+        crate::ui_kit::form_row(ui, "Recurso", |ui| {
             let width = ui.available_width();
-            text_input(ui, &mut form.smb_share, width, "nombre del recurso compartido", &mut form.errors.share);
-            error_line(ui, &form.errors.share);
+            crate::ui_kit::text_input(ui, &mut form.smb_share, width, "nombre del recurso compartido", &mut form.errors.share);
+            crate::ui_kit::error_line(ui, &form.errors.share);
         });
     }
     if form.files == 2 {
-        ui.add_space(ROW_GAP);
-        form_row(ui, "Cuenta", |ui| {
+        ui.add_space(theme::space::ROW);
+        crate::ui_kit::form_row(ui, "Cuenta", |ui| {
             ui.checkbox(&mut form.ftp_anonymous, "Acceso anónimo").hand();
         });
     }
     if form.files == 3 || !form.ftp_anonymous {
-        ui.add_space(ROW_GAP);
-        form_row(ui, "Usuario", |ui| {
+        ui.add_space(theme::space::ROW);
+        crate::ui_kit::form_row(ui, "Usuario", |ui| {
             let width = ui.available_width();
-            text_input(ui, &mut form.user, width, "usuario", &mut form.errors.user);
-            error_line(ui, &form.errors.user);
+            crate::ui_kit::text_input(ui, &mut form.user, width, "usuario", &mut form.errors.user);
+            crate::ui_kit::error_line(ui, &form.errors.user);
         });
     }
     if form.files == 3 {
-        ui.add_space(ROW_GAP);
-        form_row(ui, "Dominio", |ui| {
+        ui.add_space(theme::space::ROW);
+        crate::ui_kit::form_row(ui, "Dominio", |ui| {
             let width = ui.available_width();
-            ui.add_sized([width, FIELD_HEIGHT], TextEdit::singleline(&mut form.smb_domain).hint_text("opcional").align(egui::Align2::LEFT_CENTER));
+            ui.add_sized([width, theme::height::FIELD], TextEdit::singleline(&mut form.smb_domain).hint_text("opcional").align(egui::Align2::LEFT_CENTER));
         });
     } else {
-        ui.add_space(ROW_GAP);
-        form_row(ui, "Seguridad", |ui| {
+        ui.add_space(theme::space::ROW);
+        crate::ui_kit::form_row(ui, "Seguridad", |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
                 for (tls, label) in [(FtpTls::None, "Sin cifrar"), (FtpTls::Explicit, "FTPS explícito"), (FtpTls::Implicit, "FTPS implícito")] {
@@ -1298,13 +1210,13 @@ fn files_rows(ui: &mut egui::Ui, form: &mut ConnForm) {
                 }
             });
         });
-        ui.add_space(ROW_GAP);
-        form_row(ui, "Modo", |ui| {
+        ui.add_space(theme::space::ROW);
+        crate::ui_kit::form_row(ui, "Modo", |ui| {
             ui.checkbox(&mut form.ftp_passive, "Pasivo (recomendado tras un cortafuegos)").hand();
         });
         if form.ftp_tls == FtpTls::None {
-            ui.add_space(ROW_GAP);
-            form_row(ui, "", |ui| {
+            ui.add_space(theme::space::ROW);
+            crate::ui_kit::form_row(ui, "", |ui| {
                 ui.label(RichText::new("FTP sin cifrar: la contraseña y los archivos viajan en texto claro.").small().color(theme::red()));
             });
         }
@@ -1313,12 +1225,12 @@ fn files_rows(ui: &mut egui::Ui, form: &mut ConnForm) {
 
 /// Filas del formulario de una conexión serie: puerto, velocidad, formato, flujo, Enter y eco.
 fn adb_rows(ui: &mut egui::Ui, form: &mut ConnForm) {
-    form_row(ui, "Dispositivo", |ui| {
+    crate::ui_kit::form_row(ui, "Dispositivo", |ui| {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
             let width = (ui.available_width() - 90.0 - 8.0).max(120.0);
-            text_input(ui, &mut form.host, width, "vacío: el único conectado", &mut form.errors.host);
-            let detect = crate::ui::outline_add(ui, egui::Button::new("Detectar").min_size(egui::vec2(90.0, FIELD_HEIGHT)), false);
+            crate::ui_kit::text_input(ui, &mut form.host, width, "vacío: el único conectado", &mut form.errors.host);
+            let detect = crate::ui_kit::button_with(ui, egui::Button::new("Detectar").min_size(egui::vec2(90.0, theme::height::FIELD)), crate::ui_kit::Variant::Secondary);
             if detect.clicked() {
                 let slot: AdbDevices = std::sync::Arc::new(std::sync::Mutex::new(None));
                 let result = slot.clone();
@@ -1355,18 +1267,18 @@ fn adb_rows(ui: &mut egui::Ui, form: &mut ConnForm) {
                 }
             });
         });
-        error_line(ui, &form.errors.host);
+        crate::ui_kit::error_line(ui, &form.errors.host);
         ui.label(RichText::new("Para un móvil por Wi-Fi escribe ip:puerto (por ejemplo 192.168.1.5:5555).").small().color(theme::subtext()));
     });
 }
 
 fn serial_rows(ui: &mut egui::Ui, form: &mut ConnForm) {
-    form_row(ui, "Puerto", |ui| {
+    crate::ui_kit::form_row(ui, "Puerto", |ui| {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
             let width = (ui.available_width() - 90.0 - 8.0).max(120.0);
-            text_input(ui, &mut form.host, width, if cfg!(windows) { "COM3" } else { "/dev/ttyUSB0" }, &mut form.errors.host);
-            let detect = crate::ui::outline_add(ui, egui::Button::new("Detectar").min_size(egui::vec2(90.0, FIELD_HEIGHT)), false);
+            crate::ui_kit::text_input(ui, &mut form.host, width, if cfg!(windows) { "COM3" } else { "/dev/ttyUSB0" }, &mut form.errors.host);
+            let detect = crate::ui_kit::button_with(ui, egui::Button::new("Detectar").min_size(egui::vec2(90.0, theme::height::FIELD)), crate::ui_kit::Variant::Secondary);
             if detect.clicked() {
                 form.ports = crate::serial::detect_ports();
             }
@@ -1384,14 +1296,14 @@ fn serial_rows(ui: &mut egui::Ui, form: &mut ConnForm) {
                 }
             });
         });
-        error_line(ui, &form.errors.host);
+        crate::ui_kit::error_line(ui, &form.errors.host);
     });
-    ui.add_space(ROW_GAP);
-    form_row(ui, "Velocidad", |ui| {
+    ui.add_space(theme::space::ROW);
+    crate::ui_kit::form_row(ui, "Velocidad", |ui| {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
-            text_input(ui, &mut form.baud, 100.0, "115200", &mut form.errors.port);
-            let speeds = crate::ui::outline_add(ui, egui::Button::new(format!("{}  baudios", crate::icons::CARET_DOWN)).min_size(egui::vec2(0.0, FIELD_HEIGHT)), false);
+            crate::ui_kit::text_input(ui, &mut form.baud, 100.0, "115200", &mut form.errors.port);
+            let speeds = crate::ui_kit::button_with(ui, egui::Button::new(format!("{}  baudios", crate::icons::CARET_DOWN)).min_size(egui::vec2(0.0, theme::height::FIELD)), crate::ui_kit::Variant::Secondary);
             egui::Popup::menu(&speeds).show(|ui| {
                 for rate in BAUD_RATES {
                     if ui.button(rate.to_string()).clicked() {
@@ -1401,27 +1313,27 @@ fn serial_rows(ui: &mut egui::Ui, form: &mut ConnForm) {
                 }
             });
         });
-        error_line(ui, &form.errors.port);
+        crate::ui_kit::error_line(ui, &form.errors.port);
     });
-    ui.add_space(ROW_GAP);
-    form_row(ui, "Formato", |ui| {
+    ui.add_space(theme::space::ROW);
+    crate::ui_kit::form_row(ui, "Formato", |ui| {
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
             for bits in [5u8, 6, 7, 8] {
                 ui.selectable_value(&mut form.data_bits, bits, bits.to_string());
             }
-            ui.add_space(8.0);
+            ui.add_space(theme::space::M);
             for (parity, label) in [(Parity::None, "Sin paridad"), (Parity::Odd, "Impar"), (Parity::Even, "Par")] {
                 ui.selectable_value(&mut form.parity, parity, label);
             }
-            ui.add_space(8.0);
+            ui.add_space(theme::space::M);
             for stop in [1u8, 2] {
                 ui.selectable_value(&mut form.stop_bits, stop, format!("{stop} parada"));
             }
         });
     });
-    ui.add_space(ROW_GAP);
-    form_row(ui, "Flujo", |ui| {
+    ui.add_space(theme::space::ROW);
+    crate::ui_kit::form_row(ui, "Flujo", |ui| {
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
             for (flow, label) in [(Flow::None, "Ninguno"), (Flow::Software, "XON/XOFF"), (Flow::Hardware, "RTS/CTS")] {
@@ -1429,14 +1341,14 @@ fn serial_rows(ui: &mut egui::Ui, form: &mut ConnForm) {
             }
         });
     });
-    ui.add_space(ROW_GAP);
-    form_row(ui, "Enter envía", |ui| {
+    ui.add_space(theme::space::ROW);
+    crate::ui_kit::form_row(ui, "Enter envía", |ui| {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
             for (newline, label) in Newline::ALL {
                 ui.selectable_value(&mut form.newline, newline, label);
             }
-            ui.add_space(12.0);
+            ui.add_space(theme::space::L);
             ui.checkbox(&mut form.local_echo, "Eco local").hand();
         });
     });
@@ -1513,13 +1425,13 @@ fn category_rail(ui: &mut egui::Ui, form: &mut ConnForm) {
             let (rect, response) = ui.allocate_exact_size(egui::vec2(RAIL_BUTTON, RAIL_BUTTON), egui::Sense::click());
             let response = response.hand().on_hover_text(group);
             let (fill, ink) = if selected { (theme::accent(), theme::base()) } else { (Color32::TRANSPARENT, theme::text()) };
-            let radius = egui::CornerRadius::same(6);
+            let radius = egui::CornerRadius::same(theme::radius::CONTROL);
             ui.painter().rect_filled(rect, radius, if !selected && response.hovered() { theme::selection() } else { fill });
             if !selected {
-                ui.painter().rect_stroke(rect, radius, egui::Stroke::new(1.0, theme::surface()), egui::StrokeKind::Inside);
+                ui.painter().rect_stroke(rect, radius, egui::Stroke::new(theme::stroke::HAIRLINE, theme::surface()), egui::StrokeKind::Inside);
             }
-            ui.painter().text(rect.center() - egui::vec2(0.0, 8.0), egui::Align2::CENTER_CENTER, icon, FontId::proportional(22.0), ink);
-            ui.painter().text(rect.center() + egui::vec2(0.0, 17.0), egui::Align2::CENTER_CENTER, group, FontId::proportional(10.5), ink);
+            ui.painter().text(rect.center() - egui::vec2(0.0, 8.0), egui::Align2::CENTER_CENTER, icon, FontId::proportional(theme::size::ICON_XL), ink);
+            ui.painter().text(rect.center() + egui::vec2(0.0, 17.0), egui::Align2::CENTER_CENTER, group, FontId::proportional(theme::size::CAPTION), ink);
             if response.clicked() && !selected {
                 if let Some((kind, ..)) = ConnKind::ALL.iter().find(|(_, _, g)| *g == group) {
                     kind.apply(form);
@@ -1532,7 +1444,7 @@ fn category_rail(ui: &mut egui::Ui, form: &mut ConnForm) {
 /// Tipos de la categoría elegida: la primera línea del formulario.
 fn kind_row(ui: &mut egui::Ui, form: &mut ConnForm) {
     // Sin etiqueta: los botones del raíl ya dicen qué se está eligiendo.
-    form_row(ui, "", |ui| {
+    crate::ui_kit::form_row(ui, "", |ui| {
         let current = ConnKind::of(form);
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
@@ -1546,14 +1458,14 @@ fn kind_row(ui: &mut egui::Ui, form: &mut ConnForm) {
 }
 
 fn ssh_access_rows(ui: &mut egui::Ui, form: &mut ConnForm, connections: &[Connection]) {
-    ui.add_space(ROW_GAP);
-    form_row(ui, "Usuario", |ui| {
+    ui.add_space(theme::space::ROW);
+    crate::ui_kit::form_row(ui, "Usuario", |ui| {
         let width = ui.available_width();
-        text_input(ui, &mut form.user, width, "usuario del servidor", &mut form.errors.user);
-        error_line(ui, &form.errors.user);
+        crate::ui_kit::text_input(ui, &mut form.user, width, "usuario del servidor", &mut form.errors.user);
+        crate::ui_kit::error_line(ui, &form.errors.user);
     });
-    ui.add_space(ROW_GAP);
-    form_row(ui, "Autenticación", |ui| {
+    ui.add_space(theme::space::ROW);
+    crate::ui_kit::form_row(ui, "Autenticación", |ui| {
         ComboBox::from_id_salt("auth")
             .width(ui.available_width())
             .selected_text(match form.auth {
@@ -1572,19 +1484,19 @@ fn ssh_access_rows(ui: &mut egui::Ui, form: &mut ConnForm, connections: &[Connec
             .hand();
     });
     if form.auth == Auth::Key {
-        ui.add_space(ROW_GAP);
-        form_row(ui, "Llave privada", |ui| {
+        ui.add_space(theme::space::ROW);
+        crate::ui_kit::form_row(ui, "Llave privada", |ui| {
             let width = ui.available_width();
-            text_input(ui, &mut form.key_path, width, "~/.ssh/id_ed25519", &mut form.errors.key_path);
-            error_line(ui, &form.errors.key_path);
+            crate::ui_kit::text_input(ui, &mut form.key_path, width, "~/.ssh/id_ed25519", &mut form.errors.key_path);
+            crate::ui_kit::error_line(ui, &form.errors.key_path);
         });
     }
     if matches!(form.auth, Auth::Password | Auth::Key) {
-        ui.add_space(ROW_GAP);
-        form_row(ui, if form.auth == Auth::Password { "Contraseña" } else { "Passphrase" }, |ui| {
+        ui.add_space(theme::space::ROW);
+        crate::ui_kit::form_row(ui, if form.auth == Auth::Password { "Contraseña" } else { "Passphrase" }, |ui| {
             let width = ui.available_width();
             ui.add_sized(
-                [width, FIELD_HEIGHT],
+                [width, theme::height::FIELD],
                 TextEdit::singleline(&mut form.secret)
                     .password(true)
                     .hint_text("opcional: se guarda en el almacén")
@@ -1592,8 +1504,8 @@ fn ssh_access_rows(ui: &mut egui::Ui, form: &mut ConnForm, connections: &[Connec
             );
         });
     }
-    ui.add_space(ROW_GAP);
-    form_row(ui, "Saltar mediante", |ui| {
+    ui.add_space(theme::space::ROW);
+    crate::ui_kit::form_row(ui, "Saltar mediante", |ui| {
         let current = form
             .jump
             .and_then(|id| connections.iter().find(|c| c.id == Some(id)))
@@ -1613,8 +1525,8 @@ fn ssh_access_rows(ui: &mut egui::Ui, form: &mut ConnForm, connections: &[Connec
 }
 
 fn telnet_rows(ui: &mut egui::Ui, form: &mut ConnForm) {
-    ui.add_space(ROW_GAP);
-    form_row(ui, "Codificación", |ui| {
+    ui.add_space(theme::space::ROW);
+    crate::ui_kit::form_row(ui, "Codificación", |ui| {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
             for (encoding, label) in Encoding::ALL {
@@ -1622,15 +1534,15 @@ fn telnet_rows(ui: &mut egui::Ui, form: &mut ConnForm) {
             }
         });
     });
-    ui.add_space(ROW_GAP);
-    form_row(ui, "Opciones", |ui| {
+    ui.add_space(theme::space::ROW);
+    crate::ui_kit::form_row(ui, "Opciones", |ui| {
         ui.checkbox(&mut form.negotiate, "Negociar Telnet (eco, tamaño de ventana y tipo de terminal)").hand();
         if !form.negotiate {
             ui.label(RichText::new("Sin negociar es una conexión TCP simple: no se traducen Enter ni opciones.").small().color(theme::subtext()));
         }
     });
-    ui.add_space(ROW_GAP);
-    form_row(ui, "", |ui| {
+    ui.add_space(theme::space::ROW);
+    crate::ui_kit::form_row(ui, "", |ui| {
         ui.label(RichText::new("Telnet no cifra: contraseñas y comandos viajan en texto claro.").small().color(theme::red()));
     });
 }
@@ -1641,17 +1553,17 @@ fn advanced_rows(ui: &mut egui::Ui, form: &mut ConnForm) {
         .id_salt("conn-advanced")
         .open(Some(form.advanced_open))
         .show(ui, |ui| {
-            ui.add_space(ROW_GAP);
-            form_row(ui, "Comando inicial", |ui| {
+            ui.add_space(theme::space::ROW);
+            crate::ui_kit::form_row(ui, "Comando inicial", |ui| {
                 let width = ui.available_width();
                 ui.add_sized(
-                    [width, FIELD_HEIGHT],
+                    [width, theme::height::FIELD],
                     TextEdit::singleline(&mut form.init_command)
                         .hint_text("opcional, se ejecuta al abrir la sesión")
                         .align(egui::Align2::LEFT_CENTER),
                 );
             });
-            ui.add_space(GROUP_GAP);
+            ui.add_space(theme::space::GROUP);
             ui.label(RichText::new("Túneles (se activan al conectar)").small().color(theme::subtext()));
             let mut remove = None;
             form.errors.forwards.resize(form.forwards.len(), None);
@@ -1675,7 +1587,7 @@ fn advanced_rows(ui: &mut egui::Ui, form: &mut ConnForm) {
                     let broken = form.errors.forwards[index].is_some();
                     ui.scope(|ui| {
                         if broken {
-                            let stroke = egui::Stroke::new(1.5, theme::red());
+                            let stroke = egui::Stroke::new(theme::stroke::MEDIUM, theme::red());
                             let widgets = &mut ui.visuals_mut().widgets;
                             widgets.inactive.bg_stroke = stroke;
                             widgets.hovered.bg_stroke = stroke;
@@ -1696,7 +1608,7 @@ fn advanced_rows(ui: &mut egui::Ui, form: &mut ConnForm) {
                 });
                 if let Some(message) = &form.errors.forwards[index] {
                     let line = ui.label(RichText::new(message.as_str()).small().color(theme::red()));
-                    if REVEAL_ERROR.swap(false, std::sync::atomic::Ordering::Relaxed) {
+                    if crate::ui_kit::take_reveal_error() {
                         line.scroll_to_me(Some(egui::Align::Center));
                     }
                 } else if row.listens_on_network() {
@@ -1707,7 +1619,7 @@ fn advanced_rows(ui: &mut egui::Ui, form: &mut ConnForm) {
                 form.forwards.remove(index);
                 form.errors.forwards.remove(index);
             }
-            if crate::ui::outline_add(ui, egui::Button::new("+ Añadir túnel"), false).clicked() {
+            if crate::ui_kit::button_with(ui, egui::Button::new("+ Añadir túnel"), crate::ui_kit::Variant::Secondary).clicked() {
                 form.forwards.push(ForwardRow::new());
                 form.errors.forwards.push(None);
             }
@@ -1750,20 +1662,20 @@ fn edit_body(ui: &mut egui::Ui, form: &mut ConnForm, connections: &[Connection])
 
 fn form_fields(ui: &mut egui::Ui, form: &mut ConnForm, connections: &[Connection]) -> bool {
     kind_row(ui, form);
-    ui.add_space(GROUP_GAP);
-    form_row(ui, "Nombre", |ui| {
+    ui.add_space(theme::space::GROUP);
+    crate::ui_kit::form_row(ui, "Nombre", |ui| {
         let width = ui.available_width();
-        let response = text_input(ui, &mut form.name, width, "Nombre de la conexión", &mut form.errors.name);
+        let response = crate::ui_kit::text_input(ui, &mut form.name, width, "Nombre de la conexión", &mut form.errors.name);
         if std::mem::take(&mut form.focus) {
             response.request_focus();
         }
-        error_line(ui, &form.errors.name);
+        crate::ui_kit::error_line(ui, &form.errors.name);
     });
     // El entorno va junto al nombre: es lo que evita escribir en el servidor equivocado.
-    ui.add_space(ROW_GAP);
+    ui.add_space(theme::space::ROW);
     environment_row(ui, form);
 
-    ui.add_space(GROUP_GAP);
+    ui.add_space(theme::space::GROUP);
     let kind = ConnKind::of(form);
     if kind == ConnKind::Serial {
         serial_rows(ui, form);
@@ -1773,15 +1685,15 @@ fn form_fields(ui: &mut egui::Ui, form: &mut ConnForm, connections: &[Connection
         adb_rows(ui, form);
         return false;
     }
-    form_row(ui, "Servidor", |ui| {
+    crate::ui_kit::form_row(ui, "Servidor", |ui| {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
             let host_width = (ui.available_width() - 80.0 - 8.0).max(120.0);
-            text_input(ui, &mut form.host, host_width, "ejemplo.com o 10.0.0.5", &mut form.errors.host);
-            text_input(ui, &mut form.port, 80.0, "22", &mut form.errors.port);
+            crate::ui_kit::text_input(ui, &mut form.host, host_width, "ejemplo.com o 10.0.0.5", &mut form.errors.host);
+            crate::ui_kit::text_input(ui, &mut form.port, 80.0, "22", &mut form.errors.port);
         });
-        error_line(ui, &form.errors.host);
-        error_line(ui, &form.errors.port);
+        crate::ui_kit::error_line(ui, &form.errors.host);
+        crate::ui_kit::error_line(ui, &form.errors.port);
     });
     match kind {
         ConnKind::Ssh | ConnKind::Sftp => ssh_access_rows(ui, form, connections),
@@ -1790,7 +1702,7 @@ fn form_fields(ui: &mut egui::Ui, form: &mut ConnForm, connections: &[Connection
         ConnKind::Serial | ConnKind::Adb => {}
     }
     if kind == ConnKind::Ssh {
-        ui.add_space(GROUP_GAP);
+        ui.add_space(theme::space::GROUP);
         advanced_rows(ui, form);
     }
     false
@@ -1850,11 +1762,11 @@ pub fn settings_page(ui: &mut egui::Ui, tab: &mut SettingsTab, settings: &mut Se
                 let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 32.0), egui::Sense::click());
                 let response = response.hand();
                 if selected {
-                    ui.painter().rect_filled(rect, egui::CornerRadius::same(6), theme::selection());
+                    ui.painter().rect_filled(rect, egui::CornerRadius::same(theme::radius::CONTROL), theme::selection());
                 } else if response.hovered() {
-                    ui.painter().rect_filled(rect, egui::CornerRadius::same(6), theme::surface());
+                    ui.painter().rect_filled(rect, egui::CornerRadius::same(theme::radius::CONTROL), theme::surface());
                 }
-                let font = FontId::new(14.0, if selected { crate::ui::strong_family() } else { egui::FontFamily::Proportional });
+                let font = FontId::new(theme::size::BODY, if selected { crate::ui::strong_family() } else { egui::FontFamily::Proportional });
                 ui.painter().text(rect.min + egui::vec2(12.0, 16.0), egui::Align2::LEFT_CENTER, label, font, if selected { theme::text() } else { theme::subtext() });
                 if response.clicked() && !selected {
                     *tab = choice;
@@ -1862,7 +1774,7 @@ pub fn settings_page(ui: &mut egui::Ui, tab: &mut SettingsTab, settings: &mut Se
                 }
             }
         });
-        ui.add_space(16.0);
+        ui.add_space(theme::space::XL);
         ui.vertical(|ui| {
             // Hasta 720 px, pero nunca más de lo que cabe: en ventanas estrechas el contenido se encoge.
             let width = ui.available_width().min(SETTINGS_MAX_WIDTH);
@@ -1882,14 +1794,14 @@ fn settings_content(ui: &mut egui::Ui, tab: SettingsTab, settings: &mut Settings
     }
     if tab == SettingsTab::Atajos {
         for (group, entries) in SHORTCUTS {
-            settings_card(ui, group, |ui| {
+            crate::ui_kit::card(ui, group, |ui| {
                 for (index, (keys, what)) in entries.iter().enumerate() {
-                    setting_row(ui, what, None, index + 1 < entries.len(), |ui| {
+                    crate::ui_kit::setting_row(ui, what, None, index + 1 < entries.len(), |ui| {
                         for (n, combo) in keys.split(" / ").enumerate() {
                             if n > 0 {
                                 ui.label(RichText::new("/").color(theme::subtext()));
                             }
-                            keycap(ui, combo);
+                            crate::ui_kit::keycap(ui, combo);
                         }
                     });
                 }
@@ -1897,74 +1809,74 @@ fn settings_content(ui: &mut egui::Ui, tab: SettingsTab, settings: &mut Settings
         }
         return;
     }
-    settings_card(ui, "Apariencia", |ui| {
-        setting_row(ui, "Tema", None, true, |ui| {
+    crate::ui_kit::card(ui, "Apariencia", |ui| {
+        crate::ui_kit::setting_row(ui, "Tema", None, true, |ui| {
             ui.selectable_value(&mut settings.theme, ThemeChoice::Dark, "Oscuro");
             ui.selectable_value(&mut settings.theme, ThemeChoice::Light, "Claro");
             ui.selectable_value(&mut settings.theme, ThemeChoice::System, "Sistema");
         });
-        setting_row(ui, "Acento", Some("Color de lo seleccionado"), true, |ui| {
+        crate::ui_kit::setting_row(ui, "Acento", Some("Color de lo seleccionado"), true, |ui| {
             for (choice, label) in AccentChoice::ALL {
                 ui.selectable_value(&mut settings.accent, choice, label);
             }
         });
-        setting_row(ui, "Densidad", Some("Altura de las filas de las listas"), true, |ui| {
+        crate::ui_kit::setting_row(ui, "Densidad", Some("Altura de las filas de las listas"), true, |ui| {
             ui.selectable_value(&mut settings.compact, false, "Cómoda");
             ui.selectable_value(&mut settings.compact, true, "Compacta");
         });
-        setting_row(ui, "Barra de menú", Some("Si está oculta, Alt la muestra"), true, |ui| {
-            toggle(ui, &mut settings.menu_bar);
+        crate::ui_kit::setting_row(ui, "Barra de menú", Some("Si está oculta, Alt la muestra"), true, |ui| {
+            crate::ui_kit::toggle(ui, &mut settings.menu_bar);
         });
-        setting_row(ui, "Confirmar al cerrar pestañas", Some("Solo si tienen algo en ejecución"), false, |ui| {
-            toggle(ui, &mut settings.confirm_close);
+        crate::ui_kit::setting_row(ui, "Confirmar al cerrar pestañas", Some("Solo si tienen algo en ejecución"), false, |ui| {
+            crate::ui_kit::toggle(ui, &mut settings.confirm_close);
         });
     });
 
-    settings_card(ui, "Terminal", |ui| {
-        setting_row(ui, "Fuente", Some("Monoespaciada, instalada en el equipo"), true, |ui| {
+    crate::ui_kit::card(ui, "Terminal", |ui| {
+        crate::ui_kit::setting_row(ui, "Fuente", Some("Monoespaciada, instalada en el equipo"), true, |ui| {
             font_picker(ui, &mut settings.font_family);
         });
-        setting_row(ui, "Tamaño de la letra", None, true, |ui| {
+        crate::ui_kit::setting_row(ui, "Tamaño de la letra", None, true, |ui| {
             ui.add(egui::Slider::new(&mut settings.font_size, MIN_FONT_SIZE..=MAX_FONT_SIZE).step_by(1.0).suffix(" pt"));
         });
-        setting_row(ui, "Cursor", None, true, |ui| {
+        crate::ui_kit::setting_row(ui, "Cursor", None, true, |ui| {
             ui.selectable_value(&mut settings.cursor, CursorChoice::Block, "Bloque");
             ui.selectable_value(&mut settings.cursor, CursorChoice::Beam, "Barra");
             ui.selectable_value(&mut settings.cursor, CursorChoice::Underline, "Subrayado");
         });
-        setting_row(ui, "Cursor parpadeante", None, true, |ui| {
-            toggle(ui, &mut settings.blink);
+        crate::ui_kit::setting_row(ui, "Cursor parpadeante", None, true, |ui| {
+            crate::ui_kit::toggle(ui, &mut settings.blink);
         });
-        setting_row(ui, "Paleta de colores", Some("Los 16 colores ANSI de los programas"), true, |ui| {
+        crate::ui_kit::setting_row(ui, "Paleta de colores", Some("Los 16 colores ANSI de los programas"), true, |ui| {
             for (choice, label) in AnsiChoice::ALL {
                 ui.selectable_value(&mut settings.ansi, choice, label);
             }
         });
-        setting_row(ui, "Negrita brillante", Some("La negrita aclara los colores ANSI 0-7"), true, |ui| {
-            toggle(ui, &mut settings.bold_bright);
+        crate::ui_kit::setting_row(ui, "Negrita brillante", Some("La negrita aclara los colores ANSI 0-7"), true, |ui| {
+            crate::ui_kit::toggle(ui, &mut settings.bold_bright);
         });
-        setting_row(ui, "Historial", Some("Se aplica a las sesiones nuevas"), false, |ui| {
+        crate::ui_kit::setting_row(ui, "Historial", Some("Se aplica a las sesiones nuevas"), false, |ui| {
             ui.add(egui::DragValue::new(&mut settings.scrollback).range(MIN_SCROLLBACK..=MAX_SCROLLBACK).speed(100.0).suffix(" líneas"));
         });
     });
 
-    settings_card(ui, "Avisos", |ui| {
+    crate::ui_kit::card(ui, "Avisos", |ui| {
         let mut notify = settings.notify_after > 0;
-        setting_row(ui, "Avisar al terminar la actividad", Some("De una pestaña que no está a la vista"), notify, |ui| {
-            if toggle(ui, &mut notify).changed() {
+        crate::ui_kit::setting_row(ui, "Avisar al terminar la actividad", Some("De una pestaña que no está a la vista"), notify, |ui| {
+            if crate::ui_kit::toggle(ui, &mut notify).changed() {
                 settings.notify_after = if notify { 15 } else { 0 };
             }
         });
         if notify {
-            setting_row(ui, "Solo si duró al menos", None, false, |ui| {
+            crate::ui_kit::setting_row(ui, "Solo si duró al menos", None, false, |ui| {
                 ui.add(egui::DragValue::new(&mut settings.notify_after).range(1..=3600).suffix(" s"));
             });
         }
     });
 
-    settings_card(ui, "Secretos", |ui| {
-        setting_row(ui, "Usar siempre la clave maestra", Some("Aunque haya keyring. Se aplica al reiniciar"), false, |ui| {
-            toggle(ui, master_forced);
+    crate::ui_kit::card(ui, "Secretos", |ui| {
+        crate::ui_kit::setting_row(ui, "Usar siempre la clave maestra", Some("Aunque haya keyring. Se aplica al reiniciar"), false, |ui| {
+            crate::ui_kit::toggle(ui, master_forced);
         });
     });
 }
@@ -1974,7 +1886,7 @@ const DEFAULT_FONT: &str = "JetBrains Mono (incluida)";
 /// Botón con la fuente actual que abre una lista con búsqueda de las monoespaciadas instaladas.
 fn font_picker(ui: &mut egui::Ui, family: &mut Option<String>) {
     let current = family.clone().unwrap_or_else(|| DEFAULT_FONT.to_string());
-    let button = crate::ui::outline_add(ui, egui::Button::new(format!("{current}  {}", crate::icons::CARET_DOWN)).min_size(egui::vec2(0.0, FIELD_HEIGHT)), false);
+    let button = crate::ui_kit::button_with(ui, egui::Button::new(format!("{current}  {}", crate::icons::CARET_DOWN)).min_size(egui::vec2(0.0, theme::height::FIELD)), crate::ui_kit::Variant::Secondary);
     egui::Popup::menu(&button).show(|ui| {
         ui.set_width(300.0);
         // Filas compactas y con el mismo margen que el buscador (los valores por defecto de egui son para botones).
@@ -1983,17 +1895,12 @@ fn font_picker(ui: &mut egui::Ui, family: &mut Option<String>) {
         ui.spacing_mut().interact_size.y = 26.0;
         let search_id = ui.make_persistent_id("font-search");
         let mut query: String = ui.data_mut(|d| d.get_temp(search_id)).unwrap_or_default();
-        let field = ui
-            .scope(|ui| {
-                ui.visuals_mut().widgets.inactive.bg_stroke = egui::Stroke::new(1.0, theme::surface());
-                ui.add(TextEdit::singleline(&mut query).hint_text("Buscar fuente").desired_width(f32::INFINITY).margin(egui::vec2(8.0, 5.0)))
-            })
-            .inner;
+        let field = crate::ui_kit::search_field(ui, &mut query, "Buscar fuente", f32::INFINITY);
         if button.clicked() {
             field.request_focus();
         }
         ui.data_mut(|d| d.insert_temp(search_id, query.clone()));
-        ui.add_space(6.0);
+        ui.add_space(theme::space::S);
         let needle = query.trim().to_lowercase();
         let families = crate::fonts::monospace_families();
         egui::ScrollArea::vertical().max_height(260.0).auto_shrink([false, true]).show(ui, |ui| {
@@ -2018,92 +1925,13 @@ fn font_picker(ui: &mut egui::Ui, family: &mut Option<String>) {
     });
 }
 
-/// Grupo de ajustes: título y una tarjeta con sus filas.
-fn settings_card(ui: &mut egui::Ui, title: &str, rows: impl FnOnce(&mut egui::Ui)) {
-    ui.add_space(GROUP_GAP);
-    ui.label(RichText::new(title).font(FontId::new(12.5, crate::ui::strong_family())).color(theme::subtext()));
-    ui.add_space(4.0);
-    egui::Frame::new()
-        .fill(theme::mantle())
-        .stroke(egui::Stroke::new(1.0, theme::surface()))
-        .corner_radius(egui::CornerRadius::same(8))
-        .inner_margin(egui::Margin::symmetric(14, 4))
-        .show(ui, |ui| {
-            ui.spacing_mut().item_spacing.y = 0.0;
-            ui.set_width(ui.available_width());
-            rows(ui);
-        });
-}
-
-const SETTING_LABEL_WIDTH: f32 = 290.0;
-
-/// Casilla con borde propio: sobre el fondo de una tarjeta clara la casilla vacía casi no se vería.
-fn toggle(ui: &mut egui::Ui, value: &mut bool) -> egui::Response {
-    ui.scope(|ui| {
-        let stroke = egui::Stroke::new(1.0, theme::subtext());
-        let widgets = &mut ui.visuals_mut().widgets;
-        widgets.inactive.bg_stroke = stroke;
-        widgets.hovered.bg_stroke = stroke;
-        ui.checkbox(value, "").hand()
-    })
-    .inner
-}
-
-/// Combinación de teclas con aspecto de tecla.
-pub fn keycap(ui: &mut egui::Ui, text: &str) {
-    egui::Frame::new()
-        .fill(theme::surface())
-        .corner_radius(egui::CornerRadius::same(5))
-        .inner_margin(egui::Margin::symmetric(8, 3))
-        .show(ui, |ui| {
-            ui.label(RichText::new(text).font(FontId::new(12.5, egui::FontFamily::Monospace)).color(theme::text()));
-        });
-}
-
-/// Una fila: el nombre (y una pista) a la izquierda y el control en una columna común a la derecha.
-fn setting_row(ui: &mut egui::Ui, label: &str, hint: Option<&str>, divider: bool, controls: impl FnOnce(&mut egui::Ui)) {
-    // La columna del nombre se estrecha en ventanas pequeñas para que los controles quepan.
-    let label_width = (ui.available_width() * 0.42).clamp(150.0, SETTING_LABEL_WIDTH);
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 12.0;
-        ui.set_min_height(48.0);
-        ui.allocate_ui_with_layout(egui::vec2(label_width, 48.0), egui::Layout::top_down(egui::Align::Min), |ui| {
-            ui.spacing_mut().item_spacing.y = 1.0;
-            ui.set_min_width(label_width);
-            let lines = if hint.is_some() { 2.0 } else { 1.0 };
-            ui.add_space((48.0 - lines * 17.0 - if hint.is_some() { 1.0 } else { 0.0 }) / 2.0);
-            ui.label(RichText::new(label).color(theme::text()));
-            if let Some(hint) = hint {
-                ui.label(RichText::new(hint).small().color(theme::subtext()));
-            }
-        });
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 4.0;
-            controls(ui);
-        });
-    });
-    if divider {
-        let y = ui.cursor().min.y;
-        let x = ui.max_rect().x_range();
-        ui.painter().hline(x, y, egui::Stroke::new(1.0, theme::surface()));
-    }
-}
-
 fn known_hosts_body(ui: &mut egui::Ui, view: &mut KnownHostsView, connections: &[Connection]) {
     view.ensure_loaded();
-    ui.scope(|ui| {
-        ui.visuals_mut().widgets.inactive.bg_stroke = egui::Stroke::new(1.0, theme::surface());
-        ui.add(
-            TextEdit::singleline(&mut view.query)
-                .hint_text("Buscar por host, conexión o huella")
-                .desired_width(f32::INFINITY)
-                .margin(egui::vec2(8.0, 6.0)),
-        );
-    });
+    crate::ui_kit::search_field(ui, &mut view.query, "Buscar por host, conexión o huella", f32::INFINITY);
     if view.error.is_none() && !view.entries.is_empty() {
         ui.label(RichText::new(format!("{} entradas en {}", view.entries.len(), crate::ssh::default_known_hosts().display())).small().color(theme::subtext()));
     }
-    ui.add_space(6.0);
+    ui.add_space(theme::space::S);
     if let Some(error) = &view.error {
         ui.label(RichText::new(error).color(theme::red()));
         return;
@@ -2125,34 +1953,31 @@ fn known_hosts_body(ui: &mut egui::Ui, view: &mut KnownHostsView, connections: &
         shown += 1;
         let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 48.0), egui::Sense::hover());
         if response.hovered() {
-            ui.painter().rect_filled(rect, egui::CornerRadius::same(6), theme::surface());
+            ui.painter().rect_filled(rect, egui::CornerRadius::same(theme::radius::CONTROL), theme::surface());
         }
         let title = ui.painter().text(
             rect.min + egui::vec2(10.0, 15.0),
             egui::Align2::LEFT_CENTER,
             &name,
-            FontId::new(14.0, crate::ui::strong_family()),
+            FontId::new(theme::size::BODY, crate::ui::strong_family()),
             if entry.hashed { theme::subtext() } else { theme::text() },
         );
         if let Some(connection) = connection {
-            ui.painter().text(egui::pos2(title.max.x + 10.0, rect.min.y + 15.0), egui::Align2::LEFT_CENTER, &connection.name, FontId::proportional(12.0), theme::accent());
+            ui.painter().text(egui::pos2(title.max.x + 10.0, rect.min.y + 15.0), egui::Align2::LEFT_CENTER, &connection.name, FontId::proportional(theme::size::SMALL), theme::accent());
         }
         let short: String = entry.fingerprint.chars().take(28).collect();
         ui.painter().text(
             rect.min + egui::vec2(10.0, 34.0),
             egui::Align2::LEFT_CENTER,
             format!("{}  ·  {short}…", entry.key_type),
-            FontId::new(12.0, egui::FontFamily::Monospace),
+            FontId::new(theme::size::SMALL, egui::FontFamily::Monospace),
             theme::subtext(),
         );
         for (offset, glyph, tip) in [(56.0, crate::icons::COPY, "Copiar la huella"), (24.0, crate::icons::TRASH, "Olvidar este host")] {
-            let button = egui::Rect::from_center_size(egui::pos2(rect.max.x - offset, rect.center().y), egui::vec2(28.0, 28.0));
-            let response = ui.interact(button, ui.auto_id_with(("known-host", entry.index, glyph)), egui::Sense::click()).hand();
-            if response.hovered() {
-                ui.painter().rect_filled(button, egui::CornerRadius::same(6), theme::selection());
-            }
-            ui.painter().text(button.center(), egui::Align2::CENTER_CENTER, glyph, FontId::proportional(16.0), theme::text());
-            if response.on_hover_text(tip).clicked() {
+            // Cada botón se coloca a la derecha de la fila, con una identidad propia para que no se mezclen entre filas.
+            let slot = egui::Rect::from_center_size(egui::pos2(rect.max.x - offset, rect.center().y), egui::vec2(26.0, 26.0));
+            let clicked = crate::ui_kit::IconButton::new(glyph).show_at(ui, slot, ("known-host", entry.index, glyph)).on_hover_text(tip).clicked();
+            if clicked {
                 if glyph == crate::icons::COPY {
                     ui.ctx().copy_text(entry.fingerprint.clone());
                 } else {
@@ -2200,7 +2025,7 @@ fn vars_body(ui: &mut egui::Ui, prompt: &mut VarsPrompt) -> bool {
             ui.end_row();
         }
     });
-    ui.add_space(4.0);
+    ui.add_space(theme::space::XS);
     ui.label(RichText::new("Resultado").small().color(theme::subtext()));
     egui::ScrollArea::vertical().max_height(120.0).show(ui, |ui| {
         ui.label(RichText::new(prompt.rendered()).monospace().color(theme::subtext()));
@@ -2261,9 +2086,9 @@ fn prompt_body(ui: &mut egui::Ui, request: &PromptRequest, answers: &mut Vec<Str
 
 fn host_key_body(ui: &mut egui::Ui, request: &HostKeyRequest) -> bool {
     ui.label(format!("No se puede verificar la autenticidad de {}:{}.", request.host, request.port));
-    ui.add_space(4.0);
+    ui.add_space(theme::space::XS);
     ui.label(RichText::new(format!("{} {}", request.algorithm, request.fingerprint)).monospace());
-    ui.add_space(4.0);
+    ui.add_space(theme::space::XS);
     ui.label("Si confías en él, se añadirá a ~/.ssh/known_hosts.");
     false
 }
@@ -2273,7 +2098,7 @@ fn host_key_changed_body(ui: &mut egui::Ui, change: &HostKeyChange) -> bool {
         RichText::new("omni-term no se ha conectado. Puede que alguien se esté haciendo pasar por el servidor, o que el servidor se haya reinstalado.")
             .color(theme::red()),
     );
-    ui.add_space(4.0);
+    ui.add_space(theme::space::XS);
     egui::Grid::new("host_key_changed").num_columns(2).spacing([14.0, 6.0]).show(ui, |ui| {
         ui.label("Servidor");
         ui.label(RichText::new(format!("{}:{}", change.host, change.port)).monospace());
@@ -2285,7 +2110,7 @@ fn host_key_changed_body(ui: &mut egui::Ui, change: &HostKeyChange) -> bool {
         ui.label(RichText::new(format!("{} ({})", change.received, change.algorithm)).monospace());
         ui.end_row();
     });
-    ui.add_space(4.0);
+    ui.add_space(theme::space::XS);
     ui.label("Si sabes que el servidor cambió de verdad, borra la huella antigua y vuelve a conectar:");
     ui.label(RichText::new(change.forget_command()).monospace().color(theme::subtext()));
     false

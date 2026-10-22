@@ -160,7 +160,7 @@ impl Palette {
             if field.changed() {
                 self.selected = 0;
             }
-            ui.add_space(8.0);
+            ui.add_space(theme::space::M);
             if matches.is_empty() {
                 ui.label(RichText::new("Nada coincide con la búsqueda.").color(theme::subtext()));
             }
@@ -174,7 +174,7 @@ impl Palette {
                         self.selected = position;
                     }
                     if position == self.selected {
-                        ui.painter().rect_filled(rect, CornerRadius::same(6), theme::selection());
+                        ui.painter().rect_filled(rect, CornerRadius::same(theme::radius::CONTROL), theme::selection());
                         if moved {
                             ui.scroll_to_rect(rect, None);
                         }
@@ -186,12 +186,12 @@ impl Palette {
                         Target::Tab(_) => icons::FOLDER_CLOSED,
                         Target::Command(_) => icons::GEAR,
                     };
-                    painter.text(rect.min + Vec2::new(16.0, 18.0), Align2::CENTER_CENTER, glyph, egui::FontId::proportional(15.0), theme::subtext());
+                    painter.text(rect.min + Vec2::new(16.0, 18.0), Align2::CENTER_CENTER, glyph, egui::FontId::proportional(theme::size::ICON), theme::subtext());
                     let title = painter.text(
                         rect.min + Vec2::new(34.0, 18.0),
                         Align2::LEFT_CENTER,
                         &item.title,
-                        egui::FontId::new(14.0, crate::ui::strong_family()),
+                        egui::FontId::new(theme::size::BODY, crate::ui::strong_family()),
                         theme::text(),
                     );
                     if !item.detail.is_empty() {
@@ -199,11 +199,11 @@ impl Palette {
                             egui::pos2(title.max.x + 10.0, rect.center().y),
                             Align2::LEFT_CENTER,
                             &item.detail,
-                            egui::FontId::proportional(12.0),
+                            egui::FontId::proportional(theme::size::SMALL),
                             theme::subtext(),
                         );
                     }
-                    painter.text(rect.max - Vec2::new(10.0, 18.0), Align2::RIGHT_CENTER, item.kind, egui::FontId::proportional(12.0), theme::subtext());
+                    painter.text(rect.max - Vec2::new(10.0, 18.0), Align2::RIGHT_CENTER, item.kind, egui::FontId::proportional(theme::size::SMALL), theme::subtext());
                     if response.clicked() {
                         outcome = Outcome::Run(*index);
                     }
