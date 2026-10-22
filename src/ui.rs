@@ -3395,6 +3395,7 @@ pub fn strong_family() -> FontFamily {
 
 /// Escala de espaciado (4/8/12/16) y radios (controles 6, diálogos 10) de toda la interfaz.
 fn install_visuals(ctx: &egui::Context) {
+    ctx.set_theme(if theme::is_light() { egui::Theme::Light } else { egui::Theme::Dark });
     let mut style = (*ctx.global_style()).clone();
     style.text_styles = [
         (TextStyle::Small, FontId::new(theme::size::SMALL, FontFamily::Proportional)),
@@ -3412,6 +3413,7 @@ fn install_visuals(ctx: &egui::Context) {
     style.spacing.interact_size.y = 30.0;
 
     let radius = CornerRadius::same(theme::radius::CONTROL);
+    style.visuals = if theme::is_light() { egui::Visuals::light() } else { egui::Visuals::dark() };
     let v = &mut style.visuals;
     v.panel_fill = theme::base();
     v.window_fill = theme::mantle();
