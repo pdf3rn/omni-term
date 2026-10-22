@@ -53,7 +53,7 @@ fn main() -> eframe::Result {
         .with_app_id("omni-term")
         .with_inner_size(size)
         .with_min_inner_size([320.0, 200.0])
-        .with_decorations(true)
+        .with_decorations(system_titlebar())
         .with_maximized(saved_flag("window_maximized"));
     if let Ok(icon) = eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png")) {
         viewport = viewport.with_icon(icon);
@@ -68,6 +68,15 @@ fn main() -> eframe::Result {
         options,
         Box::new(|cc| ui::App::new(cc, debug_keys).map(|app| Box::new(app) as Box<dyn eframe::App>).map_err(Into::into)),
     )
+}
+
+/// Si el usuario eligió la barra de título del sistema; por defecto se dibuja la integrada.
+fn system_titlebar() -> bool {
+    let read = || -> Option<bool> {
+        let store = store::Store::open(&store::Store::default_path().ok()?).ok()?;
+        Some(store.meta("setting.system_titlebar").ok()??.as_slice() == b"1")
+    };
+    read().unwrap_or(false)
 }
 
 /// Un ajuste guardado como «1» (verdadero) en la tabla `meta`.

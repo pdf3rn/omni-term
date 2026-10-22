@@ -87,6 +87,12 @@ pub struct Settings {
     pub ansi: AnsiChoice,
     /// Barra de menú siempre visible; si no, `Alt` la muestra un momento.
     pub menu_bar: bool,
+    /// Usa la barra de título del sistema en lugar de la integrada (se aplica al reiniciar).
+    pub system_titlebar: bool,
+    /// Con la barra integrada, el menú va en la barra; si no, tras un botón de hamburguesa.
+    pub titlebar_menu: bool,
+    /// Barra integrada más baja.
+    pub titlebar_compact: bool,
     /// Preguntar antes de cerrar pestañas (o la ventana) con algo en ejecución.
     pub confirm_close: bool,
     /// Filas de las listas más bajas.
@@ -139,6 +145,9 @@ impl Default for Settings {
             accent: AccentChoice::Blue,
             ansi: AnsiChoice::Catppuccin,
             menu_bar: true,
+            system_titlebar: false,
+            titlebar_menu: true,
+            titlebar_compact: false,
             confirm_close: true,
             compact: false,
             notify_after: 15,
@@ -165,6 +174,9 @@ impl Settings {
             accent: text(store, "setting.accent").and_then(|k| AccentChoice::from_key(&k)).unwrap_or(defaults.accent),
             ansi: text(store, "setting.ansi").and_then(|k| AnsiChoice::from_key(&k)).unwrap_or(defaults.ansi),
             menu_bar: text(store, "setting.menu_bar").map_or(defaults.menu_bar, |t| t == "1"),
+            system_titlebar: text(store, "setting.system_titlebar").map_or(defaults.system_titlebar, |t| t == "1"),
+            titlebar_menu: text(store, "setting.titlebar_menu").map_or(defaults.titlebar_menu, |t| t == "1"),
+            titlebar_compact: text(store, "setting.titlebar_compact").map_or(defaults.titlebar_compact, |t| t == "1"),
             confirm_close: text(store, "setting.confirm_close").map_or(defaults.confirm_close, |t| t == "1"),
             compact: text(store, "setting.compact").map_or(defaults.compact, |t| t == "1"),
             notify_after: text(store, "setting.notify_after")
@@ -210,6 +222,9 @@ impl Settings {
         store.set_meta("setting.accent", self.accent.key().as_bytes())?;
         store.set_meta("setting.ansi", self.ansi.key().as_bytes())?;
         store.set_meta("setting.menu_bar", if self.menu_bar { b"1" } else { b"0" })?;
+        store.set_meta("setting.system_titlebar", if self.system_titlebar { b"1" } else { b"0" })?;
+        store.set_meta("setting.titlebar_menu", if self.titlebar_menu { b"1" } else { b"0" })?;
+        store.set_meta("setting.titlebar_compact", if self.titlebar_compact { b"1" } else { b"0" })?;
         store.set_meta("setting.confirm_close", if self.confirm_close { b"1" } else { b"0" })?;
         store.set_meta("setting.compact", if self.compact { b"1" } else { b"0" })?;
         store.set_meta("setting.notify_after", self.notify_after.to_string().as_bytes())?;
@@ -242,6 +257,9 @@ mod tests {
             accent: AccentChoice::Mauve,
             ansi: AnsiChoice::Gnome,
             menu_bar: false,
+            system_titlebar: true,
+            titlebar_menu: false,
+            titlebar_compact: true,
             confirm_close: false,
             compact: true,
             notify_after: 45,
