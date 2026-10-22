@@ -9,7 +9,7 @@ pub mod list;
 pub use button::{button, button_rich, button_with, icon_button, IconButton, Variant};
 pub use card::{card, card_frame, keycap, section_title, setting_row, toggle};
 pub use list::{connection_glyph, fit_text, row_content, row_frame, Leading, RowContent};
-pub use form::{chip, error_line, form_row, request_reveal_error, search_field, take_reveal_error, text_input};
+pub use form::{chip, error_line, form_row, password_field, request_reveal_error, search_field, take_reveal_error, text_input};
 
 #[cfg(test)]
 mod style_guard {

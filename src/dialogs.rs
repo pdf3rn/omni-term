@@ -176,6 +176,7 @@ pub struct ConnForm {
     pub key_path: String,
     pub init_command: String,
     pub secret: String,
+    pub reveal_secret: bool,
 }
 
 impl ConnForm {
@@ -213,6 +214,7 @@ impl ConnForm {
             key_path: "~/.ssh/id_ed25519".into(),
             init_command: String::new(),
             secret: String::new(),
+            reveal_secret: false,
             focus: true,
             custom_env: false,
             advanced_open: false,
@@ -291,7 +293,8 @@ impl ConnForm {
             key_path: connection.key_path.clone().unwrap_or_default(),
             init_command: connection.init_command.clone().unwrap_or_default(),
             secret: String::new(),
-            advanced_open: false,
+            reveal_secret: false,
+            advanced_open: connection.jump.is_some(),
             errors: FormErrors::default(),
             test: None,
         }
@@ -899,18 +902,9 @@ pub fn shell(ctx: &egui::Context, spec: Spec, body: impl FnOnce(&mut egui::Ui) -
 
 pub const MIN_MASTER_KEY: usize = 8;
 
-/// Campo de contraseña con botón para mostrar u ocultar lo escrito.
+/// Campo de contraseña con el ojo dentro para mostrar u ocultar lo escrito.
 fn secret_field(ui: &mut egui::Ui, value: &mut String, reveal: &mut bool, hint: &str) -> egui::Response {
-    ui.horizontal(|ui| {
-        let width = (ui.available_width() - 76.0).max(80.0);
-        let field = ui.add(TextEdit::singleline(value).password(!*reveal).hint_text(hint).desired_width(width));
-        let label = if *reveal { "Ocultar" } else { "Mostrar" };
-        if crate::ui_kit::button_with(ui, egui::Button::new(RichText::new(label).small()), crate::ui_kit::Variant::Ghost).clicked() {
-            *reveal = !*reveal;
-        }
-        field
-    })
-    .inner
+    crate::ui_kit::password_field(ui, value, reveal, hint, f32::INFINITY)
 }
 
 fn entered(ui: &egui::Ui, field: &egui::Response) -> bool {
@@ -1479,7 +1473,7 @@ fn kind_row(ui: &mut egui::Ui, form: &mut ConnForm) {
     });
 }
 
-fn ssh_access_rows(ui: &mut egui::Ui, form: &mut ConnForm, connections: &[Connection]) {
+fn ssh_access_rows(ui: &mut egui::Ui, form: &mut ConnForm) {
     ui.add_space(theme::space::ROW);
     crate::ui_kit::form_row(ui, "Usuario", |ui| {
         let width = ui.available_width();
@@ -1517,33 +1511,9 @@ fn ssh_access_rows(ui: &mut egui::Ui, form: &mut ConnForm, connections: &[Connec
         ui.add_space(theme::space::ROW);
         crate::ui_kit::form_row(ui, if form.auth == Auth::Password { "Contraseña" } else { "Passphrase" }, |ui| {
             let width = ui.available_width();
-            ui.add_sized(
-                [width, theme::height::FIELD],
-                TextEdit::singleline(&mut form.secret)
-                    .password(true)
-                    .hint_text("opcional: se guarda en el almacén")
-                    .align(egui::Align2::LEFT_CENTER),
-            );
+            crate::ui_kit::password_field(ui, &mut form.secret, &mut form.reveal_secret, "opcional: se guarda en el almacén", width);
         });
     }
-    ui.add_space(theme::space::ROW);
-    crate::ui_kit::form_row(ui, "Saltar mediante", |ui| {
-        let current = form
-            .jump
-            .and_then(|id| connections.iter().find(|c| c.id == Some(id)))
-            .map_or("Directo".to_string(), |c| c.name.clone());
-        ComboBox::from_id_salt("jump")
-            .width(ui.available_width())
-            .selected_text(current)
-            .show_ui(ui, |ui| {
-                ui.selectable_value(&mut form.jump, None, "Directo");
-                for other in connections.iter().filter(|c| c.id != form.id) {
-                    ui.selectable_value(&mut form.jump, other.id, other.name.as_str());
-                }
-            })
-            .response
-            .hand();
-    });
 }
 
 fn telnet_rows(ui: &mut egui::Ui, form: &mut ConnForm) {
@@ -1570,11 +1540,32 @@ fn telnet_rows(ui: &mut egui::Ui, form: &mut ConnForm) {
 }
 
 /// Comando inicial y túneles, solo de SSH; se despliega solo si un túnel tiene un error.
-fn advanced_rows(ui: &mut egui::Ui, form: &mut ConnForm) {
+fn advanced_rows(ui: &mut egui::Ui, form: &mut ConnForm, connections: &[Connection], ssh: bool) {
     let shown = CollapsingHeader::new(RichText::new("Avanzado").color(theme::subtext()))
         .id_salt("conn-advanced")
         .open(Some(form.advanced_open))
         .show(ui, |ui| {
+            ui.add_space(theme::space::ROW);
+            crate::ui_kit::form_row(ui, "Servidor de salto", |ui| {
+                let current = form
+                    .jump
+                    .and_then(|id| connections.iter().find(|c| c.id == Some(id)))
+                    .map_or("Ninguno".to_string(), |c| c.name.clone());
+                ComboBox::from_id_salt("jump")
+                    .width(ui.available_width())
+                    .selected_text(current)
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut form.jump, None, "Ninguno");
+                        for other in connections.iter().filter(|c| c.id != form.id) {
+                            ui.selectable_value(&mut form.jump, other.id, other.name.as_str());
+                        }
+                    })
+                    .response
+                    .hand();
+            });
+            if !ssh {
+                return;
+            }
             ui.add_space(theme::space::ROW);
             crate::ui_kit::form_row(ui, "Comando inicial", |ui| {
                 let width = ui.available_width();
@@ -1718,14 +1709,14 @@ fn form_fields(ui: &mut egui::Ui, form: &mut ConnForm, connections: &[Connection
         crate::ui_kit::error_line(ui, &form.errors.port);
     });
     match kind {
-        ConnKind::Ssh | ConnKind::Sftp => ssh_access_rows(ui, form, connections),
+        ConnKind::Ssh | ConnKind::Sftp => ssh_access_rows(ui, form),
         ConnKind::Ftp | ConnKind::Smb => files_rows(ui, form),
         ConnKind::Telnet => telnet_rows(ui, form),
         ConnKind::Serial | ConnKind::Adb => {}
     }
-    if kind == ConnKind::Ssh {
+    if matches!(kind, ConnKind::Ssh | ConnKind::Sftp) {
         ui.add_space(theme::space::GROUP);
-        advanced_rows(ui, form);
+        advanced_rows(ui, form, connections, kind == ConnKind::Ssh);
     }
     false
 }
@@ -2079,12 +2070,7 @@ fn unlock_body(ui: &mut egui::Ui, prompt: &mut UnlockPrompt) -> bool {
     field.request_focus();
     let mut submitted = entered(ui, &field);
     if prompt.creating {
-        let confirm = ui.add(
-            TextEdit::singleline(&mut prompt.confirm)
-                .password(!prompt.reveal)
-                .hint_text("repite la clave")
-                .desired_width(f32::INFINITY),
-        );
+        let confirm = secret_field(ui, &mut prompt.confirm, &mut prompt.reveal, "repite la clave");
         submitted |= entered(ui, &confirm);
         let length = prompt.input.chars().count();
         if length > 0 && length < MIN_MASTER_KEY {
