@@ -5,7 +5,7 @@ use zeroize::Zeroizing;
 
 use crate::cursor::HandExt;
 use crate::secrets::SecretKind;
-use crate::settings::{AccentChoice, AnsiChoice, CursorChoice, Settings, ThemeChoice, MAX_FONT_SIZE, MAX_SCROLLBACK, MIN_FONT_SIZE, MIN_SCROLLBACK};
+use crate::settings::{AccentChoice, AnsiChoice, CursorChoice, Settings, StartupChoice, ThemeChoice, MAX_FONT_SIZE, MAX_SCROLLBACK, MIN_FONT_SIZE, MIN_SCROLLBACK};
 use crate::ssh::{HostKeyChange, HostKeyRequest, PromptRequest};
 use crate::store::{Encoding, FilesKind, FtpOptions, FtpTls, Flow, Newline, Parity, Protocol, SerialOptions, TelnetOptions, BAUD_RATES, Auth, Connection, Forward, ForwardKind, Snippet};
 use crate::theme;
@@ -576,6 +576,12 @@ pub enum CloseAction {
     Window,
 }
 
+pub struct RestorePrompt {
+    pub tabs: usize,
+    pub remote: usize,
+    pub remember: bool,
+}
+
 pub struct CloseConfirm {
     pub action: CloseAction,
     pub lines: Vec<String>,
@@ -636,6 +642,7 @@ pub enum Dialog {
     HostKey(HostKeyRequest),
     Prompt(PromptRequest, Vec<String>),
     ConfirmReset(Pending),
+    RestoreSession(RestorePrompt),
     ConfirmContainer(ContainerConfirm),
 }
 
@@ -1022,6 +1029,21 @@ pub fn show(
             let spec = Spec::new(title).width(400.0).accept(accept).icon(DialogIcon::Warning);
             let action = shell(ctx, spec, |ui| {
                 ui.label(format!("«{}» ({}) {effect}.", confirm.container.name, confirm.container.image));
+                false
+            });
+            plain(action, Outcome::Submit)
+        }
+        Dialog::RestoreSession(prompt) => {
+            let spec = Spec::new("Restaurar la sesión anterior").width(420.0).accept("Restaurar").icon(DialogIcon::Info);
+            let action = shell(ctx, spec, |ui| {
+                let tabs = if prompt.tabs == 1 { "1 pestaña".to_string() } else { format!("{} pestañas", prompt.tabs) };
+                ui.label(format!("La sesión anterior tenía {tabs} abiertas. ¿Quieres volver a abrirlas?"));
+                if prompt.remote > 0 {
+                    let remote = if prompt.remote == 1 { "Se reconectará 1 sesión remota.".to_string() } else { format!("Se reconectarán {} sesiones remotas.", prompt.remote) };
+                    ui.label(RichText::new(remote).color(theme::subtext()));
+                }
+                ui.add_space(theme::space::XS);
+                ui.checkbox(&mut prompt.remember, "Recordar mi elección").hand();
                 false
             });
             plain(action, Outcome::Submit)
@@ -1827,8 +1849,13 @@ fn settings_content(ui: &mut egui::Ui, tab: SettingsTab, settings: &mut Settings
         crate::ui_kit::setting_row(ui, "Barra de menú", Some("Si está oculta, Alt la muestra"), true, |ui| {
             crate::ui_kit::toggle(ui, &mut settings.menu_bar);
         });
-        crate::ui_kit::setting_row(ui, "Confirmar al cerrar pestañas", Some("Solo si tienen algo en ejecución"), false, |ui| {
+        crate::ui_kit::setting_row(ui, "Confirmar al cerrar pestañas", Some("Solo si tienen algo en ejecución"), true, |ui| {
             crate::ui_kit::toggle(ui, &mut settings.confirm_close);
+        });
+        crate::ui_kit::setting_row(ui, "Al iniciar", Some("Pestañas de la sesión anterior"), false, |ui| {
+            ui.selectable_value(&mut settings.on_start, StartupChoice::Ask, "Preguntar");
+            ui.selectable_value(&mut settings.on_start, StartupChoice::Restore, "Restaurar");
+            ui.selectable_value(&mut settings.on_start, StartupChoice::Fresh, "Empezar de cero");
         });
     });
 

@@ -19,7 +19,7 @@ use crate::icons;
 use crate::known_hosts;
 use crate::palette::{self, Command, Palette, Target};
 use crate::pane::{self, bold_family, Pane, PaneRequest, PADDING};
-use crate::settings::{CursorChoice, Settings, ThemeChoice, DEFAULT_FONT_SIZE, MAX_FONT_SIZE, MIN_FONT_SIZE};
+use crate::settings::{CursorChoice, Settings, StartupChoice, ThemeChoice, DEFAULT_FONT_SIZE, MAX_FONT_SIZE, MIN_FONT_SIZE};
 use crate::secrets::{account_for, SecretError, SecretKind, SecretStore, Secrets};
 use crate::ssh::{self, Credentials, JumpHost, TunnelState, Tunnels, UiEvent};
 use crate::store::{self, Auth, Connection, Forward, Protocol, SavedTab, Snippet, Store, TabKind};
@@ -240,6 +240,8 @@ pub struct App {
     session_secrets: HashMap<(i64, SecretKind), Zeroizing<String>>,
     save_queue: VecDeque<(String, Zeroizing<String>)>,
     open_queue: VecDeque<SavedTab>,
+    /// Hay que preguntar si se restaura la sesión anterior antes de abrir nada.
+    restore_prompt: bool,
     restore_active: Option<usize>,
     dialog: Option<Dialog>,
     /// Diálogo apartado mientras otro (huella, 2FA) pasa por delante.
@@ -312,10 +314,11 @@ impl App {
         let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build()?;
 
         let mut open_queue: VecDeque<SavedTab> = layout.into();
-        if open_queue.is_empty() {
-            open_queue.push_back(SavedTab::plain(TabKind::Local));
+        let has_session = open_queue.iter().any(|s| !matches!(s.kind, TabKind::Local));
+        let restore_prompt = has_session && settings.on_start == StartupChoice::Ask;
+        if has_session && settings.on_start == StartupChoice::Fresh {
+            open_queue.clear();
         }
-
         let mut app = Self {
             tabs: Vec::new(),
             active: 0,
@@ -366,6 +369,7 @@ impl App {
             session_secrets: HashMap::new(),
             save_queue: VecDeque::new(),
             open_queue,
+            restore_prompt,
             restore_active: Some(active),
             dialog: None,
             suspended: None,
@@ -1835,6 +1839,11 @@ impl App {
             self.dialog = Some(dialog);
         } else if let Some((account, secret)) = self.save_queue.pop_front() {
             self.save_secret(account, secret);
+        } else if self.restore_prompt && self.window_boot.elapsed() < RESTORE_PROMPT_DELAY {
+            // Un diálogo en los primeros fotogramas deja a la ventana sin recibir eventos.
+        } else if self.restore_prompt {
+            let remote = self.open_queue.iter().filter(|s| matches!(s.kind, TabKind::Connection(_) | TabKind::Explorer(_))).count();
+            self.dialog = Some(Dialog::RestoreSession(dialogs::RestorePrompt { tabs: self.open_queue.len(), remote, remember: false }));
         } else if self.window_boot.elapsed() < RESTORE_PROMPT_DELAY && self.open_queue.front().is_some_and(|s| !matches!(s.kind, TabKind::Local)) {
             // Un diálogo en los primeros fotogramas deja a la ventana sin recibir eventos de ratón ni teclado.
         } else if let Some(saved) = self.open_queue.pop_front() {
@@ -1857,9 +1866,6 @@ impl App {
                 TabKind::Containers | TabKind::Container | TabKind::Settings => {}
             }
         } else if let Some(active) = self.restore_active.take() {
-            if self.tabs.is_empty() {
-                let _ = self.open_local();
-            }
             self.active = active.min(self.tabs.len().saturating_sub(1));
         }
     }
@@ -1914,6 +1920,17 @@ impl App {
         section
     }
 
+    fn answer_restore(&mut self, restore: bool, remember: bool) {
+        self.restore_prompt = false;
+        if !restore {
+            self.open_queue.clear();
+        }
+        if remember {
+            self.settings.on_start = if restore { StartupChoice::Restore } else { StartupChoice::Fresh };
+            let _ = self.settings.save(&self.store.lock().unwrap());
+        }
+    }
+
     fn handle_dialog(&mut self, ctx: &egui::Context) {
         let Some(mut dialog) = self.dialog.take() else { return };
         let outcome = dialogs::show(ctx, &mut dialog, &self.connections);
@@ -1926,6 +1943,8 @@ impl App {
             (Outcome::Cancel, Dialog::Prompt(request, _)) => {
                 let _ = request.reply.send(None);
             }
+            (Outcome::Cancel, Dialog::RestoreSession(prompt)) => self.answer_restore(false, prompt.remember),
+            (Outcome::Submit, Dialog::RestoreSession(prompt)) => self.answer_restore(true, prompt.remember),
             (Outcome::Cancel, Dialog::Secret(_) | Dialog::ConfirmContainer(_) | Dialog::Unlock(_) | Dialog::Edit(_) | Dialog::Error(_) | Dialog::HostKeyChanged(_) | Dialog::About | Dialog::ConfirmClose(_) | Dialog::TelnetWarning(_) | Dialog::Snippet(_) | Dialog::SnippetVars(_) | Dialog::ConfirmReset(_)) => {}
             (Outcome::Cancel, dialog) => self.dialog = Some(dialog),
             (Outcome::Submit, Dialog::Prompt(request, answers)) => {
@@ -3663,7 +3682,7 @@ impl eframe::App for App {
         self.grid = pane::grid_for(ui, text_area, self.settings.font_size);
         let tabs_before = self.tabs.len();
         self.drive_pending();
-        if !self.open_queue.is_empty() && self.window_boot.elapsed() < RESTORE_PROMPT_DELAY {
+        if (!self.open_queue.is_empty() || self.restore_prompt) && self.window_boot.elapsed() < RESTORE_PROMPT_DELAY {
             ctx.request_repaint_after(Duration::from_millis(100));
         }
         if self.tabs.len() != tabs_before {

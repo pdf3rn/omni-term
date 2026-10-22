@@ -1215,7 +1215,9 @@ fn pane_ui(
                 let (glyph, glyph_color) = if entry.is_dir { (icons::FOLDER_CLOSED, theme::text()) } else { (icons::FILE, theme::subtext()) };
                 painter.text(Pos2::new(rect.min.x + 16.0, rect.center().y), Align2::CENTER_CENTER, glyph, FontId::proportional(theme::size::ICON), glyph_color);
                 let font = FontId::new(theme::size::BODY, if entry.is_dir { crate::ui::strong_family() } else { FontFamily::Proportional });
-                painter.text(Pos2::new(rect.min.x + 32.0, rect.center().y), Align2::LEFT_CENTER, &entry.name, font, theme::text());
+                let name_right = rect.max.x - if show_permissions { 340.0 } else { 230.0 };
+                let name = crate::ui_kit::fit_text(&painter, &entry.name, &font, (name_right - rect.min.x - 32.0).max(24.0));
+                painter.text(Pos2::new(rect.min.x + 32.0, rect.center().y), Align2::LEFT_CENTER, name, font, theme::text());
                 if let (true, Some(mode)) = (show_permissions, entry.permissions) {
                     painter.text(
                         Pos2::new(rect.max.x - 250.0, rect.center().y),
