@@ -900,6 +900,19 @@ pub fn shell(ctx: &egui::Context, spec: Spec, body: impl FnOnce(&mut egui::Ui) -
     action
 }
 
+/// Logo de la app como textura, creada una sola vez.
+pub fn app_logo(ctx: &egui::Context) -> egui::TextureHandle {
+    let id = Id::NULL.with("app-logo");
+    if let Some(texture) = ctx.data(|d| d.get_temp::<egui::TextureHandle>(id)) {
+        return texture;
+    }
+    let icon = eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png")).expect("assets/icon.png es un PNG válido");
+    let image = egui::ColorImage::from_rgba_unmultiplied([icon.width as usize, icon.height as usize], &icon.rgba);
+    let texture = ctx.load_texture("app-logo", image, egui::TextureOptions::LINEAR);
+    ctx.data_mut(|d| d.insert_temp(id, texture.clone()));
+    texture
+}
+
 pub const MIN_MASTER_KEY: usize = 8;
 
 /// Campo de contraseña con el ojo dentro para mostrar u ocultar lo escrito.
@@ -968,8 +981,14 @@ pub fn show(
         }
         Dialog::About => {
             let action = shell(ctx, Spec::new("Acerca de omni-term").width(420.0).cancel("Cerrar"), |ui| {
-                ui.label(RichText::new(format!("omni-term {}", env!("CARGO_PKG_VERSION"))).font(FontId::new(theme::size::HEADING, crate::ui::strong_family())));
-                ui.label(RichText::new("Terminal con SSH, SFTP, túneles y snippets, hecho con Rust y egui.").color(theme::subtext()));
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = theme::space::L;
+                    ui.add(egui::Image::new(&app_logo(ui.ctx())).fit_to_exact_size(egui::Vec2::splat(64.0)));
+                    ui.vertical(|ui| {
+                        ui.label(RichText::new(format!("omni-term {}", env!("CARGO_PKG_VERSION"))).font(FontId::new(theme::size::HEADING, crate::ui::strong_family())));
+                        ui.label(RichText::new("Terminal con SSH, SFTP, túneles y snippets, hecho con Rust y egui.").color(theme::subtext()));
+                    });
+                });
                 ui.add_space(theme::space::M);
                 ui.label(RichText::new("Fuentes").small().color(theme::subtext()));
                 ui.label("JetBrains Mono y Noto Sans, bajo la licencia SIL Open Font License.");
@@ -1837,16 +1856,29 @@ fn settings_content(ui: &mut egui::Ui, tab: SettingsTab, settings: &mut Settings
             ui.selectable_value(&mut settings.compact, false, "Cómoda");
             ui.selectable_value(&mut settings.compact, true, "Compacta");
         });
-        crate::ui_kit::setting_row(ui, "Barra de menú", Some("Si está oculta, Alt la muestra"), true, |ui| {
-            crate::ui_kit::toggle(ui, &mut settings.menu_bar);
+        crate::ui_kit::setting_row(ui, "Usar barra de título del sistema", Some("Se aplica al reiniciar"), true, |ui| {
+            crate::ui_kit::toggle(ui, &mut settings.system_titlebar);
         });
+        if settings.system_titlebar {
+            crate::ui_kit::setting_row(ui, "Barra de menú", Some("Si está oculta, Alt la muestra"), true, |ui| {
+                crate::ui_kit::toggle(ui, &mut settings.menu_bar);
+            });
+        } else {
+            crate::ui_kit::setting_row(ui, "Menú en la barra de título", Some("Si no, queda tras el botón ⋯"), true, |ui| {
+                crate::ui_kit::toggle(ui, &mut settings.titlebar_menu);
+            });
+            crate::ui_kit::setting_row(ui, "Altura de la barra de título", None, true, |ui| {
+                ui.selectable_value(&mut settings.titlebar_compact, false, "Cómoda");
+                ui.selectable_value(&mut settings.titlebar_compact, true, "Compacta");
+            });
+        }
         crate::ui_kit::setting_row(ui, "Confirmar al cerrar pestañas", Some("Solo si tienen algo en ejecución"), true, |ui| {
             crate::ui_kit::toggle(ui, &mut settings.confirm_close);
         });
         crate::ui_kit::setting_row(ui, "Al iniciar", Some("Pestañas de la sesión anterior"), false, |ui| {
             ui.selectable_value(&mut settings.on_start, StartupChoice::Ask, "Preguntar");
             ui.selectable_value(&mut settings.on_start, StartupChoice::Restore, "Restaurar");
-            ui.selectable_value(&mut settings.on_start, StartupChoice::Fresh, "Empezar de cero");
+            ui.selectable_value(&mut settings.on_start, StartupChoice::Fresh, "Vacío");
         });
     });
 

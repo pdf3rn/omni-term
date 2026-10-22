@@ -38,6 +38,52 @@ const MIN_TAB_WIDTH: f32 = 110.0;
 const NARROW_WINDOW: f32 = 760.0;
 const STRIP_WIDTH: f32 = 54.0;
 const TAB_BAR_HEIGHT: f32 = 40.0;
+const WINDOW_BUTTON_WIDTH: f32 = 46.0;
+/// Grosor de los bordes de la ventana sin decoraciones donde se puede redimensionar.
+const RESIZE_BORDER: f32 = 5.0;
+
+#[derive(Clone, Copy, PartialEq)]
+enum WindowButton {
+    Minimize,
+    Maximize,
+    Restore,
+    Close,
+}
+
+/// Botón de ventana de la barra integrada, dibujado con trazos para que no dependa de ninguna fuente.
+fn window_button(ui: &mut egui::Ui, rect: Rect, kind: WindowButton) -> egui::Response {
+    let id = egui::Id::NULL.with(("window-button", kind as u8));
+    let response = ui.interact(rect, id, Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
+    let closing = kind == WindowButton::Close;
+    if response.hovered() {
+        let fill = if closing { theme::red() } else { theme::selection() };
+        ui.painter().rect_filled(rect, 0.0, fill);
+    }
+    let ink = if closing && response.hovered() { Color32::WHITE } else { theme::text() };
+    let stroke = Stroke::new(theme::stroke::HAIRLINE, ink);
+    let c = rect.center();
+    let h = 5.0;
+    let painter = ui.painter();
+    match kind {
+        WindowButton::Minimize => {
+            painter.line_segment([Pos2::new(c.x - h, c.y), Pos2::new(c.x + h, c.y)], stroke);
+        }
+        WindowButton::Maximize => {
+            painter.rect_stroke(Rect::from_center_size(c, Vec2::splat(2.0 * h)), 1.0, stroke, egui::StrokeKind::Inside);
+        }
+        WindowButton::Restore => {
+            let front = Rect::from_center_size(Pos2::new(c.x - 1.0, c.y + 1.0), Vec2::splat(2.0 * h - 2.0));
+            painter.rect_stroke(front, 1.0, stroke, egui::StrokeKind::Inside);
+            painter.line_segment([Pos2::new(front.min.x + 2.0, front.min.y - 2.0), Pos2::new(front.max.x + 2.0, front.min.y - 2.0)], stroke);
+            painter.line_segment([Pos2::new(front.max.x + 2.0, front.min.y - 2.0), Pos2::new(front.max.x + 2.0, front.max.y - 2.0)], stroke);
+        }
+        WindowButton::Close => {
+            painter.line_segment([Pos2::new(c.x - h, c.y - h), Pos2::new(c.x + h, c.y + h)], stroke);
+            painter.line_segment([Pos2::new(c.x - h, c.y + h), Pos2::new(c.x + h, c.y - h)], stroke);
+        }
+    }
+    response
+}
 const TAB_HEIGHT: f32 = 34.0;
 const ROW_HEIGHT: f32 = 46.0;
 
@@ -1526,9 +1572,14 @@ impl App {
 
     /// Barra de menú superior. Devuelve el comando elegido o la conexión reciente que se pidió abrir.
     fn menu_bar(&mut self, ui: &mut egui::Ui) -> (Option<Command>, Option<Connection>) {
-        if !self.settings.menu_bar && !self.menu_peek {
+        let custom = !self.settings.system_titlebar;
+        if !custom && !self.settings.menu_bar && !self.menu_peek {
             return (None, None);
         }
+        let (menu_in_bar, bar_height) = (self.settings.titlebar_menu, if self.settings.titlebar_compact { 30.0 } else { 36.0 });
+        let title = if self.window_title.is_empty() { "omni-term".to_string() } else { self.window_title.clone() };
+        let ctx = self.ctx.clone();
+        let mut open_settings = false;
         let tab = self.tabs.get(self.active);
         let pane = tab.and_then(|t| t.pane());
         let has_terminal = pane.is_some();
@@ -1538,10 +1589,11 @@ impl App {
         let recents = self.recent_connections();
         let mut chosen: Option<Command> = None;
         let mut connect: Option<Connection> = None;
+        let (panel_height, margin) = if custom { (bar_height, Margin { left: 10, right: 0, top: 0, bottom: 0 }) } else { (30.0, Margin::symmetric(8, 3)) };
         Panel::top("menubar")
-            .exact_size(30.0)
+            .exact_size(panel_height)
             .show_separator_line(false)
-            .frame(Frame::NONE.fill(theme::mantle()).inner_margin(Margin::symmetric(8, 3)))
+            .frame(Frame::NONE.fill(theme::mantle()).inner_margin(margin))
             .show(ui, |ui| {
                 ui.visuals_mut().widgets.inactive.weak_bg_fill = Color32::TRANSPARENT;
                 let mut item = |ui: &mut egui::Ui, label: &str, shortcut: &str, enabled: bool, command: Command| {
@@ -1554,7 +1606,7 @@ impl App {
                         ui.close();
                     }
                 };
-                egui::MenuBar::new().ui(ui, |ui| {
+                let mut menus = |ui: &mut egui::Ui| {
                     ui.menu_button("Archivo", |ui| {
                         ui.set_min_width(300.0);
                         item(ui, "Nueva pestaña local", "Ctrl+Shift+T", true, Command::NewTab);
@@ -1618,8 +1670,62 @@ impl App {
                         item(ui, "Atajos de teclado", "", true, Command::Shortcuts);
                         item(ui, "Acerca de omni-term", "", true, Command::About);
                     });
-                });
+                };
+                if !custom {
+                    egui::MenuBar::new().ui(ui, |ui| menus(ui));
+                } else {
+                    let bar = ui.max_rect();
+                    let left = ui.horizontal_centered(|ui| {
+                        ui.add(egui::Image::new(&crate::dialogs::app_logo(ui.ctx())).fit_to_exact_size(Vec2::splat(16.0)));
+                        ui.add_space(theme::space::XS);
+                        egui::MenuBar::new().ui(ui, |ui| {
+                            ui.spacing_mut().button_padding.x = theme::space::M;
+                            ui.spacing_mut().item_spacing.x = 0.0;
+                            ui.style_mut().override_font_id = Some(FontId::new(theme::size::SMALL, FontFamily::Proportional));
+                            ui.visuals_mut().widgets.inactive.fg_stroke.color = theme::subtext();
+                            if menu_in_bar {
+                                menus(ui);
+                            } else {
+                                ui.menu_button(icons::DOTS, |ui| menus(ui));
+                            }
+                        });
+                    });
+                    let menu_end = left.response.rect.max.x;
+                    let controls = 3.0 * WINDOW_BUTTON_WIDTH;
+                    let zone = Rect::from_min_max(Pos2::new(menu_end + theme::space::S, bar.min.y), Pos2::new(bar.max.x - controls - 36.0, bar.max.y));
+                    let response = ui.interact(zone, egui::Id::NULL.with("titlebar-drag"), Sense::click_and_drag());
+                    ui.painter().with_clip_rect(zone).text(
+                        Pos2::new(bar.center().x, bar.center().y),
+                        egui::Align2::CENTER_CENTER,
+                        &title,
+                        FontId::new(theme::size::LABEL, FontFamily::Proportional),
+                        theme::subtext(),
+                    );
+                    let gear_slot = Rect::from_center_size(Pos2::new(bar.max.x - controls - 18.0, bar.center().y), Vec2::splat(1.0));
+                    if crate::ui_kit::IconButton::new(icons::GEAR).size(theme::size::ICON).show_at(ui, gear_slot, "titlebar-settings").on_hover_text("Ajustes (Ctrl+,)").clicked() {
+                        open_settings = true;
+                    }
+                    let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
+                    if response.double_clicked() {
+                        ctx.send_viewport_cmd(ViewportCommand::Maximized(!maximized));
+                    } else if response.drag_started_by(egui::PointerButton::Primary) {
+                        ctx.send_viewport_cmd(ViewportCommand::StartDrag);
+                    }
+                    for (index, kind) in [WindowButton::Minimize, if maximized { WindowButton::Restore } else { WindowButton::Maximize }, WindowButton::Close].into_iter().enumerate() {
+                        let rect = Rect::from_min_size(Pos2::new(bar.max.x - controls + index as f32 * WINDOW_BUTTON_WIDTH, bar.min.y), Vec2::new(WINDOW_BUTTON_WIDTH, bar.height()));
+                        if window_button(ui, rect, kind).clicked() {
+                            ctx.send_viewport_cmd(match kind {
+                                WindowButton::Minimize => ViewportCommand::Minimized(true),
+                                WindowButton::Maximize | WindowButton::Restore => ViewportCommand::Maximized(!maximized),
+                                WindowButton::Close => ViewportCommand::Close,
+                            });
+                        }
+                    }
+                }
             });
+        if open_settings {
+            chosen = Some(Command::Settings);
+        }
         (chosen, connect)
     }
 
@@ -1672,6 +1778,7 @@ impl App {
 
     /// Barra lateral reducida a iconos: terminal local, una insignia por conexión, buscar, nueva y ajustes.
     fn sidebar_strip(&mut self, ui: &mut egui::Ui, connect: &mut Option<Connection>, open_settings: &mut bool, new_connection: &mut bool) {
+        let system_bar = self.settings.system_titlebar;
         let mut palette = false;
         Panel::left("sidebar-strip")
             .exact_size(STRIP_WIDTH)
@@ -1710,7 +1817,7 @@ impl App {
                     }
                 }
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
-                    if icon(ui, icons::GEAR, "Ajustes") {
+                    if system_bar && icon(ui, icons::GEAR, "Ajustes") {
                         *open_settings = true;
                     }
                     if icon(ui, icons::PLUS, "Nueva conexión") {
@@ -1720,6 +1827,35 @@ impl App {
             });
         if palette && self.dialog.is_none() {
             self.palette = Some(Palette::default());
+        }
+    }
+
+    /// Bordes redimensionables y marco fino de la ventana sin decoraciones.
+    fn window_frame(&self, ctx: &egui::Context) {
+        if self.settings.system_titlebar || ctx.input(|i| i.viewport().maximized.unwrap_or(false) || i.viewport().fullscreen.unwrap_or(false)) {
+            return;
+        }
+        let rect = ctx.content_rect();
+        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::NULL.with("window-border")));
+        painter.rect_stroke(rect, 0.0, Stroke::new(theme::stroke::HAIRLINE, theme::surface()), egui::StrokeKind::Inside);
+        let Some(p) = ctx.input(|i| i.pointer.latest_pos()) else { return };
+        use egui::viewport::ResizeDirection as D;
+        let (left, right) = (p.x - rect.min.x < RESIZE_BORDER, rect.max.x - p.x < RESIZE_BORDER);
+        let (top, bottom) = (p.y - rect.min.y < RESIZE_BORDER, rect.max.y - p.y < RESIZE_BORDER);
+        let (direction, cursor) = match (left, right, top, bottom) {
+            (true, _, true, _) => (D::NorthWest, egui::CursorIcon::ResizeNwSe),
+            (_, true, true, _) => (D::NorthEast, egui::CursorIcon::ResizeNeSw),
+            (true, _, _, true) => (D::SouthWest, egui::CursorIcon::ResizeNeSw),
+            (_, true, _, true) => (D::SouthEast, egui::CursorIcon::ResizeNwSe),
+            (true, ..) => (D::West, egui::CursorIcon::ResizeHorizontal),
+            (_, true, ..) => (D::East, egui::CursorIcon::ResizeHorizontal),
+            (_, _, true, _) => (D::North, egui::CursorIcon::ResizeVertical),
+            (_, _, _, true) => (D::South, egui::CursorIcon::ResizeVertical),
+            _ => return,
+        };
+        ctx.set_cursor_icon(cursor);
+        if ctx.input(|i| i.pointer.primary_pressed()) {
+            ctx.send_viewport_cmd(ViewportCommand::BeginResize(direction));
         }
     }
 
@@ -2092,6 +2228,7 @@ impl App {
     }
 
     fn sidebar(&mut self, ui: &mut egui::Ui) {
+        let system_bar = self.settings.system_titlebar;
         let mut new_connection = false;
         let mut import = false;
         let mut connect: Option<Connection> = None;
@@ -2654,7 +2791,7 @@ impl App {
 
                     // Pie: solo avisos; el estado normal de los secretos no hace falta mostrarlo.
                     ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
-                        if crate::ui_kit::button_with(ui, Button::new(format!("{}  Ajustes", icons::GEAR)), crate::ui_kit::Variant::Secondary).clicked() {
+                        if system_bar && crate::ui_kit::button_with(ui, Button::new(format!("{}  Ajustes", icons::GEAR)), crate::ui_kit::Variant::Secondary).clicked() {
                             open_settings = true;
                         }
                         if keyring_fallback {
@@ -3396,6 +3533,7 @@ impl eframe::App for App {
             self.request_close(CloseAction::Window);
         }
         self.track_alt(&ctx);
+        self.window_frame(&ctx);
         let (menu_command, menu_connection) = self.menu_bar(ui);
         if menu_command.is_some() || menu_connection.is_some() {
             self.menu_peek = false;
