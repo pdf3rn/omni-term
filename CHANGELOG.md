@@ -3,6 +3,12 @@
 Todos los cambios notables de omni-term. A partir de la 0.1.0 este archivo lo actualiza release-plz a partir de los commits convencionales.
 El formato sigue [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y el proyecto usa [versionado semántico](https://semver.org/lang/es/).
 
+## [0.1.3](https://github.com/pdf3rn/omni-term/compare/v0.1.2...v0.1.3) - 2026-10-22
+
+### Fixed
+
+- *(ui)* keep egui visuals in sync with the app theme
+
 ## [0.1.2](https://github.com/pdf3rn/omni-term/compare/v0.1.1...v0.1.2) - 2026-10-22
 
 ### Added
