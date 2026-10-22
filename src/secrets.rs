@@ -126,7 +126,6 @@ impl MasterKeyStore {
         Ok(self.store.lock().unwrap().meta(SALT_KEY)?.is_some())
     }
 
-    #[cfg(test)]
     pub fn is_unlocked(&self) -> bool {
         self.key.lock().unwrap().is_some()
     }
@@ -210,6 +209,29 @@ pub enum Secrets {
 }
 
 const FORCE_MASTER_KEY: &str = "force_master_key";
+const MIGRATE_KEY: &str = "secrets_migrate_from";
+
+/// Almacén de origen de una migración pendiente de hacerse en el próximo arranque.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MigrateFrom {
+    Keyring,
+    Master,
+}
+
+/// Copia al almacén `to` los secretos de `accounts` que existan en `from` y, solo si todos se copiaron, los borra del origen.
+pub fn migrate(from: &dyn SecretStore, to: &dyn SecretStore, accounts: &[String]) -> Result<usize, SecretError> {
+    let mut moved = Vec::new();
+    for account in accounts {
+        if let Some(secret) = from.get(account)? {
+            to.set(account, &secret)?;
+            moved.push(account);
+        }
+    }
+    for account in &moved {
+        from.delete(account)?;
+    }
+    Ok(moved.len())
+}
 
 impl Secrets {
     pub fn select(store: Arc<Mutex<Store>>) -> Self {
@@ -234,6 +256,23 @@ impl Secrets {
 
     pub fn set_master_forced(store: &Store, forced: bool) -> anyhow::Result<()> {
         store.set_meta(FORCE_MASTER_KEY, if forced { b"1" } else { b"0" })
+    }
+
+    pub fn set_pending_migration(store: &Store, from: Option<MigrateFrom>) -> anyhow::Result<()> {
+        let value: &[u8] = match from {
+            Some(MigrateFrom::Keyring) => b"keyring",
+            Some(MigrateFrom::Master) => b"master",
+            None => b"",
+        };
+        store.set_meta(MIGRATE_KEY, value)
+    }
+
+    pub fn pending_migration(store: &Store) -> Option<MigrateFrom> {
+        match store.meta(MIGRATE_KEY) {
+            Ok(Some(v)) if v == b"keyring" => Some(MigrateFrom::Keyring),
+            Ok(Some(v)) if v == b"master" => Some(MigrateFrom::Master),
+            _ => None,
+        }
     }
 
     fn inner(&self) -> &dyn SecretStore {
@@ -292,6 +331,44 @@ mod tests {
     fn fresh() -> (Arc<Mutex<Store>>, MasterKeyStore) {
         let store = Arc::new(Mutex::new(Store::open_in_memory().unwrap()));
         (store.clone(), MasterKeyStore::with_cheap_kdf(store))
+    }
+
+    #[test]
+    fn migration_copies_then_removes_from_the_source() {
+        let (store, source) = fresh();
+        source.unlock("source key").unwrap();
+        source.set("connection:1:password", "one").unwrap();
+        source.set("connection:2:password", "two").unwrap();
+        let other = Arc::new(Mutex::new(Store::open_in_memory().unwrap()));
+        let target = MasterKeyStore::with_cheap_kdf(other);
+        target.unlock("target key").unwrap();
+
+        let accounts: Vec<String> = ["connection:1:password", "connection:2:password", "connection:3:password"].map(String::from).to_vec();
+        assert_eq!(migrate(&source, &target, &accounts).unwrap(), 2);
+        assert_eq!(target.get("connection:2:password").unwrap().as_deref().map(String::as_str), Some("two"));
+        assert!(source.get("connection:1:password").unwrap().is_none());
+        assert_eq!(store.lock().unwrap().secret_count().unwrap(), 0);
+    }
+
+    #[test]
+    fn a_failed_migration_keeps_the_source_untouched() {
+        let (store, source) = fresh();
+        source.unlock("source key").unwrap();
+        source.set("connection:1:password", "one").unwrap();
+        let locked_target = MasterKeyStore::with_cheap_kdf(Arc::new(Mutex::new(Store::open_in_memory().unwrap())));
+        let accounts = vec!["connection:1:password".to_string()];
+        assert!(migrate(&source, &locked_target, &accounts).is_err());
+        assert_eq!(store.lock().unwrap().secret_count().unwrap(), 1);
+    }
+
+    #[test]
+    fn pending_migration_round_trips() {
+        let store = Store::open_in_memory().unwrap();
+        assert_eq!(Secrets::pending_migration(&store), None);
+        Secrets::set_pending_migration(&store, Some(MigrateFrom::Keyring)).unwrap();
+        assert_eq!(Secrets::pending_migration(&store), Some(MigrateFrom::Keyring));
+        Secrets::set_pending_migration(&store, None).unwrap();
+        assert_eq!(Secrets::pending_migration(&store), None);
     }
 
     #[test]

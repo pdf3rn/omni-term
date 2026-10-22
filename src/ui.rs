@@ -20,7 +20,7 @@ use crate::known_hosts;
 use crate::palette::{self, Command, Palette, Target};
 use crate::pane::{self, bold_family, Pane, PaneRequest, PADDING};
 use crate::settings::{CursorChoice, Settings, StartupChoice, ThemeChoice, DEFAULT_FONT_SIZE, MAX_FONT_SIZE, MIN_FONT_SIZE};
-use crate::secrets::{account_for, SecretError, SecretKind, SecretStore, Secrets};
+use crate::secrets::{account_for, KeyringStore, MasterKeyStore, MigrateFrom, SecretError, SecretKind, SecretStore, Secrets};
 use crate::ssh::{self, Credentials, JumpHost, TunnelState, Tunnels, UiEvent};
 use crate::store::{self, Auth, Connection, Forward, Protocol, SavedTab, Snippet, Store, TabKind};
 use crate::telnet;
@@ -288,6 +288,12 @@ pub struct App {
     open_queue: VecDeque<SavedTab>,
     /// Hay que preguntar si se restaura la sesión anterior antes de abrir nada.
     restore_prompt: bool,
+    /// Migración de secretos entre almacenes que se hace en este arranque.
+    pending_migration: Option<MigrateFrom>,
+    /// Clave maestra usada como origen o destino de una migración cuando el almacén activo es el llavero.
+    migration_master: Option<Arc<MasterKeyStore>>,
+    /// Si el llavero del sistema funciona; se sondea una sola vez cuando hace falta.
+    keyring_probe: Option<bool>,
     restore_active: Option<usize>,
     dialog: Option<Dialog>,
     /// Diálogo apartado mientras otro (huella, 2FA) pasa por delante.
@@ -316,6 +322,12 @@ impl App {
         let store = Arc::new(Mutex::new(store));
         let store_meta_flag = matches!(store.lock().unwrap().meta("window_maximized"), Ok(Some(v)) if v == b"1");
         let secrets = Secrets::select(store.clone());
+        let pending_migration = Secrets::pending_migration(&store.lock().unwrap());
+        let keyring_probe = match (&secrets, Secrets::is_master_forced(&store.lock().unwrap())) {
+            (Secrets::Keyring(_), _) => Some(true),
+            (Secrets::Master(_), false) => Some(false),
+            (Secrets::Master(_), true) => None,
+        };
         let recent: Vec<(i64, u64)> = match store.lock().unwrap().meta("recent_connections") {
             Ok(Some(bytes)) => parse_recent(&String::from_utf8_lossy(&bytes)),
             _ => Vec::new(),
@@ -361,7 +373,7 @@ impl App {
 
         let mut open_queue: VecDeque<SavedTab> = layout.into();
         let has_session = open_queue.iter().any(|s| !matches!(s.kind, TabKind::Local));
-        let restore_prompt = has_session && settings.on_start == StartupChoice::Ask;
+        let restore_prompt = has_session && settings.on_start == StartupChoice::Ask && std::env::var_os(RESTARTED_ENV).is_none();
         if has_session && settings.on_start == StartupChoice::Fresh {
             open_queue.clear();
         }
@@ -416,6 +428,9 @@ impl App {
             save_queue: VecDeque::new(),
             open_queue,
             restore_prompt,
+            pending_migration,
+            migration_master: None,
+            keyring_probe,
             restore_active: Some(active),
             dialog: None,
             suspended: None,
@@ -878,8 +893,90 @@ impl App {
         }
     }
 
+    /// Clave maestra en uso: la del almacén activo o la de una migración en curso.
+    fn active_master(&self) -> Option<Arc<MasterKeyStore>> {
+        self.secrets.master().cloned().or_else(|| self.migration_master.clone())
+    }
+
+    /// Cuentas bajo las que puede haber contraseñas o passphrases guardadas.
+    fn secret_accounts(&self) -> Vec<String> {
+        self.connections
+            .iter()
+            .filter_map(|c| c.id)
+            .flat_map(|id| [account_for(id, SecretKind::Password), account_for(id, SecretKind::Passphrase)])
+            .collect()
+    }
+
+    /// Cuántos secretos guardados hay en el almacén activo.
+    fn stored_secret_count(&self) -> usize {
+        if self.secrets.master().is_some() {
+            return self.store.lock().unwrap().secret_count().unwrap_or(0);
+        }
+        self.secret_accounts().iter().filter(|a| matches!(KeyringStore.get(a), Ok(Some(_)))).count()
+    }
+
+    fn begin_migration(&mut self, from: MigrateFrom) {
+        Secrets::set_pending_migration(&self.store.lock().unwrap(), None).ok();
+        let present = match from {
+            MigrateFrom::Master => self.store.lock().unwrap().secret_count().unwrap_or(0) > 0,
+            MigrateFrom::Keyring => self.secret_accounts().iter().any(|a| matches!(KeyringStore.get(a), Ok(Some(_)))),
+        };
+        if !present {
+            return;
+        }
+        if self.active_master().is_none() {
+            self.migration_master = Some(Arc::new(MasterKeyStore::new(self.store.clone())));
+        }
+        if self.active_master().is_some_and(|m| m.is_unlocked()) {
+            self.run_migration(from);
+        } else {
+            self.ask_unlock(Pending::Migrate(from));
+        }
+    }
+
+    fn run_migration(&mut self, from: MigrateFrom) {
+        let Some(master) = self.active_master() else { return };
+        let accounts = self.secret_accounts();
+        let result = match from {
+            MigrateFrom::Keyring => crate::secrets::migrate(&KeyringStore, master.as_ref(), &accounts),
+            MigrateFrom::Master => crate::secrets::migrate(master.as_ref(), &KeyringStore, &accounts),
+        };
+        match result {
+            Ok(1) => self.notify("Se migró 1 contraseña al nuevo almacén"),
+            Ok(count) => self.notify(format!("Se migraron {count} contraseñas al nuevo almacén")),
+            Err(error) => self.dialog = Some(Dialog::failure("No se pudieron migrar las contraseñas", error)),
+        }
+    }
+
+    /// Aplica el cambio de almacén elegido; con `migrate`, las contraseñas se copian en el próximo arranque.
+    fn apply_secrets_mode(&mut self, to_master: bool, migrate: bool) {
+        let active_master = self.secrets.master().is_some();
+        let store = self.store.lock().unwrap();
+        let result = Secrets::set_master_forced(&store, to_master).and_then(|()| {
+            let from = (migrate && to_master != active_master).then_some(if active_master { MigrateFrom::Master } else { MigrateFrom::Keyring });
+            Secrets::set_pending_migration(&store, from)
+        });
+        drop(store);
+        match result {
+            Err(error) => self.dialog = Some(Dialog::failure("No se pudo guardar el ajuste", format!("{error:#}"))),
+            Ok(()) if to_master == active_master => self.notify("Se mantiene el almacén actual"),
+            Ok(()) => self.dialog = Some(Dialog::Restart),
+        }
+    }
+
+    fn restart_app(&mut self) {
+        let spawned = std::env::current_exe().and_then(|exe| std::process::Command::new(exe).env(RESTARTED_ENV, "1").spawn());
+        match spawned {
+            Ok(_) => {
+                self.close_confirmed = true;
+                self.ctx.send_viewport_cmd(ViewportCommand::Close);
+            }
+            Err(error) => self.dialog = Some(Dialog::failure("No se pudo reiniciar", format!("{error:#}"))),
+        }
+    }
+
     fn ask_unlock(&mut self, then: Pending) {
-        let creating = self.secrets.master().is_some_and(|m| !m.is_initialized().unwrap_or(false));
+        let creating = self.active_master().is_some_and(|m| !m.is_initialized().unwrap_or(false));
         self.dialog = Some(Dialog::Unlock(UnlockPrompt {
             creating,
             reveal: false,
@@ -1975,6 +2072,10 @@ impl App {
             self.dialog = Some(dialog);
         } else if let Some((account, secret)) = self.save_queue.pop_front() {
             self.save_secret(account, secret);
+        } else if self.pending_migration.is_some() && self.window_boot.elapsed() < RESTORE_PROMPT_DELAY {
+            // Mismo motivo que abajo: nada de diálogos en los primeros fotogramas.
+        } else if let Some(from) = self.pending_migration.take() {
+            self.begin_migration(from);
         } else if self.restore_prompt && self.window_boot.elapsed() < RESTORE_PROMPT_DELAY {
             // Un diálogo en los primeros fotogramas deja a la ventana sin recibir eventos.
         } else if self.restore_prompt {
@@ -2036,21 +2137,25 @@ impl App {
 
     /// Dibuja la página de ajustes y aplica lo que el usuario haya cambiado, al instante.
     fn settings_page(&mut self, ui: &mut egui::Ui, area: Rect, mut section: dialogs::SettingsTab) -> dialogs::SettingsTab {
-        let mut forced = Secrets::is_master_forced(&self.store.lock().unwrap());
-        let (forced_before, settings_before) = (forced, self.settings.clone());
+        let active_master = self.secrets.master().is_some();
+        let forced = Secrets::is_master_forced(&self.store.lock().unwrap());
+        let keyring_available = *self.keyring_probe.get_or_insert_with(KeyringStore::probe);
+        let mut choice = dialogs::SecretsChoice { master: forced || active_master, keyring_available, active_master };
+        let (master_before, settings_before) = (choice.master, self.settings.clone());
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(area).layout(egui::Layout::top_down(egui::Align::Min)));
-        dialogs::settings_page(&mut child, &mut section, &mut self.settings, &mut forced, &mut self.known_hosts, &self.connections);
+        dialogs::settings_page(&mut child, &mut section, &mut self.settings, &mut choice, &mut self.known_hosts, &self.connections);
         if let Some(entry) = self.known_hosts.delete.take() {
             self.forget_known_hosts(vec![entry], None);
         }
         if self.settings != settings_before {
             self.apply_settings();
         }
-        if forced != forced_before {
-            let result = Secrets::set_master_forced(&self.store.lock().unwrap(), forced);
-            match result {
-                Ok(()) => self.notify("Reinicia omni-term para aplicar el cambio de almacén de secretos"),
-                Err(error) => self.dialog = Some(Dialog::failure("No se pudo guardar el ajuste", format!("{error:#}"))),
+        if choice.master != master_before && self.dialog.is_none() {
+            let count = self.stored_secret_count();
+            if choice.master == active_master || count == 0 {
+                self.apply_secrets_mode(choice.master, false);
+            } else {
+                self.dialog = Some(Dialog::SecretsMode(dialogs::SecretsModePrompt { to_master: choice.master, count }));
             }
         }
         section
@@ -2079,6 +2184,10 @@ impl App {
             (Outcome::Cancel, Dialog::Prompt(request, _)) => {
                 let _ = request.reply.send(None);
             }
+            (Outcome::Submit, Dialog::SecretsMode(prompt)) => self.apply_secrets_mode(prompt.to_master, true),
+            (Outcome::Alternate, Dialog::SecretsMode(prompt)) => self.apply_secrets_mode(prompt.to_master, false),
+            (Outcome::Submit, Dialog::Restart) => self.restart_app(),
+            (Outcome::Cancel, Dialog::SecretsMode(_) | Dialog::Restart) => {}
             (Outcome::Cancel, Dialog::RestoreSession(prompt)) => self.answer_restore(false, prompt.remember),
             (Outcome::Submit, Dialog::RestoreSession(prompt)) => self.answer_restore(true, prompt.remember),
             (Outcome::Cancel, Dialog::Secret(_) | Dialog::ConfirmContainer(_) | Dialog::Unlock(_) | Dialog::Edit(_) | Dialog::Error(_) | Dialog::HostKeyChanged(_) | Dialog::About | Dialog::ConfirmClose(_) | Dialog::TelnetWarning(_) | Dialog::Snippet(_) | Dialog::SnippetVars(_) | Dialog::ConfirmReset(_)) => {}
@@ -2181,7 +2290,7 @@ impl App {
                 self.perform_close(confirm.action);
             }
             (Outcome::Delete, Dialog::ConfirmReset(then)) => {
-                if let Some(master) = self.secrets.master() {
+                if let Some(master) = self.active_master() {
                     if let Err(error) = master.reset() {
                         self.dialog = Some(Dialog::failure("No se pudieron borrar los secretos", format!("{error:#}")));
                         return;
@@ -2201,7 +2310,7 @@ impl App {
                 self.continue_open(prompt.connection, prompt.slot, prompt.purpose);
             }
             (Outcome::Submit, Dialog::Unlock(mut prompt)) => {
-                let Some(master) = self.secrets.master().cloned() else { return };
+                let Some(master) = self.active_master() else { return };
                 if prompt.input.is_empty() {
                     prompt.error = Some("Escribe la clave maestra".into());
                 } else if prompt.creating && prompt.input != prompt.confirm {
@@ -2212,6 +2321,7 @@ impl App {
                             match prompt.then {
                                 Pending::Open(connection, slot, purpose) => self.continue_open(connection, slot, purpose),
                                 Pending::Save { account, secret } => self.save_secret(account, secret),
+                                Pending::Migrate(from) => self.run_migration(from),
                             }
                             return;
                         }
@@ -3446,6 +3556,9 @@ fn clipboard_event() -> egui::Event {
     egui::Event::Paste(arboard::Clipboard::new().ok().and_then(|mut c| c.get_text().ok()).unwrap_or_default())
 }
 
+/// Variable que marca un reinicio pedido por la propia app: la sesión se restaura sin preguntar.
+const RESTARTED_ENV: &str = "OMNITERM_RESTARTED";
+
 const RESTORE_PROMPT_DELAY: Duration = Duration::from_millis(1000);
 
 impl eframe::App for App {
@@ -3846,7 +3959,7 @@ impl eframe::App for App {
         self.grid = pane::grid_for(ui, text_area, self.settings.font_size);
         let tabs_before = self.tabs.len();
         self.drive_pending();
-        if (!self.open_queue.is_empty() || self.restore_prompt) && self.window_boot.elapsed() < RESTORE_PROMPT_DELAY {
+        if (!self.open_queue.is_empty() || self.restore_prompt || self.pending_migration.is_some()) && self.window_boot.elapsed() < RESTORE_PROMPT_DELAY {
             ctx.request_repaint_after(Duration::from_millis(100));
         }
         if self.tabs.len() != tabs_before {

@@ -961,6 +961,10 @@ impl Store {
         Ok(())
     }
 
+    pub fn secret_count(&self) -> anyhow::Result<usize> {
+        Ok(self.db.query_row("SELECT COUNT(*) FROM secrets", [], |row| row.get::<_, i64>(0))? as usize)
+    }
+
     pub fn clear_secrets(&self) -> anyhow::Result<()> {
         self.db.execute("DELETE FROM secrets", [])?;
         self.db.execute("DELETE FROM meta WHERE key IN ('kdf_salt', 'kdf_check')", [])?;
