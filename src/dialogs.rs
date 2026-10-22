@@ -510,6 +510,22 @@ pub struct SecretPrompt {
 pub enum Pending {
     Open(Connection, Option<u64>, Purpose),
     Save { account: String, secret: Zeroizing<String> },
+    Migrate(crate::secrets::MigrateFrom),
+}
+
+/// Estado del selector de almacén de secretos en Ajustes.
+pub struct SecretsChoice {
+    /// Elegido: clave maestra (si no, llavero).
+    pub master: bool,
+    pub keyring_available: bool,
+    /// Almacén en uso en esta ejecución.
+    pub active_master: bool,
+}
+
+/// Cambio de almacén pendiente de confirmar.
+pub struct SecretsModePrompt {
+    pub to_master: bool,
+    pub count: usize,
 }
 
 pub struct UnlockPrompt {
@@ -646,6 +662,8 @@ pub enum Dialog {
     Prompt(PromptRequest, Vec<String>),
     ConfirmReset(Pending),
     RestoreSession(RestorePrompt),
+    SecretsMode(SecretsModePrompt),
+    Restart,
     ConfirmContainer(ContainerConfirm),
 }
 
@@ -668,6 +686,8 @@ pub enum Outcome {
     Forget,
     /// «Probar conexión» en el editor de conexión.
     Test,
+    /// Segunda opción de un diálogo con dos salidas afirmativas.
+    Alternate,
 }
 
 fn id() -> Id {
@@ -1057,6 +1077,39 @@ pub fn show(
                 }
                 ui.add_space(theme::space::XS);
                 crate::ui_kit::switch_labeled(ui, &mut prompt.remember, "Recordar mi elección");
+                false
+            });
+            plain(action, Outcome::Submit)
+        }
+        Dialog::SecretsMode(prompt) => {
+            let target = if prompt.to_master { "Las contraseñas se cifrarán con una clave maestra." } else { "Las contraseñas se guardarán en el llavero del sistema." };
+            let mut spec = Spec::new("Cambiar el almacén de credenciales").width(440.0).icon(DialogIcon::Info);
+            if prompt.count > 0 {
+                spec = spec.accept("Migrar").extra("Cambiar sin migrar");
+            } else {
+                spec = spec.accept("Cambiar");
+            }
+            let count = prompt.count;
+            let action = shell(ctx, spec, |ui| {
+                ui.label(target);
+                if count > 0 {
+                    let saved = if count == 1 { "1 contraseña guardada".to_string() } else { format!("{count} contraseñas guardadas") };
+                    ui.label(RichText::new(format!("Hay {saved} en el almacén actual. Si no las migras, omni-term te las volverá a pedir.")).color(theme::subtext()));
+                    ui.label(RichText::new("La migración se hace al reiniciar y borra las copias antiguas solo si todo salió bien.").small().color(theme::subtext()));
+                }
+                false
+            });
+            match action {
+                Action::Accept => Outcome::Submit,
+                Action::Cancel => Outcome::Cancel,
+                Action::Extra(_) => Outcome::Alternate,
+                Action::None => Outcome::None,
+            }
+        }
+        Dialog::Restart => {
+            let spec = Spec::new("Reiniciar para aplicar").width(400.0).accept("Reiniciar ahora").cancel("Más tarde").icon(DialogIcon::Info);
+            let action = shell(ctx, spec, |ui| {
+                ui.label("El cambio de almacén de credenciales se aplica al reiniciar omni-term. Las pestañas abiertas se restauran.");
                 false
             });
             plain(action, Outcome::Submit)
@@ -1784,7 +1837,7 @@ const SETTINGS_SECTIONS: [(SettingsTab, &str); 3] = [(SettingsTab::General, "Gen
 const SETTINGS_MAX_WIDTH: f32 = 720.0;
 
 /// Página de ajustes de una pestaña: lista de secciones a la izquierda y el contenido a la derecha.
-pub fn settings_page(ui: &mut egui::Ui, tab: &mut SettingsTab, settings: &mut Settings, master_forced: &mut bool, hosts: &mut KnownHostsView, connections: &[Connection]) {
+pub fn settings_page(ui: &mut egui::Ui, tab: &mut SettingsTab, settings: &mut Settings, secrets: &mut SecretsChoice, hosts: &mut KnownHostsView, connections: &[Connection]) {
     ui.horizontal_top(|ui| {
         ui.spacing_mut().item_spacing = egui::vec2(8.0, 4.0);
         ui.vertical(|ui| {
@@ -1813,13 +1866,13 @@ pub fn settings_page(ui: &mut egui::Ui, tab: &mut SettingsTab, settings: &mut Se
             ui.set_max_width(width);
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 ui.set_max_width(width - 12.0);
-                settings_content(ui, *tab, settings, master_forced, hosts, connections);
+                settings_content(ui, *tab, settings, secrets, hosts, connections);
             });
         });
     });
 }
 
-fn settings_content(ui: &mut egui::Ui, tab: SettingsTab, settings: &mut Settings, master_forced: &mut bool, hosts: &mut KnownHostsView, connections: &[Connection]) {
+fn settings_content(ui: &mut egui::Ui, tab: SettingsTab, settings: &mut Settings, secrets: &mut SecretsChoice, hosts: &mut KnownHostsView, connections: &[Connection]) {
     if tab == SettingsTab::Hosts {
         known_hosts_body(ui, hosts, connections);
         return;
@@ -1925,10 +1978,30 @@ fn settings_content(ui: &mut egui::Ui, tab: SettingsTab, settings: &mut Settings
     });
 
     crate::ui_kit::card(ui, "Secretos", |ui| {
-        crate::ui_kit::setting_row(ui, "Usar siempre la clave maestra", Some("Aunque haya keyring. Se aplica al reiniciar"), false, |ui| {
-            crate::ui_kit::toggle(ui, master_forced);
+        crate::ui_kit::setting_row(ui, "Modo de cifrado de credenciales", Some("Dónde se guardan las contraseñas. Se aplica al reiniciar"), false, |ui| {
+            let name = |master: bool| if master { "Clave maestra" } else { "Llavero del sistema" };
+            egui::ComboBox::from_id_salt("secrets-mode")
+                .width(190.0)
+                .selected_text(name(secrets.master))
+                .show_ui(ui, |ui| {
+                    let keyring_label = if secrets.keyring_available { "Llavero del sistema" } else { "Llavero del sistema (no disponible)" };
+                    ui.add_enabled_ui(secrets.keyring_available, |ui| ui.selectable_value(&mut secrets.master, false, keyring_label));
+                    ui.selectable_value(&mut secrets.master, true, "Clave maestra");
+                })
+                .response
+                .hand();
         });
+        if secrets.master != secrets.active_master {
+            let text = format!("En uso ahora: {}. El cambio se aplica al reiniciar.", name_of(secrets.active_master));
+            ui.label(RichText::new(text).small().color(theme::subtext()));
+        } else if !secrets.keyring_available {
+            ui.label(RichText::new("Este sistema no tiene llavero disponible.").small().color(theme::subtext()));
+        }
     });
+}
+
+fn name_of(master: bool) -> &'static str {
+    if master { "clave maestra" } else { "llavero del sistema" }
 }
 
 const DEFAULT_FONT: &str = "JetBrains Mono (incluida)";
