@@ -3305,9 +3305,35 @@ fn tab(
 }
 
 /// Hasta que pasa este tiempo desde el arranque no se abren pestañas remotas restauradas.
+fn clipboard_event() -> egui::Event {
+    egui::Event::Paste(arboard::Clipboard::new().ok().and_then(|mut c| c.get_text().ok()).unwrap_or_default())
+}
+
 const RESTORE_PROMPT_DELAY: Duration = Duration::from_millis(1000);
 
 impl eframe::App for App {
+    /// Con los atajos de portapapeles de eframe apagados (para que Ctrl+C/V lleguen a la terminal),
+    /// los campos de texto los reciben aquí.
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        if !ctx.text_edit_focused() {
+            return;
+        }
+        let mut extra = Vec::new();
+        for event in &raw_input.events {
+            let egui::Event::Key { key, pressed: true, modifiers, .. } = event else { continue };
+            match key {
+                Key::V if modifiers.command => extra.push(clipboard_event()),
+                Key::Insert if modifiers.shift && !modifiers.command => extra.push(clipboard_event()),
+                Key::C | Key::Insert if modifiers.command && !modifiers.shift => extra.push(egui::Event::Copy),
+                Key::X if modifiers.command => extra.push(egui::Event::Cut),
+                Key::Delete if modifiers.shift && !modifiers.command => extra.push(egui::Event::Cut),
+                _ => {}
+            }
+        }
+        extra.retain(|e| !matches!(e, egui::Event::Paste(text) if text.is_empty()));
+        raw_input.events.extend(extra);
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.sync_theme(&ctx);

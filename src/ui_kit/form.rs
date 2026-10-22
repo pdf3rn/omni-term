@@ -65,6 +65,23 @@ pub fn search_field(ui: &mut Ui, value: &mut String, hint: &str, width: f32) -> 
     .inner
 }
 
+/// Campo de contraseña con el ojo para mostrar u ocultar lo escrito dentro del propio campo.
+/// `width` es el ancho, o `f32::INFINITY` para ocupar todo el disponible.
+pub fn password_field(ui: &mut Ui, value: &mut String, reveal: &mut bool, hint: &str, width: f32) -> egui::Response {
+    let width = if width.is_finite() { width } else { ui.available_width() };
+    let margin = egui::Margin { left: theme::space::S as i8, right: 32, top: theme::space::XXS as i8, bottom: theme::space::XXS as i8 };
+    let field = ui.add_sized(
+        [width, theme::height::FIELD],
+        TextEdit::singleline(value).password(!*reveal).hint_text(hint).margin(margin).align(egui::Align2::LEFT_CENTER),
+    );
+    let slot = egui::Rect::from_center_size(egui::pos2(field.rect.max.x - 17.0, field.rect.center().y), egui::Vec2::splat(1.0));
+    let (glyph, tip) = if *reveal { (crate::icons::EYE_OFF, "Ocultar") } else { (crate::icons::EYE, "Mostrar") };
+    if super::IconButton::new(glyph).size(theme::size::ICON_SM).show_at(ui, slot, ("reveal", field.id)).on_hover_text(tip).clicked() {
+        *reveal = !*reveal;
+    }
+    field
+}
+
 /// Mensaje de error pequeño bajo un campo.
 pub fn error_line(ui: &mut Ui, error: &Option<String>) {
     if let Some(message) = error {
