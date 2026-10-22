@@ -81,6 +81,8 @@ impl AnsiChoice {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Settings {
+    /// Qué hacer con las pestañas de la sesión anterior al arrancar.
+    pub on_start: StartupChoice,
     pub accent: AccentChoice,
     pub ansi: AnsiChoice,
     /// Barra de menú siempre visible; si no, `Alt` la muestra un momento.
@@ -103,6 +105,27 @@ pub struct Settings {
     pub scrollback: usize,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum StartupChoice {
+    Ask,
+    Restore,
+    Fresh,
+}
+
+impl StartupChoice {
+    fn key(self) -> &'static str {
+        match self {
+            Self::Ask => "ask",
+            Self::Restore => "restore",
+            Self::Fresh => "fresh",
+        }
+    }
+
+    fn from_key(key: &str) -> Option<Self> {
+        [Self::Ask, Self::Restore, Self::Fresh].into_iter().find(|c| c.key() == key)
+    }
+}
+
 pub const MIN_FONT_SIZE: f32 = 9.0;
 pub const MAX_FONT_SIZE: f32 = 32.0;
 pub const DEFAULT_FONT_SIZE: f32 = 15.0;
@@ -112,6 +135,7 @@ pub const MAX_SCROLLBACK: usize = 200_000;
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            on_start: StartupChoice::Ask,
             accent: AccentChoice::Blue,
             ansi: AnsiChoice::Catppuccin,
             menu_bar: true,
@@ -137,6 +161,7 @@ impl Settings {
     pub fn load(store: &Store) -> Self {
         let defaults = Self::default();
         Self {
+            on_start: text(store, "setting.on_start").and_then(|k| StartupChoice::from_key(&k)).unwrap_or(defaults.on_start),
             accent: text(store, "setting.accent").and_then(|k| AccentChoice::from_key(&k)).unwrap_or(defaults.accent),
             ansi: text(store, "setting.ansi").and_then(|k| AnsiChoice::from_key(&k)).unwrap_or(defaults.ansi),
             menu_bar: text(store, "setting.menu_bar").map_or(defaults.menu_bar, |t| t == "1"),
@@ -181,6 +206,7 @@ impl Settings {
             CursorChoice::Beam => "beam",
             CursorChoice::Underline => "underline",
         };
+        store.set_meta("setting.on_start", self.on_start.key().as_bytes())?;
         store.set_meta("setting.accent", self.accent.key().as_bytes())?;
         store.set_meta("setting.ansi", self.ansi.key().as_bytes())?;
         store.set_meta("setting.menu_bar", if self.menu_bar { b"1" } else { b"0" })?;
@@ -212,6 +238,7 @@ mod tests {
     fn settings_round_trip() {
         let store = Store::open_in_memory().unwrap();
         let settings = Settings {
+            on_start: StartupChoice::Restore,
             accent: AccentChoice::Mauve,
             ansi: AnsiChoice::Gnome,
             menu_bar: false,
