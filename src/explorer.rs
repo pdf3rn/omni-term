@@ -821,7 +821,7 @@ impl Explorer {
                             for shift in [6, 3, 0] {
                                 let mask = bit << shift;
                                 let mut on = *mode & mask != 0;
-                                if ui.checkbox(&mut on, "").hand().changed() {
+                                if crate::ui_kit::switch(ui, &mut on).changed() {
                                     *mode = if on { *mode | mask } else { *mode & !mask };
                                 }
                             }
@@ -847,7 +847,7 @@ impl Explorer {
                 let name = conflict.name.clone();
                 match shell(ctx, spec, |ui| {
                     ui.label(format!("\"{name}\" ya existe. ¿Qué hacemos?"));
-                    ui.checkbox(apply_all, "Aplicar a todos los conflictos de esta transferencia").hand();
+                    crate::ui_kit::switch_labeled(ui, apply_all, "Aplicar a todos los conflictos de esta transferencia");
                     false
                 }) {
                     Action::Accept => Outcome::Resolve(Resolution::Replace, *apply_all),

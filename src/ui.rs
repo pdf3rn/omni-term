@@ -3718,11 +3718,11 @@ impl eframe::App for App {
                                     }
                                     ui.separator();
                                     let mut dtr = status.dtr;
-                                    if ui.checkbox(&mut dtr, "DTR").clicked() {
+                                    if crate::ui_kit::switch_labeled(ui, &mut dtr, "DTR").clicked() {
                                         session.control(term::Control::Dtr(dtr));
                                     }
                                     let mut rts = status.rts;
-                                    if ui.checkbox(&mut rts, "RTS").clicked() {
+                                    if crate::ui_kit::switch_labeled(ui, &mut rts, "RTS").clicked() {
                                         session.control(term::Control::Rts(rts));
                                     }
                                 });

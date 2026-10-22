@@ -231,7 +231,7 @@ impl ContainersView {
                 if ui.add(egui::Button::new(crate::icons::REFRESH).frame(false)).on_hover_text("Actualizar ahora").hand().clicked() {
                     self.refresh.store(true, Ordering::SeqCst);
                 }
-                ui.checkbox(&mut self.show_stopped, "Mostrar apagados").hand();
+                crate::ui_kit::switch_labeled(ui, &mut self.show_stopped, "Mostrar apagados");
                 crate::ui_kit::search_field(ui, &mut self.search, "Buscar", 180.0);
             });
         });

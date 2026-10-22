@@ -62,16 +62,55 @@ pub fn setting_row(ui: &mut Ui, label: &str, hint: Option<&str>, divider: bool, 
     }
 }
 
-/// Casilla con borde propio: sobre el fondo de una tarjeta clara la casilla vacía casi no se vería.
-pub fn toggle(ui: &mut Ui, value: &mut bool) -> egui::Response {
-    ui.scope(|ui| {
-        let stroke = egui::Stroke::new(theme::stroke::HAIRLINE, theme::subtext());
-        let widgets = &mut ui.visuals_mut().widgets;
-        widgets.inactive.bg_stroke = stroke;
-        widgets.hovered.bg_stroke = stroke;
-        ui.checkbox(value, "").hand()
+const SWITCH_WIDTH: f32 = 30.0;
+const SWITCH_HEIGHT: f32 = 16.0;
+
+/// Interruptor de encendido y apagado, sin etiqueta.
+pub fn switch(ui: &mut Ui, value: &mut bool) -> egui::Response {
+    let enabled = ui.is_enabled();
+    let (rect, mut response) = ui.allocate_exact_size(egui::vec2(SWITCH_WIDTH, SWITCH_HEIGHT), egui::Sense::click());
+    if enabled {
+        response = response.hand();
+    }
+    if response.clicked() {
+        *value = !*value;
+        response.mark_changed();
+    }
+    let on = ui.ctx().animate_bool_with_time(response.id, *value, 0.12);
+    let track = if on > 0.5 { theme::accent() } else { theme::surface() };
+    let border = if on > 0.5 { theme::accent() } else { theme::subtext() };
+    let fade = if enabled { 1.0 } else { 0.45 };
+    let radius = SWITCH_HEIGHT / 2.0;
+    ui.painter().rect_filled(rect, egui::CornerRadius::same(radius as u8), track.gamma_multiply(fade));
+    ui.painter().rect_stroke(rect, egui::CornerRadius::same(radius as u8), egui::Stroke::new(theme::stroke::HAIRLINE, border.gamma_multiply(fade)), egui::StrokeKind::Inside);
+    let travel = SWITCH_WIDTH - SWITCH_HEIGHT;
+    let knob = egui::pos2(rect.min.x + radius + travel * on, rect.center().y);
+    let knob_color = if *value { theme::base() } else { theme::subtext() };
+    ui.painter().circle_filled(knob, radius - 3.0, knob_color.gamma_multiply(fade));
+    response
+}
+
+/// Interruptor con su texto: pulsar el texto también lo cambia.
+pub fn switch_labeled(ui: &mut Ui, value: &mut bool, label: &str) -> egui::Response {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = theme::space::M;
+        let toggle = switch(ui, value);
+        let text = ui.add(egui::Label::new(label).sense(egui::Sense::click())).hand();
+        if text.clicked() {
+            *value = !*value;
+        }
+        let mut response = toggle | text;
+        if response.clicked() && !response.changed() {
+            response.mark_changed();
+        }
+        response
     })
     .inner
+}
+
+/// Alias que usan las filas de ajustes.
+pub fn toggle(ui: &mut Ui, value: &mut bool) -> egui::Response {
+    switch(ui, value)
 }
 
 /// Combinación de teclas con aspecto de tecla.

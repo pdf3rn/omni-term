@@ -963,7 +963,7 @@ pub fn show(
                 }
                 ui.label("Se perderá lo que esté en curso.");
                 ui.add_space(theme::space::XS);
-                ui.checkbox(&mut confirm.dont_ask, "No volver a preguntar").hand();
+                crate::ui_kit::switch_labeled(ui, &mut confirm.dont_ask, "No volver a preguntar");
                 false
             });
             plain(action, Outcome::Delete)
@@ -974,7 +974,7 @@ pub fn show(
                 ui.label(format!("«{}» usa {}: todo lo que envíes, contraseñas incluidas, viaja en texto claro y cualquiera en la red puede leerlo.", warning.connection.name, warning.label));
                 ui.label(RichText::new("Úsalo solo en redes de confianza o con equipos que no admiten SSH.").color(theme::subtext()));
                 ui.add_space(theme::space::XS);
-                ui.checkbox(&mut warning.dont_ask, "No volver a avisar para esta conexión").hand();
+                crate::ui_kit::switch_labeled(ui, &mut warning.dont_ask, "No volver a avisar para esta conexión");
                 false
             });
             plain(action, Outcome::Submit)
@@ -1056,7 +1056,7 @@ pub fn show(
                     ui.label(RichText::new(remote).color(theme::subtext()));
                 }
                 ui.add_space(theme::space::XS);
-                ui.checkbox(&mut prompt.remember, "Recordar mi elección").hand();
+                crate::ui_kit::switch_labeled(ui, &mut prompt.remember, "Recordar mi elección");
                 false
             });
             plain(action, Outcome::Submit)
@@ -1215,7 +1215,7 @@ fn files_rows(ui: &mut egui::Ui, form: &mut ConnForm) {
     if form.files == 2 {
         ui.add_space(theme::space::ROW);
         crate::ui_kit::form_row(ui, "Cuenta", |ui| {
-            ui.checkbox(&mut form.ftp_anonymous, "Acceso anónimo").hand();
+            crate::ui_kit::switch_labeled(ui, &mut form.ftp_anonymous, "Acceso anónimo");
         });
     }
     if form.files == 3 || !form.ftp_anonymous {
@@ -1247,7 +1247,7 @@ fn files_rows(ui: &mut egui::Ui, form: &mut ConnForm) {
         });
         ui.add_space(theme::space::ROW);
         crate::ui_kit::form_row(ui, "Modo", |ui| {
-            ui.checkbox(&mut form.ftp_passive, "Pasivo (recomendado tras un cortafuegos)").hand();
+            crate::ui_kit::switch_labeled(ui, &mut form.ftp_passive, "Pasivo (recomendado tras un cortafuegos)");
         });
         if form.ftp_tls == FtpTls::None {
             ui.add_space(theme::space::ROW);
@@ -1384,7 +1384,7 @@ fn serial_rows(ui: &mut egui::Ui, form: &mut ConnForm) {
                 ui.selectable_value(&mut form.newline, newline, label);
             }
             ui.add_space(theme::space::L);
-            ui.checkbox(&mut form.local_echo, "Eco local").hand();
+            crate::ui_kit::switch_labeled(ui, &mut form.local_echo, "Eco local");
         });
     });
 }
@@ -1547,7 +1547,7 @@ fn telnet_rows(ui: &mut egui::Ui, form: &mut ConnForm) {
     });
     ui.add_space(theme::space::ROW);
     crate::ui_kit::form_row(ui, "Opciones", |ui| {
-        ui.checkbox(&mut form.negotiate, "Negociar Telnet (eco, tamaño de ventana y tipo de terminal)").hand();
+        crate::ui_kit::switch_labeled(ui, &mut form.negotiate, "Negociar Telnet (eco, tamaño de ventana y tipo de terminal)");
         if !form.negotiate {
             ui.label(RichText::new("Sin negociar es una conexión TCP simple: no se traducen Enter ni opciones.").small().color(theme::subtext()));
         }
@@ -2086,7 +2086,7 @@ fn vars_body(ui: &mut egui::Ui, prompt: &mut VarsPrompt) -> bool {
 fn secret_body(ui: &mut egui::Ui, prompt: &mut SecretPrompt) -> bool {
     let field = secret_field(ui, &mut prompt.input, &mut prompt.reveal, "");
     field.request_focus();
-    ui.checkbox(&mut prompt.save, "Guardar en el almacén de secretos").hand();
+    crate::ui_kit::switch_labeled(ui, &mut prompt.save, "Guardar en el almacén de secretos");
     ui.label(RichText::new("Si no la guardas, se recuerda hasta cerrar omni-term.").small().color(theme::subtext()));
     entered(ui, &field)
 }
