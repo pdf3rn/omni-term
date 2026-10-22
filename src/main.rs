@@ -36,6 +36,7 @@ mod serial;
 mod term;
 mod theme;
 mod ui;
+mod ui_kit;
 
 use eframe::egui;
 

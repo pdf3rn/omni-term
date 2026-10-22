@@ -24,6 +24,67 @@ const fn triple(hex: u32) -> (u8, u8, u8) {
     ((hex >> 16) as u8, (hex >> 8) as u8, hex as u8)
 }
 
+/// Radios de esquina de toda la interfaz.
+pub mod radius {
+    /// Botones, campos, filas y menús desplegables.
+    pub const CONTROL: u8 = 6;
+    /// Tarjetas, píldoras y menús.
+    pub const CARD: u8 = 8;
+    /// Ventanas y diálogos.
+    pub const DIALOG: u8 = 10;
+    /// Fichas pequeñas, teclas y fondos de fila.
+    pub const SMALL: u8 = 4;
+    /// Marcas finas: barras de identidad, miniaturas.
+    pub const TINY: u8 = 2;
+}
+
+/// Escala de espaciado.
+pub mod space {
+    pub const XXS: f32 = 2.0;
+    pub const XS: f32 = 4.0;
+    pub const S: f32 = 6.0;
+    pub const M: f32 = 8.0;
+    pub const L: f32 = 12.0;
+    pub const XL: f32 = 16.0;
+    pub const XXL: f32 = 24.0;
+    /// Entre filas de un mismo grupo de un formulario.
+    pub const ROW: f32 = 8.0;
+    /// Entre grupos de un formulario.
+    pub const GROUP: f32 = 18.0;
+}
+
+/// Alturas fijas.
+pub mod height {
+    /// Campos de texto y selectores de los formularios.
+    pub const FIELD: f32 = 28.0;
+}
+
+/// Tamaños de letra e iconos.
+pub mod size {
+    pub const CAPTION: f32 = 11.5;
+    pub const SMALL: f32 = 12.0;
+    /// Títulos de sección de tarjetas y listas.
+    pub const SECTION: f32 = 12.5;
+    pub const LABEL: f32 = 13.0;
+    pub const BODY: f32 = 14.0;
+    pub const HEADING: f32 = 16.0;
+    /// Título de las pantallas (por ejemplo, «No hay pestañas abiertas»).
+    pub const TITLE: f32 = 20.0;
+    /// Estilo de título por defecto de egui.
+    pub const DISPLAY: f32 = 18.0;
+    pub const ICON_SM: f32 = 14.0;
+    pub const ICON: f32 = 16.0;
+    pub const ICON_LG: f32 = 17.0;
+    pub const ICON_XL: f32 = 22.0;
+}
+
+/// Grosor de los bordes.
+pub mod stroke {
+    pub const HAIRLINE: f32 = 1.0;
+    pub const MEDIUM: f32 = 1.5;
+    pub const THICK: f32 = 2.0;
+}
+
 static DARK: Palette = Palette {
     base: rgb(0x1e1e1e),
     mantle: rgb(0x181818),
@@ -118,6 +179,11 @@ pub fn surface() -> Color32 {
 pub fn selection() -> Color32 {
     palette().selection
 }
+/// Sombra de las ventanas (`strong`) y de los menús desplegables.
+pub fn shadow(strong: bool) -> Color32 {
+    Color32::from_black_alpha(if strong { 110 } else { 90 })
+}
+
 pub fn cursor() -> Color32 {
     palette().cursor
 }

@@ -39,7 +39,6 @@ const NARROW_WINDOW: f32 = 760.0;
 const STRIP_WIDTH: f32 = 54.0;
 const TAB_BAR_HEIGHT: f32 = 40.0;
 const TAB_HEIGHT: f32 = 34.0;
-const CONTROL_RADIUS: u8 = 6;
 const ROW_HEIGHT: f32 = 46.0;
 
 /// Cómo deshacer lo que mostró un aviso.
@@ -1085,7 +1084,7 @@ impl App {
                         Frame::popup(ui.style()).inner_margin(Margin::symmetric(14, 10)).show(ui, |ui| {
                             ui.horizontal(|ui| {
                                 ui.label(&toast.text);
-                                if toast.undo.is_some() && ui.add(Button::new(RichText::new("Deshacer").color(theme::accent())).frame_when_inactive(false)).clicked() {
+                                if toast.undo.is_some() && crate::ui_kit::button_with(ui, Button::new(RichText::new("Deshacer").color(theme::accent())), crate::ui_kit::Variant::Ghost).clicked() {
                                     undone = Some(index);
                                 }
                                 if ui.add(Button::new(icons::X).frame(false)).on_hover_text("Cerrar").clicked() {
@@ -1316,57 +1315,45 @@ impl App {
         )));
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(&mut outer, |child| {
         child.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
-        child.label(RichText::new("No hay pestañas abiertas").font(FontId::new(20.0, strong_family())));
+        child.label(RichText::new("No hay pestañas abiertas").font(FontId::new(theme::size::TITLE, strong_family())));
         child.label(RichText::new("Abre un terminal o conéctate a un servidor guardado.").color(theme::subtext()));
-        child.add_space(4.0);
+        child.add_space(theme::space::XS);
         child.horizontal(|ui| {
             ui.spacing_mut().button_padding = Vec2::new(10.0, 4.0);
             ui.spacing_mut().item_spacing.x = 6.0;
             // Outline: el acento marca la acción principal en el borde y el texto, sin relleno.
-            if outline_button(ui, RichText::new("Nuevo terminal local").size(13.0).color(theme::accent()), true).clicked() {
+            if crate::ui_kit::button_rich(ui, RichText::new("Nuevo terminal local").size(theme::size::LABEL), crate::ui_kit::Variant::PrimaryOutline).clicked() {
                 action = Some(EmptyAction::Local);
             }
-            if outline_button(ui, RichText::new("Nueva conexión").size(13.0), false).clicked() {
+            if crate::ui_kit::button_rich(ui, RichText::new("Nueva conexión").size(theme::size::LABEL), crate::ui_kit::Variant::Secondary).clicked() {
                 action = Some(EmptyAction::NewConnection);
             }
-            if outline_button(ui, RichText::new("Contenedores").size(13.0), false).clicked() {
+            if crate::ui_kit::button_rich(ui, RichText::new("Contenedores").size(theme::size::LABEL), crate::ui_kit::Variant::Secondary).clicked() {
                 action = Some(EmptyAction::Containers);
             }
         });
 
-        child.add_space(12.0);
+        child.add_space(theme::space::L);
         let recents: Vec<Connection> = self.recent_connections().into_iter().take(4).collect();
         if recents.is_empty() {
             child.label(RichText::new("Aún no hay conexiones guardadas.").color(theme::subtext()));
-            if outline_button(child, RichText::new("Importar de ~/.ssh/config").size(13.0), false).clicked() {
+            if crate::ui_kit::button_rich(child, RichText::new("Importar de ~/.ssh/config").size(theme::size::LABEL), crate::ui_kit::Variant::Secondary).clicked() {
                 action = Some(EmptyAction::Import);
             }
         } else {
-            child.label(RichText::new("Recientes").font(FontId::new(12.5, strong_family())).color(theme::subtext()));
-            Frame::new().fill(theme::mantle()).stroke(Stroke::new(1.0, theme::surface())).corner_radius(CornerRadius::same(8)).inner_margin(Margin::symmetric(6, 4)).show(child, |ui| {
+            crate::ui_kit::section_title(child, "Recientes");
+            crate::ui_kit::card_frame().inner_margin(Margin::symmetric(6, 4)).show(child, |ui| {
                 ui.spacing_mut().item_spacing.y = 0.0;
                 ui.set_width(ui.available_width());
                 for connection in &recents {
-                    let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 44.0), Sense::click());
+                    let (rect, response) = crate::ui_kit::row_frame(ui, 44.0, Sense::click());
+                    let subtitle = format!("{}  ·  {}", connection.kind_label(), connection.destination());
+                    crate::ui_kit::row_content(
+                        ui,
+                        rect,
+                        crate::ui_kit::RowContent { leading: crate::ui_kit::Leading::Glyph(crate::ui_kit::connection_glyph(connection)), title: &connection.name, subtitle: &subtitle, right_limit: rect.max.x - 10.0 },
+                    );
                     let response = response.hand();
-                    if response.hovered() {
-                        ui.painter().rect_filled(rect, CornerRadius::same(6), theme::surface());
-                    }
-                    let glyph = if connection.is_files() {
-                        icons::FOLDER
-                    } else if connection.is_adb() {
-                        icons::DOTS
-                    } else {
-                        icons::TERMINAL
-                    };
-                    ui.painter().text(Pos2::new(rect.min.x + 18.0, rect.center().y), Align2::CENTER_CENTER, glyph, FontId::proportional(17.0), theme::subtext());
-                    let clip = ui.painter().with_clip_rect(rect);
-                    let name_font = FontId::new(14.0, strong_family());
-                    let name = fit_text(&clip, &connection.name, &name_font, rect.width() - 48.0);
-                    clip.text(Pos2::new(rect.min.x + 38.0, rect.min.y + 7.0), Align2::LEFT_TOP, name, name_font, theme::text());
-                    let detail_font = FontId::new(12.0, FontFamily::Proportional);
-                    let detail = fit_text(&clip, &format!("{}  ·  {}", connection.kind_label(), connection.destination()), &detail_font, rect.width() - 48.0);
-                    clip.text(Pos2::new(rect.min.x + 38.0, rect.min.y + 25.0), Align2::LEFT_TOP, detail, detail_font, theme::subtext());
                     if response.on_hover_text("Conectar").clicked() {
                         action = Some(EmptyAction::Connect(connection.clone()));
                     }
@@ -1374,8 +1361,8 @@ impl App {
             });
         }
 
-        child.add_space(12.0);
-        child.label(RichText::new("Atajos").font(FontId::new(12.5, strong_family())).color(theme::subtext()));
+        child.add_space(theme::space::L);
+        crate::ui_kit::section_title(child, "Atajos");
         for (keys, what) in [
             ("Ctrl+Shift+P", "Paleta de comandos"),
             ("Ctrl+Shift+D / E", "Dividir el panel a la derecha / hacia abajo"),
@@ -1389,7 +1376,7 @@ impl App {
                         if n > 0 {
                             ui.label(RichText::new("/").color(theme::subtext()));
                         }
-                        dialogs::keycap(ui, combo);
+                        crate::ui_kit::keycap(ui, combo);
                     }
                 });
                 ui.label(RichText::new(what).color(theme::subtext()));
@@ -1692,27 +1679,27 @@ impl App {
                     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
                     let response = response.hand();
                     if response.hovered() {
-                        ui.painter().rect_filled(rect, CornerRadius::same(CONTROL_RADIUS), theme::surface());
+                        ui.painter().rect_filled(rect, CornerRadius::same(theme::radius::CONTROL), theme::surface());
                     }
-                    ui.painter().text(rect.center(), Align2::CENTER_CENTER, glyph, FontId::proportional(18.0), theme::text());
+                    ui.painter().text(rect.center(), Align2::CENTER_CENTER, glyph, FontId::proportional(theme::size::ICON_LG), theme::text());
                     response.on_hover_text(tip).clicked()
                 };
                 if icon(ui, icons::SEARCH, "Buscar (Ctrl+Shift+P)") {
                     palette = true;
                 }
-                ui.add_space(4.0);
+                ui.add_space(theme::space::XS);
                 for connection in &self.connections {
                     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
                     let response = response.hand();
                     let color = connection.color.map(theme::identity);
                     let fill = if response.hovered() { theme::selection() } else { theme::surface() };
-                    ui.painter().rect_filled(rect, CornerRadius::same(CONTROL_RADIUS), fill);
+                    ui.painter().rect_filled(rect, CornerRadius::same(theme::radius::CONTROL), fill);
                     if let Some(color) = color {
                         let bar = Rect::from_min_size(Pos2::new(rect.min.x - 6.0, rect.min.y + 7.0), Vec2::new(3.0, size.y - 14.0));
-                        ui.painter().rect_filled(bar, CornerRadius::same(2), color);
+                        ui.painter().rect_filled(bar, CornerRadius::same(theme::radius::TINY), color);
                     }
                     let initial = connection.name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default();
-                    ui.painter().text(rect.center(), Align2::CENTER_CENTER, initial, FontId::new(15.0, strong_family()), theme::text());
+                    ui.painter().text(rect.center(), Align2::CENTER_CENTER, initial, FontId::new(theme::size::HEADING, strong_family()), theme::text());
                     let tip = format!("{}  ({})", connection.name, connection.target());
                     if response.on_hover_text(tip).clicked() {
                         *connect = Some(connection.clone());
@@ -2198,7 +2185,7 @@ impl App {
                         Pos2::new(search.rect.min.x + 15.0, search.rect.center().y),
                         Align2::CENTER_CENTER,
                         icons::SEARCH,
-                        FontId::proportional(15.0),
+                        FontId::proportional(theme::size::ICON),
                         theme::subtext(),
                     );
                     if self.focus_search {
@@ -2214,23 +2201,23 @@ impl App {
                         self.sidebar_query.clear();
                         search.surrender_focus();
                     }
-                    ui.add_space(8.0);
+                    ui.add_space(theme::space::M);
 
-                    ui.add_space(12.0);
+                    ui.add_space(theme::space::L);
                     ui.horizontal(|ui| {
                         ui.spacing_mut().button_padding.x = 0.0;
                         ui.spacing_mut().item_spacing.x = 18.0;
                         for (view, label) in [(SidebarView::Connections, "Conexiones"), (SidebarView::Snippets, "Snippets")] {
                             let selected = self.sidebar_view == view;
                             let color = if selected { theme::text() } else { theme::subtext() };
-                            let font = FontId::new(13.0, if selected { strong_family() } else { FontFamily::Proportional });
-                            let button = Button::new(RichText::new(label).font(font).color(color)).frame_when_inactive(false);
-                            let response = ui.add(button);
+                            let font = FontId::new(theme::size::LABEL, if selected { strong_family() } else { FontFamily::Proportional });
+                            let button = Button::new(RichText::new(label).font(font).color(color));
+                            let response = crate::ui_kit::button_with(ui, button, crate::ui_kit::Variant::Ghost);
                             if selected {
                                 let y = response.rect.max.y + 1.0;
                                 ui.painter().line_segment(
                                     [Pos2::new(response.rect.min.x, y), Pos2::new(response.rect.max.x, y)],
-                                    Stroke::new(2.0, theme::accent()),
+                                    Stroke::new(theme::stroke::THICK, theme::accent()),
                                 );
                             }
                             if response.clicked() && self.sidebar_view != view {
@@ -2240,7 +2227,7 @@ impl App {
                             }
                         }
                     });
-                    ui.add_space(8.0);
+                    ui.add_space(theme::space::M);
 
                     if connections_view && self.tabs.len() >= 3 {
                         ui.label(RichText::new("Abiertas").small().color(theme::subtext()));
@@ -2250,9 +2237,9 @@ impl App {
                             let response = response.hand();
                             let active = index == self.active;
                             if active {
-                                ui.painter().rect_filled(rect.expand2(Vec2::new(8.0, 0.0)), CornerRadius::same(CONTROL_RADIUS), theme::selection());
+                                ui.painter().rect_filled(rect.expand2(Vec2::new(8.0, 0.0)), CornerRadius::same(theme::radius::CONTROL), theme::selection());
                             } else if response.hovered() {
-                                ui.painter().rect_filled(rect.expand2(Vec2::new(8.0, 0.0)), CornerRadius::same(CONTROL_RADIUS), theme::surface());
+                                ui.painter().rect_filled(rect.expand2(Vec2::new(8.0, 0.0)), CornerRadius::same(theme::radius::CONTROL), theme::surface());
                             }
                             let glyph = match (&tab.body, tab.kind) {
                                 (Body::Explorer(_), _) => icons::FOLDER,
@@ -2260,8 +2247,8 @@ impl App {
                                 (_, TabKind::Local) => icons::TERMINAL,
                                 _ => icons::ARROW_RIGHT,
                             };
-                            ui.painter().text(Pos2::new(rect.min.x + 8.0, rect.center().y), Align2::CENTER_CENTER, glyph, FontId::proportional(14.0), theme::subtext());
-                            let font = FontId::new(13.0, if active { strong_family() } else { FontFamily::Proportional });
+                            ui.painter().text(Pos2::new(rect.min.x + 8.0, rect.center().y), Align2::CENTER_CENTER, glyph, FontId::proportional(theme::size::ICON_SM), theme::subtext());
+                            let font = FontId::new(theme::size::LABEL, if active { strong_family() } else { FontFamily::Proportional });
                             ui.painter().with_clip_rect(rect.shrink2(Vec2::new(0.0, 0.0)).with_max_x(rect.max.x - 18.0)).text(
                                 Pos2::new(rect.min.x + 22.0, rect.center().y),
                                 Align2::LEFT_CENTER,
@@ -2281,7 +2268,7 @@ impl App {
                         if self.tabs.len() > 6 {
                             ui.label(RichText::new(format!("+{} más en la barra de pestañas", self.tabs.len() - 6)).small().color(theme::subtext()));
                         }
-                        ui.add_space(8.0);
+                        ui.add_space(theme::space::M);
                         ui.spacing_mut().item_spacing.y = 8.0;
                     }
                     let list_empty = if connections_view { self.connections.is_empty() } else { self.snippets.is_empty() };
@@ -2291,15 +2278,15 @@ impl App {
                         ui.label(RichText::new(title).small().color(theme::subtext()));
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                                         if connections_view {
-                                if compact_icon(ui, icons::PLUS, 16.0, theme::text()).on_hover_text("Nueva conexión").clicked() {
+                                if crate::ui_kit::icon_button(ui, icons::PLUS, theme::size::ICON, theme::text()).on_hover_text("Nueva conexión").clicked() {
                                     new_connection = true;
                                 }
-                            } else if compact_icon(ui, icons::PLUS, 16.0, theme::text()).on_hover_text("Nuevo snippet").clicked() {
+                            } else if crate::ui_kit::icon_button(ui, icons::PLUS, theme::size::ICON, theme::text()).on_hover_text("Nuevo snippet").clicked() {
                                 new_snippet = true;
                             }
                         });
                     });
-                    ui.add_space(-2.0);
+                    ui.add_space(-theme::space::XXS);
                     }
 
                     if connections_view {
@@ -2326,13 +2313,13 @@ impl App {
                             if headed {
                                 let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 26.0), Sense::click());
                                 if response.dnd_hover_payload::<i64>().is_some() {
-                                    ui.painter().rect_stroke(rect.expand2(Vec2::new(6.0, 0.0)), CornerRadius::same(CONTROL_RADIUS), Stroke::new(1.5, theme::accent()), egui::StrokeKind::Inside);
+                                    ui.painter().rect_stroke(rect.expand2(Vec2::new(6.0, 0.0)), CornerRadius::same(theme::radius::CONTROL), Stroke::new(theme::stroke::MEDIUM, theme::accent()), egui::StrokeKind::Inside);
                                 }
                                 if let Some(payload) = response.dnd_release_payload::<i64>() {
                                     drop_move = Some((*payload, label.clone()));
                                 }
                                 if self.sidebar_nav && row_pos == self.nav_index {
-                                    ui.painter().rect_stroke(rect.expand2(Vec2::new(6.0, 0.0)), CornerRadius::same(CONTROL_RADIUS), Stroke::new(1.5, theme::text()), egui::StrokeKind::Inside);
+                                    ui.painter().rect_stroke(rect.expand2(Vec2::new(6.0, 0.0)), CornerRadius::same(theme::radius::CONTROL), Stroke::new(theme::stroke::MEDIUM, theme::text()), egui::StrokeKind::Inside);
                                     if nav_moved {
                                         ui.scroll_to_rect(rect, None);
                                     }
@@ -2343,14 +2330,14 @@ impl App {
                                     Pos2::new(rect.min.x + 6.0, rect.center().y),
                                     Align2::CENTER_CENTER,
                                     if folded { icons::CARET_RIGHT } else { icons::CARET_DOWN },
-                                    FontId::proportional(12.0),
+                                    FontId::proportional(theme::size::SMALL),
                                     color,
                                 );
                                 ui.painter().text(
                                     Pos2::new(rect.min.x + 18.0, rect.center().y),
                                     Align2::LEFT_CENTER,
                                     format!("{label}  {}", indices.len()),
-                                    FontId::new(12.0, strong_family()),
+                                    FontId::new(theme::size::SMALL, strong_family()),
                                     color,
                                 );
                                 if response.hand().on_hover_text(if folded { "Mostrar el grupo" } else { "Plegar el grupo" }).clicked() && !searching {
@@ -2387,14 +2374,14 @@ impl App {
                                     ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
                                     if let Some(pointer) = ui.ctx().pointer_interact_pos() {
                                         let ghost = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::NULL.with("drag-ghost")));
-                                        let galley = ghost.layout_no_wrap(connection.name.clone(), FontId::new(13.0, strong_family()), theme::text());
+                                        let galley = ghost.layout_no_wrap(connection.name.clone(), FontId::new(theme::size::LABEL, strong_family()), theme::text());
                                         let box_rect = Rect::from_min_size(pointer + Vec2::new(14.0, 8.0), galley.size() + Vec2::new(16.0, 10.0));
-                                        ghost.rect_filled(box_rect, CornerRadius::same(CONTROL_RADIUS), theme::selection());
+                                        ghost.rect_filled(box_rect, CornerRadius::same(theme::radius::CONTROL), theme::selection());
                                         ghost.galley(box_rect.min + Vec2::new(8.0, 5.0), galley, theme::text());
                                     }
                                 }
                                 if response.dnd_hover_payload::<i64>().is_some_and(|p| *p != connection_id) {
-                                    ui.painter().rect_stroke(rect.expand2(Vec2::new(6.0, 0.0)), CornerRadius::same(CONTROL_RADIUS), Stroke::new(1.5, theme::accent()), egui::StrokeKind::Inside);
+                                    ui.painter().rect_stroke(rect.expand2(Vec2::new(6.0, 0.0)), CornerRadius::same(theme::radius::CONTROL), Stroke::new(theme::stroke::MEDIUM, theme::accent()), egui::StrokeKind::Inside);
                                 }
                                 if let Some(payload) = response.dnd_release_payload::<i64>() {
                                     if *payload != connection_id {
@@ -2402,7 +2389,7 @@ impl App {
                                     }
                                 }
                                 if self.sidebar_nav && this_pos == self.nav_index {
-                                    ui.painter().rect_stroke(rect.expand2(Vec2::new(6.0, 0.0)), CornerRadius::same(CONTROL_RADIUS), Stroke::new(1.5, theme::text()), egui::StrokeKind::Inside);
+                                    ui.painter().rect_stroke(rect.expand2(Vec2::new(6.0, 0.0)), CornerRadius::same(theme::radius::CONTROL), Stroke::new(theme::stroke::MEDIUM, theme::text()), egui::StrokeKind::Inside);
                                     if nav_moved {
                                         ui.scroll_to_rect(rect, None);
                                     }
@@ -2414,31 +2401,35 @@ impl App {
                                 let is_pinned = connection.id.is_some_and(|id| self.pinned.contains(&id));
                                 let ago = self.recent.iter().find(|(id, _)| Some(*id) == connection.id).map(|(_, at)| relative_time(*at, now)).unwrap_or_default();
                                 if response.hovered() || over {
-                                    ui.painter().rect_filled(rect.expand2(Vec2::new(8.0, 0.0)), CornerRadius::same(CONTROL_RADIUS), theme::surface());
+                                    ui.painter().rect_filled(rect.expand2(Vec2::new(8.0, 0.0)), CornerRadius::same(theme::radius::CONTROL), theme::surface());
                                 }
                                 if let Some(color) = identity {
                                     // Marca de identidad: informa de qué servidor es, no decora.
                                     let bar = Rect::from_min_size(Pos2::new(rect.min.x - 8.0, rect.min.y + 7.0), Vec2::new(3.0, theme::row(ROW_HEIGHT) - 14.0));
-                                    ui.painter().rect_filled(bar, CornerRadius::same(2), color);
+                                    ui.painter().rect_filled(bar, CornerRadius::same(theme::radius::TINY), color);
                                 }
                                 // Acciones al pasar el ratón: sustituyen a la hora, que vuelve a verse sin ratón encima.
-                                let more_rect = Rect::from_center_size(Pos2::new(rect.max.x - 12.0, rect.center().y), Vec2::splat(24.0));
-                                let edit_rect = Rect::from_center_size(Pos2::new(rect.max.x - 38.0, rect.center().y), Vec2::splat(24.0));
-                                let more = ui.interact(more_rect, response.id.with("more"), Sense::click()).on_hover_text("Más acciones").hand();
-                                let pencil = ui.interact(edit_rect, response.id.with("edit"), Sense::click()).on_hover_text("Editar").hand();
-                                let menu_open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&more));
-                                let actions = over || menu_open;
+                                let more_slot = Rect::from_center_size(Pos2::new(rect.max.x - 12.0, rect.center().y), Vec2::splat(26.0));
+                                let edit_slot = Rect::from_center_size(Pos2::new(rect.max.x - 38.0, rect.center().y), Vec2::splat(26.0));
+                                // El menú abierto mantiene visibles los botones aunque el ratón se haya ido de la fila.
+                                let menu_state = response.id.with("menu-open");
+                                let menu_open_before = ui.data(|d| d.get_temp::<bool>(menu_state)).unwrap_or(false);
+                                let actions = over || menu_open_before;
+                                let mut buttons = None;
+                                if actions {
+                                    let pencil = crate::ui_kit::IconButton::new(icons::PENCIL).show_at(ui, edit_slot, (response.id, "edit")).on_hover_text("Editar");
+                                    let more = crate::ui_kit::IconButton::new(icons::DOTS).size(theme::size::ICON_XL).active(menu_open_before).show_at(ui, more_slot, (response.id, "more")).on_hover_text("Más acciones");
+                                    let menu_open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&more));
+                                    ui.data_mut(|d| d.insert_temp(menu_state, menu_open));
+                                    buttons = Some((pencil, more));
+                                } else {
+                                    ui.data_mut(|d| d.insert_temp(menu_state, false));
+                                }
 
                                 // Icono de tipo con la insignia del estado de la sesión en su esquina.
                                 let icon_center = Pos2::new(rect.min.x + 9.0, rect.center().y);
-                                let kind_icon = if connection.is_files() {
-                                    icons::FOLDER
-                                } else if connection.is_adb() {
-                                    icons::DOTS
-                                } else {
-                                    icons::TERMINAL
-                                };
-                                ui.painter().text(icon_center, Align2::CENTER_CENTER, kind_icon, FontId::proportional(17.0), theme::subtext());
+                                let kind_icon = crate::ui_kit::connection_glyph(connection);
+                                ui.painter().text(icon_center, Align2::CENTER_CENTER, kind_icon, FontId::proportional(theme::size::ICON_LG), theme::subtext());
                                 let badge = match state {
                                     LinkState::Open => Some(theme::accent()),
                                     LinkState::Lost => Some(theme::red()),
@@ -2451,38 +2442,38 @@ impl App {
                                 }
 
                                 let text_x = rect.min.x + 28.0;
-                                let ago_font = FontId::new(11.5, FontFamily::Proportional);
+                                let ago_font = FontId::new(theme::size::CAPTION, FontFamily::Proportional);
                                 let ago_width = if ago.is_empty() || actions { 0.0 } else { ui.painter().layout_no_wrap(ago.clone(), ago_font.clone(), Color32::PLACEHOLDER).size().x + 10.0 };
                                 let right_limit = if actions { rect.max.x - 56.0 } else { rect.max.x - 4.0 };
                                 let first_line = ui.painter().with_clip_rect(Rect::from_min_max(rect.min, Pos2::new(right_limit - ago_width, rect.max.y)));
-                                let name_font = FontId::new(14.0, strong_family());
-                                let pill_font = FontId::new(11.0, strong_family());
+                                let name_font = FontId::new(theme::size::BODY, strong_family());
+                                let pill_font = FontId::new(theme::size::CAPTION, strong_family());
                                 let env = connection.env.as_ref().filter(|_| !headed || searching);
                                 let pill_size = env.map(|env| first_line.layout_no_wrap(env.clone(), pill_font.clone(), Color32::PLACEHOLDER).size() + Vec2::new(10.0, 3.0));
                                 let lock_width = if connection.insecure_protocol().is_some() { 18.0 } else { 0.0 };
                                 // El nombre cede sitio al candado y a la pastilla, que siempre se ven.
                                 let room = right_limit - ago_width - text_x - lock_width - pill_size.map_or(0.0, |s| s.x + 8.0);
-                                let name = fit_text(&first_line, &connection.name, &name_font, room);
+                                let name = crate::ui_kit::fit_text(&first_line, &connection.name, &name_font, room);
                                 let name_width = first_line.layout_no_wrap(name.clone(), name_font.clone(), Color32::PLACEHOLDER).size().x;
                                 first_line.text(Pos2::new(text_x, rect.min.y + 9.0), Align2::LEFT_TOP, name, name_font, theme::text());
                                 let mut after_name = text_x + name_width + 8.0;
                                 if lock_width > 0.0 {
-                                    first_line.text(Pos2::new(after_name + 5.0, rect.min.y + 19.0), Align2::CENTER_CENTER, icons::LOCK_OPEN, FontId::proportional(13.0), theme::red());
+                                    first_line.text(Pos2::new(after_name + 5.0, rect.min.y + 19.0), Align2::CENTER_CENTER, icons::LOCK_OPEN, FontId::proportional(theme::size::LABEL), theme::red());
                                     after_name += lock_width;
                                 }
                                 if let (Some(env), Some(size)) = (env, pill_size) {
                                     // Pastilla con el color de identidad: dice en qué entorno estás.
                                     let tint = identity.unwrap_or_else(theme::subtext);
                                     let pill = Rect::from_min_size(Pos2::new(after_name, rect.min.y + 11.0), size);
-                                    first_line.rect_filled(pill, CornerRadius::same(8), tint.gamma_multiply(0.2));
+                                    first_line.rect_filled(pill, CornerRadius::same(theme::radius::CARD), tint.gamma_multiply(0.2));
                                     first_line.text(pill.center(), Align2::CENTER_CENTER, env, pill_font, tint);
                                 }
                                 if ago_width > 0.0 {
                                     ui.painter().text(Pos2::new(rect.max.x - 4.0, rect.min.y + 11.0), Align2::RIGHT_TOP, &ago, ago_font, theme::subtext());
                                 }
                                 let second_line = ui.painter().with_clip_rect(Rect::from_min_max(rect.min, Pos2::new(right_limit, rect.max.y)));
-                                let detail_font = FontId::new(12.0, FontFamily::Proportional);
-                                let detail = fit_text(&second_line, &format!("{}  ·  {}", connection.kind_label(), connection.destination()), &detail_font, right_limit - text_x);
+                                let detail_font = FontId::new(theme::size::SMALL, FontFamily::Proportional);
+                                let detail = crate::ui_kit::fit_text(&second_line, &format!("{}  ·  {}", connection.kind_label(), connection.destination()), &detail_font, right_limit - text_x);
                                 second_line.text(Pos2::new(text_x, rect.min.y + 27.0), Align2::LEFT_TOP, detail, detail_font, theme::subtext());
                                 let response = response.hand().on_hover_text(match state {
                                     LinkState::Closed => "Doble clic para conectar",
@@ -2495,20 +2486,14 @@ impl App {
                                 }
                                 response.context_menu(|ui| connection_menu(ui, connection, is_pinned, &mut row_action));
 
-                                if actions {
-                                    for (button, rect) in [(&pencil, edit_rect), (&more, more_rect)] {
-                                        if button.hovered() || (menu_open && rect == more_rect) {
-                                            ui.painter().rect_filled(rect, CornerRadius::same(CONTROL_RADIUS), theme::selection());
-                                        }
-                                    }
-                                    for (glyph, rect, size) in [(icons::PENCIL, edit_rect, 16.0), (icons::DOTS, more_rect, 20.0)] {
-                                        ui.painter().text(rect.center(), Align2::CENTER_CENTER, glyph, FontId::proportional(size), theme::text());
+                                if let Some((pencil, _)) = &buttons {
+                                    if pencil.clicked() {
+                                        row_action = Some((RowAction::Edit, connection.clone()));
                                     }
                                 }
-                                if pencil.clicked() {
-                                    row_action = Some((RowAction::Edit, connection.clone()));
+                                if let Some((_, more)) = &buttons {
+                                    egui::Popup::menu(more).show(|ui| connection_menu(ui, connection, is_pinned, &mut row_action));
                                 }
-                                egui::Popup::menu(&more).show(|ui| connection_menu(ui, connection, is_pinned, &mut row_action));
 
                                 let live = connection
                                     .id
@@ -2528,16 +2513,16 @@ impl App {
                                         }
                                     }
                                 }
-                                ui.add_space(4.0);
+                                ui.add_space(theme::space::XS);
                             }
                         }
                         });
                     } else {
                         if !self.snippets.is_empty() {
-                            if outline_add(ui, Button::new(RichText::new("Guardar selección").small().color(theme::subtext())), false).clicked() {
+                            if crate::ui_kit::button_with(ui, Button::new(RichText::new("Guardar selección").small().color(theme::subtext())), crate::ui_kit::Variant::Secondary).clicked() {
                                 snippet_from_selection = true;
                             }
-                            ui.add_space(4.0);
+                            ui.add_space(theme::space::XS);
                         }
 
                         let query = self.sidebar_query.clone();
@@ -2576,14 +2561,14 @@ impl App {
                                     Pos2::new(rect.min.x + 6.0, rect.center().y),
                                     Align2::CENTER_CENTER,
                                     if folded { icons::CARET_RIGHT } else { icons::CARET_DOWN },
-                                    FontId::proportional(12.0),
+                                    FontId::proportional(theme::size::SMALL),
                                     color,
                                 );
                                 ui.painter().text(
                                     Pos2::new(rect.min.x + 18.0, rect.center().y),
                                     Align2::LEFT_CENTER,
                                     format!("{label}  {}", members.len()),
-                                    FontId::new(12.0, strong_family()),
+                                    FontId::new(theme::size::SMALL, strong_family()),
                                     color,
                                 );
                                 if response.hand().on_hover_text(if folded { "Mostrar el grupo" } else { "Plegar el grupo" }).clicked() && !searching {
@@ -2597,25 +2582,18 @@ impl App {
                                 let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), theme::row(ROW_HEIGHT)), Sense::click());
                                 let over = ui.rect_contains_pointer(rect);
                                 if response.hovered() || over {
-                                    ui.painter().rect_filled(rect, CornerRadius::same(CONTROL_RADIUS), theme::surface());
+                                    ui.painter().rect_filled(rect, CornerRadius::same(theme::radius::CONTROL), theme::surface());
                                 }
                                 let left = rect.min.x + 10.0;
                                 let painter = ui.painter().with_clip_rect(rect.shrink2(Vec2::new(4.0, 0.0)).with_max_x(rect.max.x - if over { 34.0 } else { 4.0 }));
-                                painter.text(Pos2::new(left, rect.min.y + 9.0), Align2::LEFT_TOP, &snippet.title, FontId::new(14.0, strong_family()), theme::text());
+                                painter.text(Pos2::new(left, rect.min.y + 9.0), Align2::LEFT_TOP, &snippet.title, FontId::new(theme::size::BODY, strong_family()), theme::text());
                                 let preview = snippet.body.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
                                 let preview: String = preview.chars().take(80).collect();
-                                painter.text(Pos2::new(left, rect.min.y + 27.0), Align2::LEFT_TOP, preview, FontId::new(12.0, FontFamily::Monospace), theme::subtext());
+                                painter.text(Pos2::new(left, rect.min.y + 27.0), Align2::LEFT_TOP, preview, FontId::new(theme::size::SMALL, FontFamily::Monospace), theme::subtext());
 
-                                let run_rect = Rect::from_center_size(Pos2::new(rect.max.x - 18.0, rect.center().y), Vec2::splat(26.0));
-                                let run = ui.interact(run_rect, response.id.with("run"), Sense::click()).hand();
-                                if over {
-                                    if run.hovered() {
-                                        ui.painter().rect_filled(run_rect, CornerRadius::same(CONTROL_RADIUS), theme::selection());
-                                    }
-                                    ui.painter().text(run_rect.center(), Align2::CENTER_CENTER, icons::PLAY, FontId::proportional(15.0), theme::text());
-                                }
-                                let run = run.on_hover_text("Insertar y ejecutar");
-                                let run_clicked = run.clicked();
+                                let run_slot = Rect::from_center_size(Pos2::new(rect.max.x - 18.0, rect.center().y), Vec2::splat(26.0));
+                                let run_clicked = over
+                                    && crate::ui_kit::IconButton::new(icons::PLAY).show_at(ui, run_slot, (response.id, "run")).on_hover_text("Insertar y ejecutar").clicked();
                                 if run_clicked {
                                     insert = Some((Snippet::clone(snippet), true));
                                 }
@@ -2657,7 +2635,7 @@ impl App {
 
                     // Pie: solo avisos; el estado normal de los secretos no hace falta mostrarlo.
                     ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
-                        if outline_add(ui, Button::new(format!("{}  Ajustes", icons::GEAR)), false).clicked() {
+                        if crate::ui_kit::button_with(ui, Button::new(format!("{}  Ajustes", icons::GEAR)), crate::ui_kit::Variant::Secondary).clicked() {
                             open_settings = true;
                         }
                         if keyring_fallback {
@@ -2866,18 +2844,18 @@ fn parse_window_position(text: &str, monitor: Vec2, size: Vec2) -> Option<Pos2> 
 
 /// Estado vacío de una lista: título, explicación y una acción principal (y otra opcional).
 fn empty_state(ui: &mut egui::Ui, title: &str, body: &str, primary: &str, secondary: Option<&str>) -> (bool, bool) {
-    ui.add_space(18.0);
-    ui.label(RichText::new(title).font(FontId::new(15.0, strong_family())).color(theme::text()));
-    ui.add_space(2.0);
+    ui.add_space(theme::space::GROUP);
+    ui.label(RichText::new(title).font(FontId::new(theme::size::HEADING, strong_family())).color(theme::text()));
+    ui.add_space(theme::space::XXS);
     ui.label(RichText::new(body).small().color(theme::subtext()));
-    ui.add_space(14.0);
+    ui.add_space(theme::space::XL);
     let width = ui.available_width();
-    let create = solid_add(ui, Button::new(RichText::new(primary).color(theme::base())).min_size(Vec2::new(width, 32.0)), theme::accent()).clicked();
+    let create = crate::ui_kit::button_with(ui, Button::new(primary).min_size(Vec2::new(width, 32.0)), crate::ui_kit::Variant::Primary).clicked();
     let mut other = false;
     if let Some(label) = secondary {
-        ui.add_space(4.0);
+        ui.add_space(theme::space::XS);
         let button = Button::new(RichText::new(label).color(theme::text())).min_size(Vec2::new(width, 32.0));
-        other = outline_add(ui, button, false).clicked();
+        other = crate::ui_kit::button_with(ui, button, crate::ui_kit::Variant::Secondary).clicked();
     }
     (create, other)
 }
@@ -2932,53 +2910,6 @@ enum PlusChoice {
     All,
 }
 
-/// Botón con borde y sin relleno que reacciona al ratón: en reposo es transparente y al pasar
-/// por encima se tiñe (con el acento si es el principal). `fill()` en `Button` anularía ese efecto.
-fn outline_button(ui: &mut egui::Ui, text: RichText, accent: bool) -> egui::Response {
-    outline_add(ui, Button::new(text), accent)
-}
-
-/// Botón de icono compacto (26 px) con fondo solo al pasar el ratón; los botones de egui
-/// heredan la altura mínima de los controles y quedan demasiado grandes para un icono suelto.
-fn compact_icon(ui: &mut egui::Ui, glyph: &str, size: f32, color: Color32) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(Vec2::splat(26.0), Sense::click());
-    let response = response.hand();
-    if response.hovered() {
-        ui.painter().rect_filled(rect, CornerRadius::same(CONTROL_RADIUS), theme::selection());
-    }
-    ui.painter().text(rect.center(), Align2::CENTER_CENTER, glyph, FontId::proportional(size), color);
-    response
-}
-
-/// Botón de acción principal con relleno que se aclara al pasar el ratón (un `fill()` explícito lo impediría).
-pub(crate) fn solid_add(ui: &mut egui::Ui, button: Button<'_>, color: Color32) -> egui::Response {
-    ui.scope(|ui| {
-        let widgets = &mut ui.visuals_mut().widgets;
-        widgets.inactive.weak_bg_fill = color;
-        widgets.hovered.weak_bg_fill = color.lerp_to_gamma(Color32::WHITE, 0.18);
-        widgets.active.weak_bg_fill = color.lerp_to_gamma(Color32::WHITE, 0.32);
-        ui.add(button).hand()
-    })
-    .inner
-}
-
-/// Igual que `outline_button` para un botón ya construido (con su tamaño mínimo, por ejemplo).
-pub(crate) fn outline_add(ui: &mut egui::Ui, button: Button<'_>, accent: bool) -> egui::Response {
-    ui.scope(|ui| {
-        let (rest, hover) = if accent { (theme::accent(), theme::accent()) } else { (theme::selection(), theme::subtext()) };
-        let width = if accent { 1.5 } else { 1.0 };
-        let widgets = &mut ui.visuals_mut().widgets;
-        widgets.inactive.bg_stroke = Stroke::new(width, rest);
-        widgets.hovered.bg_stroke = Stroke::new(width, hover);
-        widgets.active.bg_stroke = Stroke::new(width, hover);
-        widgets.inactive.weak_bg_fill = Color32::TRANSPARENT;
-        widgets.hovered.weak_bg_fill = if accent { theme::accent().gamma_multiply(0.18) } else { theme::surface() };
-        widgets.active.weak_bg_fill = if accent { theme::accent().gamma_multiply(0.3) } else { theme::selection() };
-        ui.add(button).hand()
-    })
-    .inner
-}
-
 /// Qué se pidió en la pantalla sin pestañas.
 enum EmptyAction {
     Local,
@@ -2987,22 +2918,6 @@ enum EmptyAction {
     Import,
     Shortcuts,
     Connect(Connection),
-}
-
-/// Recorta `text` con «…» para que quepa en `width` píxeles.
-fn fit_text(painter: &egui::Painter, text: &str, font: &FontId, width: f32) -> String {
-    let measure = |t: &str| painter.layout_no_wrap(t.to_string(), font.clone(), Color32::PLACEHOLDER).size().x;
-    if measure(text) <= width {
-        return text.to_string();
-    }
-    let chars: Vec<char> = text.chars().collect();
-    let (mut low, mut high) = (0, chars.len());
-    while low < high {
-        let mid = (low + high).div_ceil(2);
-        let candidate: String = chars[..mid].iter().collect::<String>().trim_end().to_string() + "…";
-        if measure(&candidate) <= width { low = mid } else { high = mid - 1 }
-    }
-    chars[..low].iter().collect::<String>().trim_end().to_string() + "…"
 }
 
 /// Contenido del menú del «+»: terminal local primero, luego conexiones recientes y «Ver todas».
@@ -3034,21 +2949,21 @@ fn plus_menu(ui: &mut egui::Ui, recents: &[Connection], selected: &mut usize, ch
             *selected = index;
         }
         if *selected == index {
-            ui.painter().rect_filled(rect, CornerRadius::same(CONTROL_RADIUS), theme::selection());
+            ui.painter().rect_filled(rect, CornerRadius::same(theme::radius::CONTROL), theme::selection());
         }
         (rect, response.clicked())
     };
 
     let (rect, clicked) = row(ui, 0, selected);
-    ui.painter().text(rect.min + Vec2::new(20.0, 20.0), Align2::CENTER_CENTER, icons::TERMINAL, FontId::proportional(18.0), theme::text());
-    ui.painter().text(rect.min + Vec2::new(42.0, 13.0), Align2::LEFT_CENTER, "Terminal local", FontId::new(14.0, strong_family()), theme::text());
-    ui.painter().text(rect.min + Vec2::new(42.0, 29.0), Align2::LEFT_CENTER, "Este equipo", FontId::new(12.0, FontFamily::Proportional), theme::subtext());
+    ui.painter().text(rect.min + Vec2::new(20.0, 20.0), Align2::CENTER_CENTER, icons::TERMINAL, FontId::proportional(theme::size::ICON_LG), theme::text());
+    ui.painter().text(rect.min + Vec2::new(42.0, 13.0), Align2::LEFT_CENTER, "Terminal local", FontId::new(theme::size::BODY, strong_family()), theme::text());
+    ui.painter().text(rect.min + Vec2::new(42.0, 29.0), Align2::LEFT_CENTER, "Este equipo", FontId::new(theme::size::SMALL, FontFamily::Proportional), theme::subtext());
     if clicked {
         picked = Some(0);
     }
 
     if !recents.is_empty() {
-        ui.add_space(6.0);
+        ui.add_space(theme::space::S);
         ui.label(RichText::new("Recientes").small().color(theme::subtext()));
     }
     for (offset, connection) in recents.iter().enumerate() {
@@ -3057,23 +2972,19 @@ fn plus_menu(ui: &mut egui::Ui, recents: &[Connection], selected: &mut usize, ch
         let badge = Rect::from_min_size(rect.min + Vec2::new(6.0, 6.0), Vec2::splat(28.0));
         let fill = connection.color.map_or_else(theme::surface, theme::identity);
         let ink = if connection.color.is_some() { theme::base() } else { theme::text() };
-        ui.painter().rect_filled(badge, CornerRadius::same(6), fill);
+        ui.painter().rect_filled(badge, CornerRadius::same(theme::radius::CONTROL), fill);
         let initial = connection.name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default();
-        ui.painter().text(badge.center(), Align2::CENTER_CENTER, initial, FontId::new(14.0, strong_family()), ink);
-        ui.painter().text(rect.min + Vec2::new(44.0, 13.0), Align2::LEFT_CENTER, &connection.name, FontId::new(14.0, strong_family()), theme::text());
+        ui.painter().text(badge.center(), Align2::CENTER_CENTER, initial, FontId::new(theme::size::BODY, strong_family()), ink);
+        ui.painter().text(rect.min + Vec2::new(44.0, 13.0), Align2::LEFT_CENTER, &connection.name, FontId::new(theme::size::BODY, strong_family()), theme::text());
         ui.painter().text(
             rect.min + Vec2::new(44.0, 29.0),
             Align2::LEFT_CENTER,
             connection.target(),
-            FontId::new(12.0, FontFamily::Proportional),
+            FontId::new(theme::size::SMALL, FontFamily::Proportional),
             theme::subtext(),
         );
-        let files = Rect::from_center_size(Pos2::new(rect.max.x - 20.0, rect.center().y), Vec2::splat(28.0));
-        let files_response = ui.interact(files, ui.auto_id_with(("plus-files", index)), Sense::click()).hand();
-        if files_response.hovered() {
-            ui.painter().rect_filled(files, CornerRadius::same(CONTROL_RADIUS), theme::surface());
-        }
-        ui.painter().text(files.center(), Align2::CENTER_CENTER, icons::FOLDER, FontId::proportional(16.0), theme::subtext());
+        let files_slot = Rect::from_center_size(Pos2::new(rect.max.x - 20.0, rect.center().y), Vec2::splat(26.0));
+        let files_response = crate::ui_kit::IconButton::new(icons::FOLDER).color(theme::subtext()).show_at(ui, files_slot, ("plus-files", index));
         if files_response.on_hover_text("Abrir el explorador de archivos").clicked() {
             files_for = Some(index);
         } else if clicked {
@@ -3081,19 +2992,19 @@ fn plus_menu(ui: &mut egui::Ui, recents: &[Connection], selected: &mut usize, ch
         }
     }
 
-    ui.add_space(4.0);
+    ui.add_space(theme::space::XS);
     let containers_index = rows - 2;
     let (rect, clicked) = row(ui, containers_index, selected);
-    ui.painter().text(rect.min + Vec2::new(20.0, 20.0), Align2::CENTER_CENTER, icons::DOTS, FontId::proportional(16.0), theme::subtext());
-    ui.painter().text(rect.min + Vec2::new(42.0, 20.0), Align2::LEFT_CENTER, "Contenedores", FontId::new(14.0, FontFamily::Proportional), theme::text());
+    ui.painter().text(rect.min + Vec2::new(20.0, 20.0), Align2::CENTER_CENTER, icons::DOTS, FontId::proportional(theme::size::ICON), theme::subtext());
+    ui.painter().text(rect.min + Vec2::new(42.0, 20.0), Align2::LEFT_CENTER, "Contenedores", FontId::new(theme::size::BODY, FontFamily::Proportional), theme::text());
     if clicked {
         picked = Some(containers_index);
     }
     let index = rows - 1;
     let (rect, clicked) = row(ui, index, selected);
-    ui.painter().text(rect.min + Vec2::new(20.0, 20.0), Align2::CENTER_CENTER, icons::SEARCH, FontId::proportional(16.0), theme::subtext());
-    ui.painter().text(rect.min + Vec2::new(42.0, 20.0), Align2::LEFT_CENTER, "Ver todas…", FontId::new(14.0, FontFamily::Proportional), theme::text());
-    ui.painter().text(rect.max - Vec2::new(10.0, 20.0), Align2::RIGHT_CENTER, "Ctrl+Shift+P", FontId::new(12.0, FontFamily::Proportional), theme::subtext());
+    ui.painter().text(rect.min + Vec2::new(20.0, 20.0), Align2::CENTER_CENTER, icons::SEARCH, FontId::proportional(theme::size::ICON), theme::subtext());
+    ui.painter().text(rect.min + Vec2::new(42.0, 20.0), Align2::LEFT_CENTER, "Ver todas…", FontId::new(theme::size::BODY, FontFamily::Proportional), theme::text());
+    ui.painter().text(rect.max - Vec2::new(10.0, 20.0), Align2::RIGHT_CENTER, "Ctrl+Shift+P", FontId::new(theme::size::SMALL, FontFamily::Proportional), theme::subtext());
     if clicked {
         picked = Some(index);
     }
@@ -3126,7 +3037,7 @@ fn tunnel_line(ui: &mut egui::Ui, status: &ssh::TunnelStatus) {
         Pos2::new(rect.min.x + 26.0, rect.center().y),
         Align2::LEFT_CENTER,
         status.forward.summary(),
-        FontId::new(12.0, FontFamily::Proportional),
+        FontId::new(theme::size::SMALL, FontFamily::Proportional),
         theme::subtext(),
     );
     if status.served > 0 {
@@ -3134,7 +3045,7 @@ fn tunnel_line(ui: &mut egui::Ui, status: &ssh::TunnelStatus) {
             Pos2::new(rect.max.x - 10.0, rect.center().y),
             Align2::RIGHT_CENTER,
             status.served.to_string(),
-            FontId::new(12.0, FontFamily::Proportional),
+            FontId::new(theme::size::SMALL, FontFamily::Proportional),
             theme::subtext(),
         );
     }
@@ -3220,11 +3131,11 @@ pub fn strong_family() -> FontFamily {
 fn install_visuals(ctx: &egui::Context) {
     let mut style = (*ctx.global_style()).clone();
     style.text_styles = [
-        (TextStyle::Small, FontId::new(12.0, FontFamily::Proportional)),
-        (TextStyle::Body, FontId::new(14.0, FontFamily::Proportional)),
-        (TextStyle::Button, FontId::new(14.0, FontFamily::Proportional)),
-        (TextStyle::Heading, FontId::new(18.0, strong_family())),
-        (TextStyle::Monospace, FontId::new(14.0, FontFamily::Monospace)),
+        (TextStyle::Small, FontId::new(theme::size::SMALL, FontFamily::Proportional)),
+        (TextStyle::Body, FontId::new(theme::size::BODY, FontFamily::Proportional)),
+        (TextStyle::Button, FontId::new(theme::size::BODY, FontFamily::Proportional)),
+        (TextStyle::Heading, FontId::new(theme::size::DISPLAY, strong_family())),
+        (TextStyle::Monospace, FontId::new(theme::size::BODY, FontFamily::Monospace)),
     ]
     .into();
     style.animation_time = 0.12;
@@ -3234,22 +3145,22 @@ fn install_visuals(ctx: &egui::Context) {
     style.spacing.button_padding = Vec2::new(12.0, 6.0);
     style.spacing.interact_size.y = 30.0;
 
-    let radius = CornerRadius::same(CONTROL_RADIUS);
+    let radius = CornerRadius::same(theme::radius::CONTROL);
     let v = &mut style.visuals;
     v.panel_fill = theme::base();
     v.window_fill = theme::mantle();
-    v.window_corner_radius = CornerRadius::same(10);
-    v.window_stroke = Stroke::new(1.0, theme::surface());
-    v.window_shadow = egui::Shadow { offset: [0, 10], blur: 28, spread: 0, color: Color32::from_black_alpha(110) };
-    v.popup_shadow = egui::Shadow { offset: [0, 6], blur: 16, spread: 0, color: Color32::from_black_alpha(90) };
-    v.menu_corner_radius = CornerRadius::same(8);
+    v.window_corner_radius = CornerRadius::same(theme::radius::DIALOG);
+    v.window_stroke = Stroke::new(theme::stroke::HAIRLINE, theme::surface());
+    v.window_shadow = egui::Shadow { offset: [0, 10], blur: 28, spread: 0, color: theme::shadow(true) };
+    v.popup_shadow = egui::Shadow { offset: [0, 6], blur: 16, spread: 0, color: theme::shadow(false) };
+    v.menu_corner_radius = CornerRadius::same(theme::radius::CARD);
     v.override_text_color = Some(theme::text());
     v.extreme_bg_color = theme::base();
     v.selection.bg_fill = theme::accent().gamma_multiply(0.35);
-    v.selection.stroke = Stroke::new(1.0, theme::accent());
+    v.selection.stroke = Stroke::new(theme::stroke::HAIRLINE, theme::accent());
 
     v.interact_cursor = Some(egui::CursorIcon::PointingHand);
-    v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, theme::surface());
+    v.widgets.noninteractive.bg_stroke = Stroke::new(theme::stroke::HAIRLINE, theme::surface());
     for (widget, fill) in [
         (&mut v.widgets.inactive, theme::surface()),
         (&mut v.widgets.hovered, theme::selection()),
@@ -3260,7 +3171,7 @@ fn install_visuals(ctx: &egui::Context) {
         widget.bg_stroke = Stroke::NONE;
         widget.corner_radius = radius;
     }
-    v.widgets.hovered.fg_stroke = Stroke::new(1.0, theme::text());
+    v.widgets.hovered.fg_stroke = Stroke::new(theme::stroke::HAIRLINE, theme::text());
     ctx.set_global_style(style);
 }
 
@@ -3296,7 +3207,7 @@ fn tab(
     max_width: f32,
     menu: &mut Option<(usize, TabAction)>,
 ) -> TabOutcome {
-    let font = FontId::new(14.0, if selected { strong_family() } else { FontFamily::Proportional });
+    let font = FontId::new(theme::size::BODY, if selected { strong_family() } else { FontFamily::Proportional });
     // Un candado abierto rojo avisa de las conexiones sin cifrar (Telnet).
     let lock = if insecure { 16.0 } else { 0.0 };
     let chrome = 12.0 + 8.0 + 20.0 + 8.0 + lock;
@@ -3334,7 +3245,7 @@ fn tab(
 
     let color = if selected { theme::text() } else { theme::subtext() };
     if insecure {
-        ui.painter().text(Pos2::new(rect.min.x + 18.0, rect.center().y + 1.0), Align2::CENTER_CENTER, icons::LOCK_OPEN, FontId::proportional(13.0), theme::red());
+        ui.painter().text(Pos2::new(rect.min.x + 18.0, rect.center().y + 1.0), Align2::CENTER_CENTER, icons::LOCK_OPEN, FontId::proportional(theme::size::LABEL), theme::red());
     }
     ui.painter().galley(Pos2::new(rect.min.x + 12.0 + lock, rect.center().y - galley.size().y / 2.0 + 1.0), galley, color);
 
@@ -3346,9 +3257,9 @@ fn tab(
     if selected || hovered {
         let close = ui.interact(close_rect, ui.auto_id_with(("tab-close", index)), Sense::click()).hand();
         if close.hovered() {
-            ui.painter().rect_filled(close_rect, CornerRadius::same(4), theme::selection());
+            ui.painter().rect_filled(close_rect, CornerRadius::same(theme::radius::SMALL), theme::selection());
         }
-        ui.painter().text(close_rect.center(), Align2::CENTER_CENTER, icons::X, FontId::proportional(13.0), color);
+        ui.painter().text(close_rect.center(), Align2::CENTER_CENTER, icons::X, FontId::proportional(theme::size::LABEL), color);
         close_clicked = close.on_hover_text("Cerrar pestaña").clicked();
     }
     response.context_menu(|ui| {
@@ -3489,7 +3400,7 @@ impl eframe::App for App {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 2.0;
                     let hint = if self.sidebar_collapsed { "Mostrar la barra lateral (Ctrl+Shift+B)" } else { "Ocultar la barra lateral (Ctrl+Shift+B)" };
-                    let toggle = compact_icon(ui, icons::SIDEBAR, 17.0, theme::subtext());
+                    let toggle = crate::ui_kit::icon_button(ui, icons::SIDEBAR, theme::size::ICON_LG, theme::subtext());
                     if toggle.on_hover_text(hint).clicked() {
                         toggle_sidebar_button = true;
                     }
@@ -3553,8 +3464,8 @@ impl eframe::App for App {
                     }
                     });
                         });
-                    ui.add_space(6.0);
-                    let plus = compact_icon(ui, icons::PLUS, 16.0, theme::text());
+                    ui.add_space(theme::space::S);
+                    let plus = crate::ui_kit::icon_button(ui, icons::PLUS, theme::size::ICON, theme::text());
                     let plus = plus.on_hover_text("Nueva pestaña (Ctrl+Shift+T)");
                     let popup_id = egui::Popup::default_response_id(&plus);
                     if std::mem::take(&mut open_plus_menu) {
@@ -3567,7 +3478,7 @@ impl eframe::App for App {
                         plus_menu(ui, &plus_recents, &mut plus_selected, &mut plus_choice);
                     });
                     if overflowing {
-                        let list = compact_icon(ui, icons::CARET_DOWN, 14.0, theme::subtext());
+                        let list = crate::ui_kit::icon_button(ui, icons::CARET_DOWN, theme::size::ICON_SM, theme::subtext());
                         let list = list.on_hover_text("Todas las pestañas");
                         egui::Popup::menu(&list).width(260.0).show(|ui| {
                             for (i, (title, _, _, _)) in tab_labels.iter().enumerate() {
@@ -3585,7 +3496,7 @@ impl eframe::App for App {
                         if self.tabs.get(self.active).is_some_and(|t| matches!(t.body, Body::Terminal { .. })) {
                             ui.scope(|ui| {
                                 ui.visuals_mut().widgets.inactive.weak_bg_fill = Color32::TRANSPARENT;
-                                let split_menu = ui.menu_button(RichText::new(icons::SPLIT).size(17.0).color(theme::subtext()), |ui| {
+                                let split_menu = ui.menu_button(RichText::new(icons::SPLIT).size(theme::size::ICON_LG).color(theme::subtext()), |ui| {
                                     if ui.button("A la derecha  (Ctrl+Shift+D)").clicked() {
                                         split = Some(Dir::Horizontal);
                                         ui.close();
@@ -3603,7 +3514,7 @@ impl eframe::App for App {
                             });
                         }
                         if let Some(TabKind::Connection(id)) = self.tabs.get(self.active).map(|t| t.kind) {
-                            if self.active_has_explorer() && compact_icon(ui, icons::FOLDER, 17.0, theme::subtext()).on_hover_text("Abrir el explorador de archivos de esta conexión").clicked() {
+                            if self.active_has_explorer() && crate::ui_kit::icon_button(ui, icons::FOLDER, theme::size::ICON_LG, theme::subtext()).on_hover_text("Abrir el explorador de archivos de esta conexión").clicked() {
                                 files_tab = Some(id);
                             }
                         }
@@ -3812,7 +3723,7 @@ impl eframe::App for App {
                             Dir::Vertical => Rect::from_center_size(handle.rect.center(), Vec2::new(handle.rect.width(), 2.0)),
                         };
                         let color = if response.hovered() || response.dragged() { theme::accent() } else { theme::surface() };
-                        ui.painter().rect_filled(line, CornerRadius::same(1), color);
+                        ui.painter().rect_filled(line, CornerRadius::same(theme::radius::TINY), color);
                     }
                     for (path, ratio) in ratios {
                         panes.set_ratio(&path, ratio);
@@ -3834,8 +3745,8 @@ impl eframe::App for App {
                         if let Some((_, rect)) = leaves.iter().find(|(id, _)| id == focused) {
                             ui.painter().rect_stroke(
                                 rect.expand(4.0),
-                                CornerRadius::same(4),
-                                egui::Stroke::new(1.5, identity.unwrap_or_else(theme::accent).gamma_multiply(0.7)),
+                                CornerRadius::same(theme::radius::SMALL),
+                                egui::Stroke::new(theme::stroke::MEDIUM, identity.unwrap_or_else(theme::accent).gamma_multiply(0.7)),
                                 egui::StrokeKind::Outside,
                             );
                         }
@@ -3892,7 +3803,7 @@ impl eframe::App for App {
                             ui.horizontal(|ui| {
                                 ui.label("Sesión desconectada");
                                 let button = Button::new(RichText::new("Reconectar").color(theme::base()));
-                                clicked = solid_add(ui, button, theme::accent()).clicked();
+                                clicked = crate::ui_kit::button_with(ui, button, crate::ui_kit::Variant::Primary).clicked();
                             });
                         });
                     });

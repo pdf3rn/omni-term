@@ -47,7 +47,8 @@ fn draw_underline(painter: &egui::Painter, rect: Rect, flags: Flags, color: Colo
                 Pos2::new(rect.min.x + t * rect.width(), base - 1.5 * px - 1.5 * px * (t * std::f32::consts::TAU).sin())
             })
             .collect();
-        painter.add(egui::Shape::line(points, egui::Stroke::new(1.2 * px, color)));
+        let width = 1.2 * px;
+        painter.add(egui::Shape::line(points, egui::Stroke::new(width, color)));
     } else if flags.contains(Flags::DOUBLE_UNDERLINE) {
         line(base);
         line(base - 2.0 * px);
@@ -391,7 +392,7 @@ impl Pane {
         let active = response.hovered() || response.dragged();
         let color = if active { theme::subtext() } else { theme::selection() };
         let thumb = Rect::from_min_size(Pos2::new(track.min.x, thumb_top), Vec2::new(track.width(), thumb_len));
-        ui.painter().rect_filled(thumb, CornerRadius::same(3), color);
+        ui.painter().rect_filled(thumb, CornerRadius::same(theme::radius::TINY), color);
     }
 
     /// Abre la búsqueda, ya con `query` escrita.
@@ -594,14 +595,14 @@ impl Pane {
                             format!("{} de {}", state.current + 1, state.matches.len())
                         };
                         ui.label(egui::RichText::new(count).small().color(theme::subtext()));
-                        let small = |text: &str| egui::Button::new(egui::RichText::new(text).small()).frame_when_inactive(false);
-                        if ui.add(small("Anterior")).clicked() {
+                        let small = |ui: &mut egui::Ui, text: &str| crate::ui_kit::button_with(ui, egui::Button::new(egui::RichText::new(text).small()), crate::ui_kit::Variant::Ghost);
+                        if small(ui, "Anterior").clicked() {
                             step = Some(false);
                         }
-                        if ui.add(small("Siguiente")).clicked() {
+                        if small(ui, "Siguiente").clicked() {
                             step = Some(true);
                         }
-                        if ui.add(small("Cerrar")).clicked() {
+                        if small(ui, "Cerrar").clicked() {
                             close = true;
                         }
                         if field.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
@@ -985,7 +986,7 @@ impl Pane {
                 painter.rect_stroke(
                     cell_rect(vp.line, vp.column.0, 1),
                     CornerRadius::ZERO,
-                    Stroke::new(1.0, theme::cursor()),
+                    Stroke::new(theme::stroke::HAIRLINE, theme::cursor()),
                     StrokeKind::Inside,
                 );
             }
