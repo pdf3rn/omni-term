@@ -724,6 +724,8 @@ pub struct Spec {
     enter_submits: bool,
     backdrop_cancels: bool,
     status: Option<(String, Color32)>,
+    /// Ancho de una columna lateral hundida entre el título y el pie, a la izquierda; el cuerpo dibuja su contenido.
+    side_width: f32,
 }
 
 impl Spec {
@@ -741,6 +743,7 @@ impl Spec {
             enter_submits: true,
             backdrop_cancels: false,
             status: None,
+            side_width: 0.0,
         }
     }
 
@@ -799,6 +802,12 @@ impl Spec {
         self
     }
 
+    /// Reserva una columna lateral hundida pegada al borde izquierdo, entre la franja del título y la del pie.
+    pub fn side(mut self, width: f32) -> Self {
+        self.side_width = width;
+        self
+    }
+
     /// Un clic fuera cierra el diálogo; solo para los que no tienen nada que perder.
     pub fn backdrop_closes(mut self) -> Self {
         self.backdrop_cancels = true;
@@ -825,9 +834,13 @@ pub fn shell(ctx: &egui::Context, spec: Spec, body: impl FnOnce(&mut egui::Ui) -
     let response = Modal::new(id()).frame(frame).show(ctx, |ui| {
         ui.set_width(spec.width);
         ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+        let side = spec.side_width;
+        // Hueco para el fondo de la columna lateral, que se rellena al final cuando se conoce la altura.
+        let side_bg = ui.painter().add(egui::Shape::Noop);
 
         // Franja del título, con la X para cerrar.
-        let (title_rect, _) = ui.allocate_exact_size(egui::vec2(spec.width, 38.0), egui::Sense::hover());
+        let (full_title, _) = ui.allocate_exact_size(egui::vec2(spec.width, 38.0), egui::Sense::hover());
+        let title_rect = full_title;
         ui.painter().rect_filled(title_rect, egui::CornerRadius { nw: 6, ne: 6, sw: 0, se: 0 }, strip);
         ui.painter().line_segment([title_rect.left_bottom(), title_rect.right_bottom()], egui::Stroke::new(theme::stroke::HAIRLINE, theme::surface()));
         ui.painter().text(title_rect.center(), egui::Align2::CENTER_CENTER, &spec.title, FontId::new(theme::size::BODY, crate::ui::strong_family()), theme::text());
@@ -838,8 +851,13 @@ pub fn shell(ctx: &egui::Context, spec: Spec, body: impl FnOnce(&mut egui::Ui) -
         }
 
         let mut enter = false;
-        egui::Frame::NONE.inner_margin(egui::Margin { left: 18, right: 18, top: 16, bottom: 18 }).show(ui, |ui| {
+        let body_margin = if side > 0.0 { egui::Margin::ZERO } else { egui::Margin { left: 18, right: 18, top: 16, bottom: 18 } };
+        egui::Frame::NONE.inner_margin(body_margin).show(ui, |ui| {
             ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
+            if side > 0.0 {
+                // El cuerpo es más claro que el de un diálogo normal: los campos se hunden en lugar de destacar.
+                ui.visuals_mut().extreme_bg_color = theme::mantle();
+            }
             if let Some(context) = &spec.context {
                 ui.label(RichText::new(context).small().color(theme::subtext()));
             }
@@ -868,13 +886,14 @@ pub fn shell(ctx: &egui::Context, spec: Spec, body: impl FnOnce(&mut egui::Ui) -
         });
 
         if let Some((text, color)) = &spec.status {
-            egui::Frame::NONE.inner_margin(egui::Margin { left: 18, right: 18, top: 0, bottom: 10 }).show(ui, |ui| {
+            egui::Frame::NONE.inner_margin(egui::Margin { left: 18 + side as i8, right: 18, top: 0, bottom: 10 }).show(ui, |ui| {
                 ui.label(RichText::new(text.as_str()).small().color(*color));
             });
         }
 
         // Franja de botones.
-        let (foot_rect, _) = ui.allocate_exact_size(egui::vec2(spec.width, 56.0), egui::Sense::hover());
+        let (full_foot, _) = ui.allocate_exact_size(egui::vec2(spec.width, 56.0), egui::Sense::hover());
+        let foot_rect = full_foot;
         ui.painter().rect_filled(foot_rect, egui::CornerRadius { nw: 0, ne: 0, sw: 6, se: 6 }, strip);
         ui.painter().line_segment([foot_rect.left_top(), foot_rect.right_top()], egui::Stroke::new(theme::stroke::HAIRLINE, theme::surface()));
         let mut foot = ui.new_child(egui::UiBuilder::new().max_rect(foot_rect.shrink2(egui::vec2(14.0, 0.0))).layout(egui::Layout::left_to_right(egui::Align::Center)));
@@ -906,6 +925,15 @@ pub fn shell(ctx: &egui::Context, spec: Spec, body: impl FnOnce(&mut egui::Ui) -
                 }
             }
         });
+        if side > 0.0 {
+            let panel = egui::Rect::from_min_max(egui::pos2(full_title.min.x, full_title.max.y), egui::pos2(full_title.min.x + side, full_foot.min.y));
+            let form = egui::Rect::from_min_max(egui::pos2(panel.max.x, panel.min.y), egui::pos2(full_title.max.x, panel.max.y));
+            ui.painter().set(side_bg, egui::Shape::Vec(vec![
+                egui::Shape::rect_filled(panel, egui::CornerRadius::ZERO, theme::sunken()),
+                egui::Shape::rect_filled(form, egui::CornerRadius::ZERO, theme::base()),
+                egui::Shape::line_segment([panel.right_top(), panel.right_bottom()], egui::Stroke::new(theme::stroke::HAIRLINE, theme::surface())),
+            ]));
+        }
         if enter && spec.enter_submits && spec.accept.is_some() && spec.accept_enabled && matches!(action, Action::None) {
             action = Action::Accept;
         }
@@ -1020,7 +1048,7 @@ pub fn show(
         }
         Dialog::Edit(form) => {
             let title = if form.id.is_some() { "Editar conexión" } else { "Nueva conexión" };
-            let mut spec = Spec::new(title).width(700.0).accept("Guardar").no_enter();
+            let mut spec = Spec::new(title).width(780.0).side(KIND_LIST_WIDTH).accept("Guardar").no_enter();
             if form.ssh_like() {
                 spec = spec.extra("Probar conexión");
             }
@@ -1455,7 +1483,7 @@ enum ConnKind {
 }
 
 impl ConnKind {
-    /// (tipo, nombre, grupo): el selector pone un encabezado cada vez que cambia el grupo.
+    /// (tipo, nombre, grupo): la lista pone un encabezado cada vez que cambia el grupo.
     const ALL: [(ConnKind, &'static str, &'static str); 7] = [
         (ConnKind::Ssh, "SSH", "Terminal"),
         (ConnKind::Telnet, "Telnet", "Terminal"),
@@ -1490,54 +1518,56 @@ impl ConnKind {
         };
         set_default_port(form);
     }
+}
 
-    fn group(self) -> &'static str {
-        Self::ALL.iter().find(|(kind, ..)| *kind == self).map_or("", |(_, _, group)| group)
+const KIND_LIST_WIDTH: f32 = 176.0;
+const KIND_ROW_HEIGHT: f32 = 28.0;
+
+impl ConnKind {
+    fn icon(self) -> &'static str {
+        use crate::icons;
+        match self {
+            ConnKind::Ssh => icons::TERMINAL,
+            ConnKind::Telnet => icons::PROMPT,
+            ConnKind::Serial => icons::USB,
+            ConnKind::Sftp => icons::FOLDER_LOCK,
+            ConnKind::Ftp => icons::CLOUD_UP,
+            ConnKind::Smb => icons::HARD_DRIVES,
+            ConnKind::Adb => icons::PHONE,
+        }
     }
 }
 
-/// Categorías del raíl izquierdo: (grupo de `ConnKind::ALL`, icono). Una categoría nueva es una fila más.
-const CATEGORIES: [(&str, &str); 3] = [("Terminal", crate::icons::TERMINAL), ("Archivos", crate::icons::FOLDER), ("Otros", crate::icons::DOTS)];
-
-const RAIL_BUTTON: f32 = 56.0;
-const RAIL_WIDTH: f32 = RAIL_BUTTON + 16.0;
-
-/// Botones cuadrados de categoría, fijos a la izquierda mientras el formulario se desplaza.
-fn category_rail(ui: &mut egui::Ui, form: &mut ConnForm) {
-    let current = ConnKind::of(form).group();
+/// Lista de tipos de conexión con icono, agrupada con encabezados, en la columna lateral del diálogo.
+fn kind_list(ui: &mut egui::Ui, form: &mut ConnForm) {
+    let current = ConnKind::of(form);
     ui.vertical(|ui| {
-        ui.spacing_mut().item_spacing.y = 8.0;
-        ui.set_width(RAIL_BUTTON);
-        for (group, icon) in CATEGORIES {
-            let selected = group == current;
-            let (rect, response) = ui.allocate_exact_size(egui::vec2(RAIL_BUTTON, RAIL_BUTTON), egui::Sense::click());
-            let response = response.hand().on_hover_text(group);
-            let (fill, ink) = if selected { (theme::accent(), theme::base()) } else { (Color32::TRANSPARENT, theme::text()) };
-            let radius = egui::CornerRadius::same(theme::radius::CONTROL);
-            ui.painter().rect_filled(rect, radius, if !selected && response.hovered() { theme::selection() } else { fill });
-            if !selected {
-                ui.painter().rect_stroke(rect, radius, egui::Stroke::new(theme::stroke::HAIRLINE, theme::surface()), egui::StrokeKind::Inside);
-            }
-            ui.painter().text(rect.center() - egui::vec2(0.0, 8.0), egui::Align2::CENTER_CENTER, icon, FontId::proportional(theme::size::ICON_XL), ink);
-            ui.painter().text(rect.center() + egui::vec2(0.0, 17.0), egui::Align2::CENTER_CENTER, group, FontId::proportional(theme::size::CAPTION), ink);
-            if response.clicked() && !selected {
-                if let Some((kind, ..)) = ConnKind::ALL.iter().find(|(_, _, g)| *g == group) {
-                    kind.apply(form);
+        ui.set_width(KIND_LIST_WIDTH);
+        egui::Frame::NONE.inner_margin(egui::Margin::same(theme::space::L as i8)).show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 2.0;
+            let mut group = "";
+            for (kind, name, kind_group) in ConnKind::ALL {
+                if kind_group != group {
+                    if !group.is_empty() {
+                        ui.add_space(theme::space::S);
+                    }
+                    ui.label(RichText::new(kind_group.to_uppercase()).font(FontId::new(theme::size::CAPTION, egui::FontFamily::Proportional)).color(theme::subtext()));
+                    group = kind_group;
                 }
-            }
-        }
-    });
-}
-
-/// Tipos de la categoría elegida: la primera línea del formulario.
-fn kind_row(ui: &mut egui::Ui, form: &mut ConnForm) {
-    // Sin etiqueta: los botones del raíl ya dicen qué se está eligiendo.
-    crate::ui_kit::form_row(ui, "", |ui| {
-        let current = ConnKind::of(form);
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 4.0;
-            for (kind, name, group) in ConnKind::ALL {
-                if group == current.group() && ui.selectable_label(current == kind, name).hand().clicked() && current != kind {
+                let selected = kind == current;
+                let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), KIND_ROW_HEIGHT), egui::Sense::click());
+                let response = response.hand();
+                let radius = egui::CornerRadius::same(theme::radius::CONTROL);
+                if selected {
+                    ui.painter().rect_filled(rect, radius, theme::selection());
+                } else if response.hovered() {
+                    ui.painter().rect_filled(rect, radius, theme::surface());
+                }
+                let ink = if selected { theme::text() } else { theme::subtext() };
+                ui.painter().text(rect.min + egui::vec2(14.0, KIND_ROW_HEIGHT / 2.0), egui::Align2::CENTER_CENTER, kind.icon(), FontId::proportional(theme::size::ICON), ink);
+                let font = FontId::new(theme::size::BODY, if selected { crate::ui::strong_family() } else { egui::FontFamily::Proportional });
+                ui.painter().text(rect.min + egui::vec2(32.0, KIND_ROW_HEIGHT / 2.0), egui::Align2::LEFT_CENTER, name, font, ink);
+                if response.clicked() && !selected {
                     kind.apply(form);
                 }
             }
@@ -1724,19 +1754,23 @@ fn edit_body(ui: &mut egui::Ui, form: &mut ConnForm, connections: &[Connection])
     let room = (ui.ctx().content_rect().height() * 0.9 - 38.0 - 56.0 - 34.0 - 34.0).max(240.0);
     ui.horizontal_top(|ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
-        category_rail(ui, form);
-        ui.add_space(RAIL_WIDTH - RAIL_BUTTON);
+        kind_list(ui, form);
         ui.vertical(|ui| {
-            ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
-            ScrollArea::vertical()
-                .max_height(room)
-                .auto_shrink([false, true])
+            egui::Frame::NONE
+                .inner_margin(egui::Margin { left: 18, right: 18, top: 16, bottom: 18 })
                 .show(ui, |ui| {
-                    // La barra flotante no debe tapar el borde de los campos.
-                    ui.set_max_width(ui.available_width() - 10.0);
-                    // Altura mínima para que el diálogo no salte al cambiar entre tipos de distinta longitud.
-                    ui.set_min_height(380.0_f32.min(room));
-                    form_fields(ui, form, connections)
+                    ui.spacing_mut().item_spacing = egui::vec2(8.0, 4.0);
+                    ScrollArea::vertical()
+                        .max_height(room)
+                        .auto_shrink([false, true])
+                        .show(ui, |ui| {
+                            // La barra flotante no debe tapar el borde de los campos.
+                            ui.set_max_width(ui.available_width() - 10.0);
+                            // Altura mínima para que el diálogo no salte al cambiar entre tipos de distinta longitud.
+                            ui.set_min_height(380.0_f32.min(room));
+                            form_fields(ui, form, connections)
+                        })
+                        .inner
                 })
                 .inner
         })
@@ -1746,8 +1780,6 @@ fn edit_body(ui: &mut egui::Ui, form: &mut ConnForm, connections: &[Connection])
 }
 
 fn form_fields(ui: &mut egui::Ui, form: &mut ConnForm, connections: &[Connection]) -> bool {
-    kind_row(ui, form);
-    ui.add_space(theme::space::GROUP);
     crate::ui_kit::form_row(ui, "Nombre", |ui| {
         let width = ui.available_width();
         let response = crate::ui_kit::text_input(ui, &mut form.name, width, "Nombre de la conexión", &mut form.errors.name);
@@ -1760,7 +1792,7 @@ fn form_fields(ui: &mut egui::Ui, form: &mut ConnForm, connections: &[Connection
     ui.add_space(theme::space::ROW);
     environment_row(ui, form);
 
-    ui.add_space(theme::space::GROUP);
+    ui.add_space(theme::space::L);
     let kind = ConnKind::of(form);
     if kind == ConnKind::Serial {
         serial_rows(ui, form);
