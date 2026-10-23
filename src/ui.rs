@@ -1772,7 +1772,9 @@ impl App {
                     egui::MenuBar::new().ui(ui, |ui| menus(ui));
                 } else {
                     let bar = ui.max_rect();
-                    let left = ui.horizontal_centered(|ui| {
+                    // Se registra antes que el resto: los menús y botones, añadidos después, tienen prioridad sobre la zona de arrastre.
+                    let response = ui.interact(bar, egui::Id::NULL.with("titlebar-drag"), Sense::click_and_drag());
+                    ui.horizontal_centered(|ui| {
                         ui.add(egui::Image::new(&crate::dialogs::app_logo(ui.ctx())).fit_to_exact_size(Vec2::splat(16.0)));
                         ui.add_space(theme::space::XS);
                         egui::MenuBar::new().ui(ui, |ui| {
@@ -1787,11 +1789,9 @@ impl App {
                             }
                         });
                     });
-                    let menu_end = left.response.rect.max.x;
                     let controls = 3.0 * WINDOW_BUTTON_WIDTH;
-                    let zone = Rect::from_min_max(Pos2::new(menu_end + theme::space::S, bar.min.y), Pos2::new(bar.max.x - controls - 36.0, bar.max.y));
-                    let response = ui.interact(zone, egui::Id::NULL.with("titlebar-drag"), Sense::click_and_drag());
-                    ui.painter().with_clip_rect(zone).text(
+                    let title_area = Rect::from_min_max(Pos2::new(bar.min.x + 300.0, bar.min.y), Pos2::new(bar.max.x - controls - 36.0, bar.max.y));
+                    ui.painter().with_clip_rect(title_area).text(
                         Pos2::new(bar.center().x, bar.center().y),
                         egui::Align2::CENTER_CENTER,
                         &title,
@@ -3970,7 +3970,10 @@ impl eframe::App for App {
 
         let finished_restoring = self.restore_active.is_none();
         if self.tabs.is_empty() && finished_restoring && self.open_queue.is_empty() {
-            ctx.send_viewport_cmd(ViewportCommand::Title("omni-term".to_string()));
+            if self.window_title != "omni-term" {
+                ctx.send_viewport_cmd(ViewportCommand::Title("omni-term".to_string()));
+                self.window_title = "omni-term".to_string();
+            }
             match self.empty_state(ui, text_area) {
                 Some(EmptyAction::Local) => self.open_queue.push_back(SavedTab::plain(TabKind::Local)),
                 Some(EmptyAction::NewConnection) => self.run_command(Command::NewConnection),
