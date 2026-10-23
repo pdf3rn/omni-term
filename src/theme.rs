@@ -7,6 +7,7 @@ use eframe::egui::Color32;
 pub struct Palette {
     base: Color32,
     mantle: Color32,
+    sunken: Color32,
     text: Color32,
     subtext: Color32,
     surface: Color32,
@@ -88,6 +89,7 @@ pub mod stroke {
 static DARK: Palette = Palette {
     base: rgb(0x1e1e1e),
     mantle: rgb(0x181818),
+    sunken: rgb(0x181818),
     text: rgb(0xd4d4d4),
     subtext: rgb(0xa6a6a6),
     surface: rgb(0x303030),
@@ -105,6 +107,7 @@ static DARK: Palette = Palette {
 static LIGHT: Palette = Palette {
     base: rgb(0xf5f5f5),
     mantle: rgb(0xebebeb),
+    sunken: rgb(0xdcdcdc),
     text: rgb(0x2e2e2e),
     subtext: rgb(0x555555),
     surface: rgb(0xd6d6d6),
@@ -166,6 +169,10 @@ pub fn base() -> Color32 {
 }
 pub fn mantle() -> Color32 {
     palette().mantle
+}
+/// Fondo más hundido que el de los diálogos, para paneles laterales dentro de ellos.
+pub fn sunken() -> Color32 {
+    palette().sunken
 }
 pub fn text() -> Color32 {
     palette().text
