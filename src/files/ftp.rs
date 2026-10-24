@@ -19,10 +19,10 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio_rustls::rustls::{ClientConfig, RootCertStore};
 use tokio_rustls::TlsConnector;
 
-use crate::remotefs::{Reader, RemoteFs, Writer};
-use crate::sftp::{self, Entry};
-use crate::ssh::Credentials;
-use crate::store::{Connection, FilesKind, FtpOptions, FtpTls};
+use crate::files::remotefs::{Reader, RemoteFs, Writer};
+use crate::files::sftp::{self, Entry};
+use crate::connect::ssh::Credentials;
+use crate::data::store::{Connection, FilesKind, FtpOptions, FtpTls};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -284,7 +284,7 @@ impl AsyncWrite for TransferIo {
 
 pub async fn connect(connection: &Connection, credentials: &Credentials) -> anyhow::Result<Arc<dyn RemoteFs>> {
     let FilesKind::Ftp(options) = (match connection.protocol {
-        crate::store::Protocol::Files(kind) => kind,
+        crate::data::store::Protocol::Files(kind) => kind,
         _ => anyhow::bail!("la conexión no es FTP"),
     }) else {
         anyhow::bail!("la conexión no es FTP");

@@ -2,10 +2,10 @@
 
 use eframe::egui::{self, Align2, CornerRadius, Frame, Id, Key, Margin, Modifiers, RichText, ScrollArea, Sense, TextEdit, Vec2};
 
-use crate::cursor::HandExt;
-use crate::icons;
-use crate::store::{Connection, Snippet};
-use crate::theme;
+use crate::ui::cursor::HandExt;
+use crate::ui::icons;
+use crate::data::store::{Connection, Snippet};
+use crate::ui::theme;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Command {

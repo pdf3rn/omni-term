@@ -14,8 +14,8 @@ use russh::{Channel, ChannelMsg, MethodKind};
 use tokio::sync::{mpsc, oneshot};
 use zeroize::Zeroizing;
 
-use crate::store::{Auth, Connection, Forward, ForwardKind};
-use crate::term::{Backend, Feed};
+use crate::data::store::{Auth, Connection, Forward, ForwardKind};
+use crate::terminal::term::{Backend, Feed};
 
 /// Petición de confianza para un servidor que no está en `known_hosts`.
 pub struct HostKeyRequest {
@@ -230,7 +230,7 @@ impl Handler for Client {
         (self.wake)();
 
         if answer.await.unwrap_or(false) {
-            if let Err(error) = crate::known_hosts::learn(&self.known_hosts, &self.host, self.port, key) {
+            if let Err(error) = crate::connect::known_hosts::learn(&self.known_hosts, &self.host, self.port, key) {
                 *self.rejection.lock().unwrap() = Some(format!(
                     "No se pudo guardar la huella en {}: {error}. Conexión cancelada.",
                     self.known_hosts.display()
@@ -575,20 +575,20 @@ async fn dynamic_forward(session: Arc<Handle<Client>>, tunnels: Tunnels, index: 
         let session = session.clone();
         let tunnels = tunnels.clone();
         tokio::spawn(async move {
-            let Ok((host, port)) = crate::socks::handshake(&mut local).await else { return };
+            let Ok((host, port)) = crate::connect::socks::handshake(&mut local).await else { return };
             let opened = session
                 .channel_open_direct_tcpip(host, port as u32, peer.ip().to_string(), peer.port() as u32)
                 .await;
             match opened {
                 Ok(channel) => {
-                    if crate::socks::reply(&mut local, crate::socks::Reply::Succeeded).await.is_err() {
+                    if crate::connect::socks::reply(&mut local, crate::connect::socks::Reply::Succeeded).await.is_err() {
                         return;
                     }
                     count_served(&tunnels, index);
                     pump(local, channel.into_stream()).await;
                 }
                 Err(_) => {
-                    let _ = crate::socks::reply(&mut local, crate::socks::Reply::ConnectionRefused).await;
+                    let _ = crate::connect::socks::reply(&mut local, crate::connect::socks::Reply::ConnectionRefused).await;
                 }
             }
         });
@@ -724,7 +724,7 @@ mod tests {
     use std::time::Instant;
 
     use super::*;
-    use crate::term::Session;
+    use crate::terminal::term::Session;
 
     /// Proxy TCP que se puede cortar para simular una caída de red.
     struct CuttableProxy {
@@ -776,7 +776,7 @@ mod tests {
         let known_hosts = dir.join("known_hosts");
         let connection = Connection {
             id: None,
-            protocol: crate::store::Protocol::Ssh,
+            protocol: crate::data::store::Protocol::Ssh,
             name: "test".into(),
             host: "127.0.0.1".into(),
             port,
@@ -819,7 +819,7 @@ mod tests {
         let tunnels_for_spawn = tunnels.clone();
         let handle = runtime.handle().clone();
         let hosts = known_hosts.clone();
-        let session = Session::start(80, 24, crate::term::TermOptions::default(), || {}, move |feed| {
+        let session = Session::start(80, 24, crate::terminal::term::TermOptions::default(), || {}, move |feed| {
             Ok(spawn(&handle, connection, Credentials::default(), (80, 24), feed, events, Arc::new(|| {}), hosts, tunnels_for_spawn))
         })
         .unwrap();
@@ -913,7 +913,7 @@ mod tests {
         });
         let handle = runtime.handle().clone();
         let hosts = known_hosts.clone();
-        let second = Session::start(80, 24, crate::term::TermOptions::default(), || {}, move |feed| {
+        let second = Session::start(80, 24, crate::terminal::term::TermOptions::default(), || {}, move |feed| {
             Ok(spawn(&handle, again, Credentials::default(), (80, 24), feed, events2, Arc::new(|| {}), hosts, new_tunnels(&[])))
         })
         .unwrap();
@@ -948,7 +948,7 @@ mod tests {
         let (events, requests) = std_mpsc::channel();
         let connection = Connection {
             id: None,
-            protocol: crate::store::Protocol::Ssh,
+            protocol: crate::data::store::Protocol::Ssh,
             name: "cambio".into(),
             host: "127.0.0.1".into(),
             port: sshd.port,
@@ -997,7 +997,7 @@ mod tests {
         });
         let mut connection = Connection {
             id: None,
-            protocol: crate::store::Protocol::Ssh,
+            protocol: crate::data::store::Protocol::Ssh,
             name: "prueba".into(),
             host: "127.0.0.1".into(),
             port: sshd.port,
@@ -1045,7 +1045,7 @@ mod tests {
             });
             let connection = Connection {
                 id: None,
-                protocol: crate::store::Protocol::Ssh,
+                protocol: crate::data::store::Protocol::Ssh,
                 name: "otp".into(),
                 host: "127.0.0.1".into(),
                 port: server.port,

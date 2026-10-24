@@ -1,6 +1,6 @@
 //! Importación única de hosts desde `~/.ssh/config`.
 
-use crate::store::{Auth, Connection};
+use crate::data::store::{Auth, Connection};
 
 /// Un host leído de `~/.ssh/config`; `jump_alias` es el primer salto de `ProxyJump`, aún sin resolver.
 #[derive(Debug)]
@@ -77,7 +77,7 @@ pub fn parse(text: &str, default_user: &str) -> Vec<ImportedHost> {
         .map(|entry| ImportedHost {
             connection: Connection {
                 id: None,
-                protocol: crate::store::Protocol::Ssh,
+                protocol: crate::data::store::Protocol::Ssh,
                 name: entry.alias.clone(),
                 host: entry.host.unwrap_or(entry.alias),
                 port: entry.port.unwrap_or(22),

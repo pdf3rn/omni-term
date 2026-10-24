@@ -13,7 +13,7 @@ use serde_json::{json, Value};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 
-use crate::term::{Backend, Feed};
+use crate::terminal::term::{Backend, Feed};
 
 const TIMEOUT: Duration = Duration::from_secs(10);
 /// Detener espera hasta 10 s a que el contenedor termine antes de matarlo.

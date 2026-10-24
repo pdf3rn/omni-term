@@ -7,8 +7,8 @@ use std::time::Duration;
 
 use serialport::{DataBits, FlowControl, Parity as PortParity, SerialPort, StopBits};
 
-use crate::store::{Connection, Flow, Parity, Protocol, SerialOptions};
-use crate::term::{Backend, Control, Feed, SerialStatus};
+use crate::data::store::{Connection, Flow, Parity, Protocol, SerialOptions};
+use crate::terminal::term::{Backend, Control, Feed, SerialStatus};
 
 /// Convierte la entrada del terminal en bytes del cable y, si hace falta, en eco local.
 pub fn translate(options: &SerialOptions, input: &[u8]) -> (Vec<u8>, Vec<u8>) {
@@ -244,7 +244,7 @@ pub fn spawn(connection: &Connection, feed: Feed) -> Arc<dyn Backend> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::Newline;
+    use crate::data::store::Newline;
 
     #[test]
     fn enter_follows_the_configured_newline() {

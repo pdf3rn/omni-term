@@ -7,8 +7,8 @@ use anyhow::Context;
 use russh::client::Handle;
 use russh_sftp::client::SftpSession;
 
-use crate::ssh::{self, Client, Credentials, UiEvent};
-use crate::store::Connection;
+use crate::connect::ssh::{self, Client, Credentials, UiEvent};
+use crate::data::store::Connection;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Entry {
@@ -253,8 +253,8 @@ mod tests {
     fn sftp_operations_against_a_private_sshd() {
         use std::time::{Duration, Instant};
 
-        use crate::store::Auth;
-        use crate::transfer::{self, Resolution, TransferEvent, TransferState};
+        use crate::data::store::Auth;
+        use crate::files::transfer::{self, Resolution, TransferEvent, TransferState};
 
         let Some(sshd) = crate::testutil::PrivateSshd::start() else { return };
         let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
@@ -267,7 +267,7 @@ mod tests {
         });
         let connection = Connection {
             id: None,
-            protocol: crate::store::Protocol::Ssh,
+            protocol: crate::data::store::Protocol::Ssh,
             name: "test".into(),
             host: "127.0.0.1".into(),
             port: sshd.port,
@@ -285,7 +285,7 @@ mod tests {
             .block_on(connect(&connection, &Credentials::default(), events, Arc::new(|| {}), known_hosts))
             .expect("conexión SFTP");
         let sftp = client.session.clone();
-        let fs: Arc<dyn crate::remotefs::RemoteFs> = Arc::new(client);
+        let fs: Arc<dyn crate::files::remotefs::RemoteFs> = Arc::new(client);
 
         let remote = sshd.dir.join("remote");
         let local = sshd.dir.join("local");
@@ -369,8 +369,8 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn connects_through_a_jump_host() {
-        use crate::ssh::JumpHost;
-        use crate::store::Auth;
+        use crate::connect::ssh::JumpHost;
+        use crate::data::store::Auth;
 
         let Some(jump) = crate::testutil::PrivateSshd::start() else { return };
         let Some(target) = crate::testutil::PrivateSshd::start() else { return };
@@ -386,7 +386,7 @@ mod tests {
         });
         let connection = |sshd: &crate::testutil::PrivateSshd, name: &str| Connection {
             id: None,
-            protocol: crate::store::Protocol::Ssh,
+            protocol: crate::data::store::Protocol::Ssh,
             name: name.into(),
             host: "127.0.0.1".into(),
             port: sshd.port,

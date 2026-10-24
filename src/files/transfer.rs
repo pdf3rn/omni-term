@@ -8,8 +8,8 @@ use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::oneshot;
 
-use crate::remotefs::RemoteFs;
-use crate::sftp;
+use crate::files::remotefs::RemoteFs;
+use crate::files::sftp;
 
 const CHUNK: usize = 64 * 1024;
 

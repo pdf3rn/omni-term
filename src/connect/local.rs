@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 
-use crate::term::{Backend, Feed};
+use crate::terminal::term::{Backend, Feed};
 
 struct PtyBackend {
     writer: Mutex<Box<dyn Write + Send>>,
@@ -57,7 +57,7 @@ pub struct Profile {
 }
 
 impl Profile {
-    pub fn from_connection(connection: &crate::store::Connection) -> Self {
+    pub fn from_connection(connection: &crate::data::store::Connection) -> Self {
         Self {
             program: connection.host.trim().to_string(),
             args: split_args(&connection.user).unwrap_or_default(),
@@ -303,7 +303,7 @@ mod tests {
 
     #[test]
     fn a_profile_reads_its_fields_from_a_connection() {
-        use crate::store::{Auth, Connection, Protocol};
+        use crate::data::store::{Auth, Connection, Protocol};
         let connection = Connection {
             id: None,
             protocol: Protocol::Local,

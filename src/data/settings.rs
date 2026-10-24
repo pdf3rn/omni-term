@@ -1,6 +1,6 @@
 //! Ajustes del usuario, guardados en la tabla `meta` de la base de datos.
 
-use crate::store::Store;
+use crate::data::store::Store;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ThemeChoice {

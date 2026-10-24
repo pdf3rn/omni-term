@@ -11,15 +11,15 @@ use eframe::egui::{
     RichText, ScrollArea, Sense, TextEdit, UiBuilder, Vec2,
 };
 
-use crate::cursor::HandExt;
-use crate::icons;
-use crate::dialogs::{error_dialog, shell, Action, ErrorAction, ErrorInfo, Spec};
-use crate::remotefs::{self, RemoteFs};
-use crate::sftp::{self, Entry, SortKey};
-use crate::ssh::{Credentials, UiEvent};
-use crate::store::Connection;
-use crate::theme;
-use crate::transfer::{self, Conflict, Resolution, Transfer, TransferEvent, TransferState};
+use crate::ui::cursor::HandExt;
+use crate::ui::icons;
+use crate::ui::dialogs::{error_dialog, shell, Action, ErrorAction, ErrorInfo, Spec};
+use crate::files::remotefs::{self, RemoteFs};
+use crate::files::sftp::{self, Entry, SortKey};
+use crate::connect::ssh::{Credentials, UiEvent};
+use crate::data::store::Connection;
+use crate::ui::theme;
+use crate::files::transfer::{self, Conflict, Resolution, Transfer, TransferEvent, TransferState};
 
 const ROW_HEIGHT: f32 = 26.0;
 const MIDDLE_WIDTH: f32 = 60.0;
@@ -503,7 +503,7 @@ impl Explorer {
                 .pivot(Align2::CENTER_CENTER)
                 .fixed_pos(Pos2::new(remote_rect.center().x, remote_rect.center().y))
                 .show(&ctx, |ui| {
-                    retry = crate::ui_kit::button(ui, "Reintentar", crate::ui_kit::Variant::Primary).clicked();
+                    retry = crate::ui::kit::button(ui, "Reintentar", crate::ui::kit::Variant::Primary).clicked();
                 });
             if retry {
                 self.connect();
@@ -518,7 +518,7 @@ impl Explorer {
                 (icons::ARROW_RIGHT, "Subir: copia la selección local al directorio remoto actual", Side::Local),
                 (icons::ARROW_LEFT, "Bajar: copia la selección remota al directorio local actual", Side::Remote),
             ] {
-                let clicked = middle.vertical_centered(|ui| crate::ui_kit::IconButton::new(glyph).size(theme::size::ICON_LG).show(ui).on_hover_text(tip).clicked()).inner;
+                let clicked = middle.vertical_centered(|ui| crate::ui::kit::IconButton::new(glyph).size(theme::size::ICON_LG).show(ui).on_hover_text(tip).clicked()).inner;
                 if clicked {
                     self.copy_from(from);
                 }
@@ -594,7 +594,7 @@ impl Explorer {
                 let selected = self.narrow_side == side;
                 let color = if selected { theme::text() } else { theme::subtext() };
                 let font = FontId::new(theme::size::BODY, if selected { crate::ui::strong_family() } else { FontFamily::Proportional });
-                let response = crate::ui_kit::button_with(ui, Button::new(RichText::new(label).font(font).color(color)), crate::ui_kit::Variant::Ghost);
+                let response = crate::ui::kit::button_with(ui, Button::new(RichText::new(label).font(font).color(color)), crate::ui::kit::Variant::Ghost);
                 if selected {
                     let y = response.rect.max.y + 1.0;
                     ui.painter().line_segment([Pos2::new(response.rect.min.x, y), Pos2::new(response.rect.max.x, y)], egui::Stroke::new(theme::stroke::THICK, theme::accent()));
@@ -729,11 +729,11 @@ impl Explorer {
         ui.horizontal(|ui| {
             let caret = if self.transfers_open { icons::CARET_DOWN } else { icons::CARET_RIGHT };
             let title = if running > 0 { format!("{caret}  Transferencias · {running} en curso") } else { format!("{caret}  Transferencias") };
-            let header = crate::ui_kit::button_with(ui, Button::new(RichText::new(title).small().color(theme::subtext())), crate::ui_kit::Variant::Ghost);
+            let header = crate::ui::kit::button_with(ui, Button::new(RichText::new(title).small().color(theme::subtext())), crate::ui::kit::Variant::Ghost);
             if header.on_hover_text("Mostrar u ocultar la lista").hand().clicked() {
                 self.transfers_open = !self.transfers_open;
             }
-            if crate::ui_kit::button_with(ui, Button::new(RichText::new("Quitar terminadas").small()), crate::ui_kit::Variant::Ghost).clicked() {
+            if crate::ui::kit::button_with(ui, Button::new(RichText::new("Quitar terminadas").small()), crate::ui::kit::Variant::Ghost).clicked() {
                 self.transfers.retain(|t| t.state() == TransferState::Running);
             }
         });
@@ -759,7 +759,7 @@ impl Explorer {
                     };
                     ui.add(ProgressBar::new(if state == TransferState::Done { 1.0 } else { fraction }).desired_width(180.0));
                     ui.label(RichText::new(text).small().color(theme::subtext()));
-                    if state == TransferState::Running && crate::ui_kit::button_with(ui, Button::new(icons::X), crate::ui_kit::Variant::Ghost).on_hover_text("Cancelar").clicked() {
+                    if state == TransferState::Running && crate::ui::kit::button_with(ui, Button::new(icons::X), crate::ui::kit::Variant::Ghost).on_hover_text("Cancelar").clicked() {
                         transfer.cancel();
                     }
                 });
@@ -821,7 +821,7 @@ impl Explorer {
                             for shift in [6, 3, 0] {
                                 let mask = bit << shift;
                                 let mut on = *mode & mask != 0;
-                                if crate::ui_kit::switch(ui, &mut on).changed() {
+                                if crate::ui::kit::switch(ui, &mut on).changed() {
                                     *mode = if on { *mode | mask } else { *mode & !mask };
                                 }
                             }
@@ -847,7 +847,7 @@ impl Explorer {
                 let name = conflict.name.clone();
                 match shell(ctx, spec, |ui| {
                     ui.label(format!("\"{name}\" ya existe. ¿Qué hacemos?"));
-                    crate::ui_kit::switch_labeled(ui, apply_all, "Aplicar a todos los conflictos de esta transferencia");
+                    crate::ui::kit::switch_labeled(ui, apply_all, "Aplicar a todos los conflictos de esta transferencia");
                     false
                 }) {
                     Action::Accept => Outcome::Resolve(Resolution::Replace, *apply_all),
@@ -997,7 +997,7 @@ fn format_time(seconds: u64) -> String {
 
 /// Botón de la barra de herramientas con su explicación; devuelve `true` al pulsarlo (si está habilitado).
 fn tool_button(ui: &mut egui::Ui, glyph: &'static str, tip: &str, enabled: bool, active: bool) -> bool {
-    crate::ui_kit::IconButton::new(glyph).enabled(enabled).active(active).show(ui).on_hover_text(tip).clicked()
+    crate::ui::kit::IconButton::new(glyph).enabled(enabled).active(active).show(ui).on_hover_text(tip).clicked()
 }
 
 /// Tramos de una ruta con la ruta completa de cada uno.
@@ -1216,7 +1216,7 @@ fn pane_ui(
                 painter.text(Pos2::new(rect.min.x + 16.0, rect.center().y), Align2::CENTER_CENTER, glyph, FontId::proportional(theme::size::ICON), glyph_color);
                 let font = FontId::new(theme::size::BODY, if entry.is_dir { crate::ui::strong_family() } else { FontFamily::Proportional });
                 let name_right = rect.max.x - if show_permissions { 340.0 } else { 230.0 };
-                let name = crate::ui_kit::fit_text(&painter, &entry.name, &font, (name_right - rect.min.x - 32.0).max(24.0));
+                let name = crate::ui::kit::fit_text(&painter, &entry.name, &font, (name_right - rect.min.x - 32.0).max(24.0));
                 painter.text(Pos2::new(rect.min.x + 32.0, rect.center().y), Align2::LEFT_CENTER, name, font, theme::text());
                 if let (true, Some(mode)) = (show_permissions, entry.permissions) {
                     painter.text(
