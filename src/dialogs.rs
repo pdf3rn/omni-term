@@ -111,6 +111,8 @@ pub struct FormErrors {
     pub user: Option<String>,
     pub key_path: Option<String>,
     pub share: Option<String>,
+    /// Carpeta inicial de un perfil local.
+    pub cwd: Option<String>,
     pub forwards: Vec<Option<String>>,
     /// Error al guardar que no pertenece a ningún campo.
     pub general: Option<String>,
@@ -138,6 +140,13 @@ pub struct ConnForm {
     pub adb: bool,
     /// Resultado de la última búsqueda de dispositivos, que corre en segundo plano.
     pub adb_devices: Option<AdbDevices>,
+    /// Perfil de terminal local: intérprete en `host`, argumentos en `local_args`, carpeta en `local_cwd`.
+    pub local: bool,
+    pub local_args: String,
+    pub local_cwd: String,
+    pub local_vars: String,
+    /// Se eligió «Otro…» en la lista de intérpretes: la ruta se escribe a mano.
+    pub local_other: bool,
     /// Conexión por puerto serie; el puerto va en `host`.
     pub serial: bool,
     pub baud: String,
@@ -192,6 +201,11 @@ impl ConnForm {
             smb_domain: String::new(),
             adb: false,
             adb_devices: None,
+            local: false,
+            local_args: String::new(),
+            local_cwd: String::new(),
+            local_vars: String::new(),
+            local_other: false,
             serial: false,
             baud: serial.baud.to_string(),
             data_bits: serial.data_bits,
@@ -228,7 +242,7 @@ impl ConnForm {
     }
 
     pub fn is_ssh(&self) -> bool {
-        !self.telnet && !self.serial && !self.adb && self.files == 0
+        !self.telnet && !self.serial && !self.adb && !self.local && self.files == 0
     }
 
     /// Usa los campos de SSH (usuario, acceso, llave, salto): SSH y SFTP.
@@ -265,6 +279,11 @@ impl ConnForm {
             smb_domain: if files == 3 { connection.smb_domain().to_string() } else { String::new() },
             adb: connection.is_adb(),
             adb_devices: None,
+            local: connection.is_local(),
+            local_args: if connection.is_local() { connection.user.clone() } else { String::new() },
+            local_cwd: if connection.is_local() { connection.key_path.clone().unwrap_or_default() } else { String::new() },
+            local_vars: connection.vars.clone(),
+            local_other: false,
             serial: serial.is_some(),
             baud: serial_defaults.baud.to_string(),
             data_bits: serial_defaults.data_bits,
@@ -310,7 +329,18 @@ impl ConnForm {
         if name.is_empty() {
             errors.name = Some("Pon un nombre para reconocerla".into());
         }
-        if host.is_empty() && !self.adb {
+        if self.local {
+            if !crate::local::program_exists(&host) {
+                errors.host = Some("No se encuentra ese intérprete".into());
+            }
+            if crate::local::split_args(&self.local_args).is_err() {
+                errors.user = Some("Falta cerrar unas comillas".into());
+            }
+            if !crate::local::dir_exists(&self.local_cwd) {
+                errors.cwd = Some("Esa carpeta no existe".into());
+            }
+        }
+        if host.is_empty() && !self.adb && !self.local {
             errors.host = Some(if self.serial { "Indica el puerto, por ejemplo /dev/ttyUSB0" } else { "Indica el servidor" }.into());
         }
         let mut baud = 0;
@@ -327,7 +357,7 @@ impl ConnForm {
         if self.files == 3 && self.smb_share.trim().trim_matches(['\\', '/']).is_empty() {
             errors.share = Some("Indica el recurso compartido".into());
         }
-        let port = if self.serial || self.adb {
+        let port = if self.serial || self.adb || self.local {
             0
         } else {
             match self.port.trim().parse::<u16>() {
@@ -353,7 +383,7 @@ impl ConnForm {
             }
         }
 
-        let has_error = [&errors.name, &errors.host, &errors.port, &errors.user, &errors.key_path, &errors.share].iter().any(|e| e.is_some())
+        let has_error = [&errors.name, &errors.host, &errors.port, &errors.user, &errors.key_path, &errors.share, &errors.cwd].iter().any(|e| e.is_some())
             || errors.forwards.iter().any(Option::is_some);
         if has_error {
             self.advanced_open |= errors.forwards.iter().any(Option::is_some);
@@ -362,7 +392,7 @@ impl ConnForm {
             return None;
         }
         self.errors = FormErrors::default();
-        let telnet = self.telnet || self.serial || self.adb || self.files >= 2;
+        let telnet = self.telnet || self.serial || self.adb || self.local || self.files >= 2;
         let anonymous = self.files == 2 && self.ftp_anonymous;
         let connection = Connection {
             id: self.id,
@@ -374,6 +404,8 @@ impl ConnForm {
                 })
             } else if self.adb {
                 Protocol::Adb
+            } else if self.local {
+                Protocol::Local
             } else if self.serial {
                 Protocol::Serial(SerialOptions {
                     baud,
@@ -392,7 +424,7 @@ impl ConnForm {
             name,
             host,
             port,
-            user: if anonymous { "anonymous".into() } else if self.telnet || self.serial || self.adb { String::new() } else { user },
+            user: if anonymous { "anonymous".into() } else if self.local { self.local_args.trim().to_string() } else if self.telnet || self.serial || self.adb { String::new() } else { user },
             // FTP y SMB piden la contraseña al conectar; el anónimo no la pide.
             auth: match self.files {
                 2 if anonymous => Auth::Agent,
@@ -400,7 +432,9 @@ impl ConnForm {
                 _ if telnet => Auth::Agent,
                 _ => self.auth,
             },
-            key_path: if self.files == 3 {
+            key_path: if self.local {
+                Some(self.local_cwd.trim().to_string()).filter(|d| !d.is_empty())
+            } else if self.files == 3 {
                 Some(self.smb_domain.trim().to_string()).filter(|d| !d.is_empty())
             } else {
                 (!telnet && self.auth == Auth::Key).then_some(key_path)
@@ -408,11 +442,12 @@ impl ConnForm {
             init_command: if self.files == 3 {
                 Some(self.smb_share.trim().trim_matches(['\\', '/']).to_string())
             } else {
-                Some(self.init_command.trim().to_string()).filter(|c| !c.is_empty() && !telnet)
+                Some(self.init_command.trim().to_string()).filter(|c| !c.is_empty() && (!telnet || self.local))
             },
             jump: if telnet { None } else { self.jump },
             color: self.color,
             env: Some(self.env.trim().to_string()).filter(|e| !e.is_empty()),
+            vars: if self.local { self.local_vars.trim().to_string() } else { String::new() },
         };
         Some((connection, forwards))
     }
@@ -1480,14 +1515,16 @@ enum ConnKind {
     Ftp,
     Smb,
     Adb,
+    Local,
 }
 
 impl ConnKind {
     /// (tipo, nombre, grupo): la lista pone un encabezado cada vez que cambia el grupo.
-    const ALL: [(ConnKind, &'static str, &'static str); 7] = [
+    const ALL: [(ConnKind, &'static str, &'static str); 8] = [
         (ConnKind::Ssh, "SSH", "Terminal"),
         (ConnKind::Telnet, "Telnet", "Terminal"),
         (ConnKind::Serial, "Puerto serie", "Terminal"),
+        (ConnKind::Local, "Local", "Terminal"),
         (ConnKind::Sftp, "SFTP", "Archivos"),
         (ConnKind::Ftp, "FTP / FTPS", "Archivos"),
         (ConnKind::Smb, "SMB", "Archivos"),
@@ -1495,13 +1532,14 @@ impl ConnKind {
     ];
 
     fn of(form: &ConnForm) -> Self {
-        match (form.files, form.adb, form.serial, form.telnet) {
+        match (form.files, form.adb, form.serial, form.telnet, form.local) {
             (1, ..) => ConnKind::Sftp,
             (2, ..) => ConnKind::Ftp,
             (3, ..) => ConnKind::Smb,
             (_, true, ..) => ConnKind::Adb,
-            (_, _, true, _) => ConnKind::Serial,
-            (_, _, _, true) => ConnKind::Telnet,
+            (_, _, true, ..) => ConnKind::Serial,
+            (_, _, _, true, _) => ConnKind::Telnet,
+            (.., true) => ConnKind::Local,
             _ => ConnKind::Ssh,
         }
     }
@@ -1510,6 +1548,7 @@ impl ConnKind {
         form.telnet = self == ConnKind::Telnet;
         form.adb = self == ConnKind::Adb;
         form.serial = self == ConnKind::Serial;
+        form.local = self == ConnKind::Local;
         form.files = match self {
             ConnKind::Sftp => 1,
             ConnKind::Ftp => 2,
@@ -1534,6 +1573,7 @@ impl ConnKind {
             ConnKind::Ftp => icons::CLOUD_UP,
             ConnKind::Smb => icons::HARD_DRIVES,
             ConnKind::Adb => icons::PHONE,
+            ConnKind::Local => icons::DESKTOP,
         }
     }
 }
@@ -1572,6 +1612,89 @@ fn kind_list(ui: &mut egui::Ui, form: &mut ConnForm) {
                 }
             }
         });
+    });
+}
+
+/// Intérpretes instalados, detectados una sola vez por ejecución.
+fn detected_shells(ctx: &egui::Context) -> std::sync::Arc<Vec<crate::local::ShellOption>> {
+    let id = Id::NULL.with("detected-shells");
+    ctx.data_mut(|d| d.get_temp_mut_or_insert_with::<std::sync::Arc<Vec<crate::local::ShellOption>>>(id, || std::sync::Arc::new(crate::local::available_shells())).clone())
+}
+
+/// Filas de un perfil de terminal local: intérprete, argumentos, carpeta inicial, comando inicial y variables.
+fn local_rows(ui: &mut egui::Ui, form: &mut ConnForm) {
+    let shells = detected_shells(ui.ctx());
+    ui.add_space(theme::space::ROW);
+    crate::ui_kit::form_row(ui, "Intérprete", |ui| {
+        let program = form.host.trim().to_string();
+        let args = form.local_args.trim().to_string();
+        let matching = shells.iter().find(|o| o.program == program && (o.args.is_empty() || o.args == args));
+        let custom = form.local_other || (!program.is_empty() && matching.is_none());
+        let selected = if custom {
+            "Otro…".to_string()
+        } else if let Some(option) = matching {
+            option.label.clone()
+        } else {
+            "Predeterminado del sistema".to_string()
+        };
+        ComboBox::from_id_salt("local-shell")
+            .width(ui.available_width())
+            .selected_text(selected)
+            .show_ui(ui, |ui| {
+                if ui.selectable_label(!custom && program.is_empty(), "Predeterminado del sistema").clicked() {
+                    form.host.clear();
+                    form.local_other = false;
+                }
+                for option in shells.iter() {
+                    let chosen = !custom && matching.is_some_and(|m| m == option);
+                    if ui.selectable_label(chosen, option.label.as_str()).clicked() {
+                        form.host = option.program.clone();
+                        if !option.args.is_empty() {
+                            form.local_args = option.args.clone();
+                        }
+                        form.local_other = false;
+                    }
+                }
+                if ui.selectable_label(custom, "Otro…").clicked() {
+                    form.local_other = true;
+                }
+            })
+            .response
+            .hand();
+        if custom {
+            ui.add_space(theme::space::XS);
+            let width = ui.available_width();
+            crate::ui_kit::text_input(ui, &mut form.host, width, "ruta del ejecutable", &mut form.errors.host);
+        }
+        crate::ui_kit::error_line(ui, &form.errors.host);
+    });
+    ui.add_space(theme::space::ROW);
+    crate::ui_kit::form_row(ui, "Argumentos", |ui| {
+        let width = ui.available_width();
+        crate::ui_kit::text_input(ui, &mut form.local_args, width, "opcional, por ejemplo -l -i", &mut form.errors.user);
+        crate::ui_kit::error_line(ui, &form.errors.user);
+    });
+    ui.add_space(theme::space::ROW);
+    crate::ui_kit::form_row(ui, "Carpeta inicial", |ui| {
+        let width = ui.available_width();
+        crate::ui_kit::text_input(ui, &mut form.local_cwd, width, "~ (tu carpeta personal)", &mut form.errors.cwd);
+        crate::ui_kit::error_line(ui, &form.errors.cwd);
+    });
+    ui.add_space(theme::space::ROW);
+    crate::ui_kit::form_row(ui, "Comando inicial", |ui| {
+        let width = ui.available_width();
+        ui.add_sized(
+            [width, theme::height::FIELD],
+            TextEdit::singleline(&mut form.init_command).hint_text("opcional, se ejecuta al abrir").align(egui::Align2::LEFT_CENTER),
+        );
+    });
+    ui.add_space(theme::space::ROW);
+    crate::ui_kit::form_row(ui, "Variables", |ui| {
+        let width = ui.available_width();
+        ui.add_sized(
+            [width, 66.0],
+            TextEdit::multiline(&mut form.local_vars).hint_text("NOMBRE=valor, una por línea").desired_rows(3),
+        );
     });
 }
 
@@ -1794,6 +1917,10 @@ fn form_fields(ui: &mut egui::Ui, form: &mut ConnForm, connections: &[Connection
 
     ui.add_space(theme::space::L);
     let kind = ConnKind::of(form);
+    if kind == ConnKind::Local {
+        local_rows(ui, form);
+        return false;
+    }
     if kind == ConnKind::Serial {
         serial_rows(ui, form);
         return false;
@@ -1816,7 +1943,7 @@ fn form_fields(ui: &mut egui::Ui, form: &mut ConnForm, connections: &[Connection
         ConnKind::Ssh | ConnKind::Sftp => ssh_access_rows(ui, form),
         ConnKind::Ftp | ConnKind::Smb => files_rows(ui, form),
         ConnKind::Telnet => telnet_rows(ui, form),
-        ConnKind::Serial | ConnKind::Adb => {}
+        ConnKind::Serial | ConnKind::Adb | ConnKind::Local => {}
     }
     if matches!(kind, ConnKind::Ssh | ConnKind::Sftp) {
         ui.add_space(theme::space::GROUP);
@@ -1968,6 +2095,21 @@ fn settings_content(ui: &mut egui::Ui, tab: SettingsTab, settings: &mut Settings
     });
 
     crate::ui_kit::card(ui, "Terminal", |ui| {
+        crate::ui_kit::setting_row(ui, "Terminal local predeterminado", Some("Para el botón + y Ctrl+Shift+T"), true, |ui| {
+            let profiles: Vec<&Connection> = connections.iter().filter(|c| c.is_local()).collect();
+            let current = settings.local_profile.and_then(|id| profiles.iter().find(|c| c.id == Some(id)));
+            egui::ComboBox::from_id_salt("local-profile")
+                .width(190.0)
+                .selected_text(current.map_or("Shell del sistema".to_string(), |c| c.name.clone()))
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut settings.local_profile, None, "Shell del sistema");
+                    for profile in &profiles {
+                        ui.selectable_value(&mut settings.local_profile, profile.id, profile.name.as_str());
+                    }
+                })
+                .response
+                .hand();
+        });
         crate::ui_kit::setting_row(ui, "Fuente", Some("Monoespaciada, instalada en el equipo"), true, |ui| {
             font_picker(ui, &mut settings.font_family);
         });

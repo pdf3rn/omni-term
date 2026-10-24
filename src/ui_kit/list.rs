@@ -67,6 +67,8 @@ pub fn connection_glyph(connection: &Connection) -> &'static str {
         icons::FOLDER
     } else if connection.is_adb() {
         icons::DOTS
+    } else if connection.is_local() {
+        icons::DESKTOP
     } else {
         icons::TERMINAL
     }

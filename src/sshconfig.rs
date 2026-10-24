@@ -88,6 +88,7 @@ pub fn parse(text: &str, default_user: &str) -> Vec<ImportedHost> {
                 jump: None,
                 color: None,
                 env: None,
+                vars: String::new(),
             },
             jump_alias: entry.jump,
         })

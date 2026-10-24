@@ -787,6 +787,7 @@ mod tests {
             jump: None,
             color: None,
             env: None,
+            vars: String::new(),
         };
         let again = connection.clone();
 
@@ -958,6 +959,7 @@ mod tests {
             jump: None,
             color: None,
             env: None,
+            vars: String::new(),
         };
         let result = runtime.block_on(test_connection(&connection, &Credentials::default(), events, Arc::new(|| {}), hosts));
         let message = result.unwrap_err().to_string();
@@ -1006,6 +1008,7 @@ mod tests {
             jump: None,
             color: None,
             env: None,
+            vars: String::new(),
         };
         let hosts = sshd.dir.join("known_hosts");
         let ok = runtime.block_on(test_connection(&connection, &Credentials::default(), events.clone(), Arc::new(|| {}), hosts.clone()));
@@ -1053,6 +1056,7 @@ mod tests {
                 jump: None,
                 color: None,
                 env: None,
+                vars: String::new(),
             };
             let credentials = Credentials::default();
             runtime.block_on(async {
