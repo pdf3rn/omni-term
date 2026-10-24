@@ -23,7 +23,7 @@ All code lives under `src/`, grouped by domain. Each folder has a sibling file (
 | `files/` | Remote files: the explorer, transfers, and the SFTP, FTP, SMB and ADB clients. |
 | `containers/` | Docker and Podman manager: the engine client and its view. |
 | `data/` | Storage: the SQLite `store`, `secrets` and `settings`. |
-| `ui/` | The window and everything drawn. `ui.rs` holds the `App` state and the frame loop; its methods live in topic modules (`sessions`, `connecting`, `secrets_flow`, `library`, `commands`, `closing`, `startup`, `dialog_flow`, `toasts`), and the screens in `sidebar`, `tabs`, `empty`, `window` (title bar) and `appearance`. Also `dialogs/` (shell, connection form, settings, prompts), `palette`, `theme`, `icons`, `fonts` and the reusable `kit`. |
+| `ui/` | The window and everything drawn. `ui.rs` holds the `App` state and the frame loop; its methods live in topic modules (`sessions`, `connecting`, `secrets_flow`, `library`, `commands`, `closing`, `startup`, `dialog_flow`, `toasts`), and the screens in `sidebar`, `tabs` (strip and tab state), `central` (the active tab's area), `empty`, `window` (title bar) and `appearance`. Also `dialogs/` (shell, connection form, settings, prompts), `palette`, `theme`, `icons`, `fonts` and the reusable `kit`. |
 
 ## UI style
 
