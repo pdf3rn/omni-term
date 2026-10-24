@@ -11,9 +11,9 @@ use async_trait::async_trait;
 use tokio::io::{AsyncRead, AsyncWrite, DuplexStream, ReadBuf};
 use tokio::task::JoinHandle;
 
-use crate::sftp::{self, Entry, Sftp};
-use crate::ssh::{Credentials, UiEvent};
-use crate::store::{Connection, FilesKind, Protocol};
+use crate::files::sftp::{self, Entry, Sftp};
+use crate::connect::ssh::{Credentials, UiEvent};
+use crate::data::store::{Connection, FilesKind, Protocol};
 
 pub type Reader = Box<dyn AsyncRead + Send + Unpin>;
 pub type Writer = Box<dyn AsyncWrite + Send + Unpin>;
@@ -109,9 +109,9 @@ pub async fn connect(
     known_hosts: std::path::PathBuf,
 ) -> anyhow::Result<Arc<dyn RemoteFs>> {
     match connection.protocol {
-        Protocol::Files(FilesKind::Ftp(_)) => crate::ftp::connect(connection, credentials).await,
-        Protocol::Files(FilesKind::Smb) => crate::smb::connect(connection, credentials).await,
-        Protocol::Adb => crate::adb::connect(connection).await,
+        Protocol::Files(FilesKind::Ftp(_)) => crate::files::ftp::connect(connection, credentials).await,
+        Protocol::Files(FilesKind::Smb) => crate::files::smb::connect(connection, credentials).await,
+        Protocol::Adb => crate::files::adb::connect(connection).await,
         _ => {
             let client = sftp::connect(connection, credentials, events, wake, known_hosts).await?;
             Ok(Arc::new(client))

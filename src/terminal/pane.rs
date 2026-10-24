@@ -13,12 +13,12 @@ use eframe::egui::{
 };
 use alacritty_terminal::Term;
 
-use crate::cursor::HandExt;
-use crate::keys;
-use crate::mouse::{self, Button as MouseButton, Kind as MouseKind, Mods as MouseMods};
-use crate::search;
-use crate::term::{Proxy, Session};
-use crate::theme;
+use crate::ui::cursor::HandExt;
+use crate::terminal::keys;
+use crate::terminal::mouse::{self, Button as MouseButton, Kind as MouseKind, Mods as MouseMods};
+use crate::terminal::search;
+use crate::terminal::term::{Proxy, Session};
+use crate::ui::theme;
 
 pub const PADDING: f32 = 12.0;
 
@@ -595,7 +595,7 @@ impl Pane {
                             format!("{} de {}", state.current + 1, state.matches.len())
                         };
                         ui.label(egui::RichText::new(count).small().color(theme::subtext()));
-                        let small = |ui: &mut egui::Ui, text: &str| crate::ui_kit::button_with(ui, egui::Button::new(egui::RichText::new(text).small()), crate::ui_kit::Variant::Ghost);
+                        let small = |ui: &mut egui::Ui, text: &str| crate::ui::kit::button_with(ui, egui::Button::new(egui::RichText::new(text).small()), crate::ui::kit::Variant::Ghost);
                         if small(ui, "Anterior").clicked() {
                             step = Some(false);
                         }

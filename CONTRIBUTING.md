@@ -12,12 +12,25 @@ cargo run -- --keys      # prints received keys and the bytes sent
 
 Always use `--locked`: `Cargo.lock` pins `picky` and the `smb-*` crates to versions that build together.
 
+## Code layout
+
+All code lives under `src/`, grouped by domain. Each folder has a sibling file (for example `terminal.rs` next to `terminal/`) that declares its modules.
+
+| Folder | What it holds |
+| --- | --- |
+| `terminal/` | Terminal state and rendering: `term`, `pane`, `keys`, `mouse`, `search`, `layout`, `snippet_vars`. |
+| `connect/` | Terminal connections: `ssh`, `telnet`, `serial`, `local`, plus `socks`, `known_hosts`, `sshconfig`. |
+| `files/` | Remote files: the explorer, transfers, and the SFTP, FTP, SMB and ADB clients. |
+| `containers/` | Docker and Podman manager: the engine client and its view. |
+| `data/` | Storage: the SQLite `store`, `secrets` and `settings`. |
+| `ui/` | The window and everything drawn: `dialogs`, `palette`, `theme`, `icons`, `fonts`, and the reusable `kit`. `ui.rs` is the app itself. |
+
 ## UI style
 
 Everything that looks like something lives in one of two places:
 
-- `src/theme.rs`: colors, radii (`theme::radius`), spacing (`theme::space`), text and icon sizes (`theme::size`), stroke widths (`theme::stroke`) and fixed heights (`theme::height`).
-- `src/ui_kit/`: reusable components (buttons with `Variant`, cards and settings rows, list rows, form fields, chips, keycaps).
+- `src/ui/theme.rs`: colors, radii (`theme::radius`), spacing (`theme::space`), text and icon sizes (`theme::size`), stroke widths (`theme::stroke`) and fixed heights (`theme::height`).
+- `src/ui/kit/`: reusable components (buttons with `Variant`, cards and settings rows, list rows, form fields, chips, keycaps).
 
 To change how buttons, cards or rows look, edit those files. Do not write numeric radii, strokes, font sizes, spacing or `Color32::from_rgb(..)` in the screens: a test (`style_guard`) fails if you do.
 

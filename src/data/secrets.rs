@@ -8,7 +8,7 @@ use chacha20poly1305::aead::{Aead, KeyInit, Payload};
 use chacha20poly1305::{XChaCha20Poly1305, XNonce};
 use zeroize::Zeroizing;
 
-use crate::store::Store;
+use crate::data::store::Store;
 
 // Identificadores internos estables: cambiarlos dejaría sin acceso a los secretos ya guardados.
 const SERVICE: &str = "omniterm";

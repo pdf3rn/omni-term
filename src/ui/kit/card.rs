@@ -2,8 +2,8 @@
 
 use eframe::egui::{self, FontId, Margin, RichText, Ui};
 
-use crate::cursor::HandExt;
-use crate::theme;
+use crate::ui::cursor::HandExt;
+use crate::ui::theme;
 
 /// Título de una sección: letra pequeña en negrita con el color secundario.
 pub fn section_title(ui: &mut Ui, text: &str) {

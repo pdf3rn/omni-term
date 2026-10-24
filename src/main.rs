@@ -1,42 +1,14 @@
 // En Windows el binario de release no abre una consola detrás de la ventana.
 #![cfg_attr(all(not(debug_assertions), target_os = "windows"), windows_subsystem = "windows")]
 
-mod adb;
-mod cursor;
+mod connect;
 mod containers;
-mod docker;
-mod dialogs;
-mod explorer;
-mod fonts;
-mod ftp;
-mod icons;
-mod known_hosts;
-mod keys;
-mod layout;
-mod local;
-mod mouse;
-mod palette;
-mod pane;
-mod remotefs;
-mod search;
-mod settings;
-mod secrets;
-mod sftp;
-mod ssh;
-mod snippet_vars;
-mod smb;
-mod sshconfig;
-mod socks;
-mod store;
-mod transfer;
+mod data;
+mod files;
+mod terminal;
 #[cfg(test)]
 mod testutil;
-mod telnet;
-mod serial;
-mod term;
-mod theme;
 mod ui;
-mod ui_kit;
 
 use eframe::egui;
 
@@ -45,7 +17,7 @@ fn main() -> eframe::Result {
         println!("omni-term {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
-    fonts::preload();
+    ui::fonts::preload();
     let debug_keys = std::env::args().any(|a| a == "--keys");
     let size = saved_window_size().unwrap_or([960.0, 600.0]);
     let mut viewport = egui::ViewportBuilder::default()
@@ -73,7 +45,7 @@ fn main() -> eframe::Result {
 /// Si el usuario eligió la barra de título del sistema; por defecto se dibuja la integrada.
 fn system_titlebar() -> bool {
     let read = || -> Option<bool> {
-        let store = store::Store::open(&store::Store::default_path().ok()?).ok()?;
+        let store = data::store::Store::open(&data::store::Store::default_path().ok()?).ok()?;
         Some(store.meta("setting.system_titlebar").ok()??.as_slice() == b"1")
     };
     read().unwrap_or(false)
@@ -82,7 +54,7 @@ fn system_titlebar() -> bool {
 /// Un ajuste guardado como «1» (verdadero) en la tabla `meta`.
 fn saved_flag(key: &str) -> bool {
     let read = || -> Option<bool> {
-        let store = store::Store::open(&store::Store::default_path().ok()?).ok()?;
+        let store = data::store::Store::open(&data::store::Store::default_path().ok()?).ok()?;
         Some(store.meta(key).ok()??.as_slice() == b"1")
     };
     read().unwrap_or(false)
@@ -90,7 +62,7 @@ fn saved_flag(key: &str) -> bool {
 
 /// Tamaño de ventana de la última sesión, si se guardó uno razonable.
 fn saved_window_size() -> Option<[f32; 2]> {
-    let store = store::Store::open(&store::Store::default_path().ok()?).ok()?;
+    let store = data::store::Store::open(&data::store::Store::default_path().ok()?).ok()?;
     let text = String::from_utf8(store.meta("window_size").ok()??).ok()?;
     let (width, height) = text.split_once('x')?;
     let (width, height) = (width.parse::<f32>().ok()?, height.parse::<f32>().ok()?);

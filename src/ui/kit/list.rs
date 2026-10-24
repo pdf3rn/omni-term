@@ -2,9 +2,9 @@
 
 use eframe::egui::{self, Align2, Color32, CornerRadius, FontId, Pos2, Rect, Sense, Ui, Vec2};
 
-use crate::icons;
-use crate::store::Connection;
-use crate::theme;
+use crate::ui::icons;
+use crate::data::store::Connection;
+use crate::ui::theme;
 
 /// Lo que va a la izquierda del texto de una fila.
 pub enum Leading {

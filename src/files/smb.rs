@@ -14,10 +14,10 @@ use smb::{
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::task::JoinHandle;
 
-use crate::remotefs::{PipeEnd, Reader, RemoteFs, Writer};
-use crate::sftp::{self, Entry};
-use crate::ssh::Credentials;
-use crate::store::Connection;
+use crate::files::remotefs::{PipeEnd, Reader, RemoteFs, Writer};
+use crate::files::sftp::{self, Entry};
+use crate::connect::ssh::Credentials;
+use crate::data::store::Connection;
 
 const CHUNK: usize = 60 * 1024;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);

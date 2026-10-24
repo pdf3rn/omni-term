@@ -4,8 +4,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use eframe::egui::{self, Color32, FontId, RichText, TextEdit, Ui};
 
-use crate::cursor::HandExt;
-use crate::theme;
+use crate::ui::cursor::HandExt;
+use crate::ui::theme;
 
 /// Ancho de la columna de etiquetas de un formulario.
 const LABEL_WIDTH: f32 = 112.0;
@@ -75,7 +75,7 @@ pub fn password_field(ui: &mut Ui, value: &mut String, reveal: &mut bool, hint: 
         TextEdit::singleline(value).password(!*reveal).hint_text(hint).margin(margin).align(egui::Align2::LEFT_CENTER),
     );
     let slot = egui::Rect::from_center_size(egui::pos2(field.rect.max.x - 17.0, field.rect.center().y), egui::Vec2::splat(1.0));
-    let (glyph, tip) = if *reveal { (crate::icons::EYE_OFF, "Ocultar") } else { (crate::icons::EYE, "Mostrar") };
+    let (glyph, tip) = if *reveal { (crate::ui::icons::EYE_OFF, "Ocultar") } else { (crate::ui::icons::EYE, "Mostrar") };
     if super::IconButton::new(glyph).size(theme::size::ICON_SM).show_at(ui, slot, ("reveal", field.id)).on_hover_text(tip).clicked() {
         *reveal = !*reveal;
     }

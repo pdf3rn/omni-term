@@ -13,7 +13,7 @@ pub use form::{chip, error_line, form_row, password_field, request_reveal_error,
 
 #[cfg(test)]
 mod style_guard {
-    //! Guardián del estilo: fuera de `theme.rs` y de `ui_kit/` no puede haber colores, radios, grosores, tamaños de
+    //! Guardián del estilo: fuera de `ui/theme.rs` y de `ui/kit/` no puede haber colores, radios, grosores, tamaños de
     //! letra ni espacios escritos como números sueltos. Si falla, usa un valor de `theme` o añade un componente al kit.
 
     use std::path::{Path, PathBuf};
@@ -55,7 +55,7 @@ mod style_guard {
         let mut problems = Vec::new();
         for path in sources() {
             let name = path.strip_prefix(Path::new(env!("CARGO_MANIFEST_DIR"))).unwrap().display().to_string();
-            if name.ends_with("theme.rs") || name.contains("ui_kit") {
+            if name.ends_with("ui/theme.rs") || name.contains("ui/kit") {
                 continue;
             }
             let source = std::fs::read_to_string(&path).unwrap();

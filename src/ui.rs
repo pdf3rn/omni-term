@@ -1,3 +1,11 @@
+pub mod cursor;
+pub mod dialogs;
+pub mod fonts;
+pub mod icons;
+pub mod kit;
+pub mod palette;
+pub mod theme;
+
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::Duration;
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -9,23 +17,21 @@ use eframe::egui::{
 };
 use zeroize::Zeroizing;
 
-use crate::containers::{self, ContainersView};
-use crate::cursor::HandExt;
-use crate::docker;
-use crate::dialogs::{self, CloseAction, CloseConfirm, ConnForm, Dialog, ErrorInfo, Outcome, PaneTarget, Pending, Purpose, Retry, SecretPrompt, SnippetForm, TestState, UnlockPrompt, VarsPrompt};
-use crate::layout::{Dir, Tree};
-use crate::explorer::Explorer;
-use crate::icons;
-use crate::known_hosts;
-use crate::palette::{self, Command, Palette, Target};
-use crate::pane::{self, bold_family, Pane, PaneRequest, PADDING};
-use crate::settings::{CursorChoice, Settings, StartupChoice, ThemeChoice, DEFAULT_FONT_SIZE, MAX_FONT_SIZE, MIN_FONT_SIZE};
-use crate::secrets::{account_for, KeyringStore, MasterKeyStore, MigrateFrom, SecretError, SecretKind, SecretStore, Secrets};
-use crate::ssh::{self, Credentials, JumpHost, TunnelState, Tunnels, UiEvent};
-use crate::store::{self, Auth, Connection, Forward, Protocol, SavedTab, Snippet, Store, TabKind};
-use crate::telnet;
-use crate::term::{self, Session, TermOptions};
-use crate::theme;
+use crate::containers::view::{self, ContainersView};
+use self::cursor::HandExt;
+use crate::containers::docker;
+use self::dialogs::{CloseAction, CloseConfirm, ConnForm, Dialog, ErrorInfo, Outcome, PaneTarget, Pending, Purpose, Retry, SecretPrompt, SnippetForm, TestState, UnlockPrompt, VarsPrompt};
+use crate::terminal::layout::{Dir, Tree};
+use crate::files::explorer::Explorer;
+use crate::connect::known_hosts;
+use self::palette::{Command, Palette, Target};
+use crate::terminal::pane::{self, bold_family, Pane, PaneRequest, PADDING};
+use crate::data::settings::{CursorChoice, Settings, StartupChoice, ThemeChoice, DEFAULT_FONT_SIZE, MAX_FONT_SIZE, MIN_FONT_SIZE};
+use crate::data::secrets::{account_for, KeyringStore, MasterKeyStore, MigrateFrom, SecretError, SecretKind, SecretStore, Secrets};
+use crate::connect::ssh::{self, Credentials, JumpHost, TunnelState, Tunnels, UiEvent};
+use crate::data::store::{self, Auth, Connection, Forward, Protocol, SavedTab, Snippet, Store, TabKind};
+use crate::connect::telnet;
+use crate::terminal::term::{self, Session, TermOptions};
 
 const SIDEBAR_WIDTH: f32 = 240.0;
 const SIDEBAR_MIN: f32 = 200.0;
@@ -484,19 +490,19 @@ impl App {
         let default = self.settings.local_profile.and_then(|id| self.connections.iter().find(|c| c.id == Some(id) && c.is_local()).cloned());
         match default {
             Some(profile) => self.local_profile_session(profile),
-            None => self.local_profile_session_with(crate::local::Profile::default()),
+            None => self.local_profile_session_with(crate::connect::local::Profile::default()),
         }
     }
 
     fn local_profile_session(&mut self, connection: Connection) -> anyhow::Result<Session> {
-        self.local_profile_session_with(crate::local::Profile::from_connection(&connection))
+        self.local_profile_session_with(crate::connect::local::Profile::from_connection(&connection))
     }
 
-    fn local_profile_session_with(&mut self, profile: crate::local::Profile) -> anyhow::Result<Session> {
+    fn local_profile_session_with(&mut self, profile: crate::connect::local::Profile) -> anyhow::Result<Session> {
         let wake = self.wake();
         let (cols, rows) = self.grid;
         let options = self.term_options();
-        Session::start(cols, rows, options, move || wake(), move |feed| crate::local::spawn_profile(cols, rows, feed, &profile))
+        Session::start(cols, rows, options, move || wake(), move |feed| crate::connect::local::spawn_profile(cols, rows, feed, &profile))
     }
 
     fn ssh_session(&mut self, connection: Connection, credentials: Credentials, tunnels: Tunnels) -> anyhow::Result<Session> {
@@ -524,14 +530,14 @@ impl App {
         let handle = self.runtime.handle().clone();
         let (cols, rows) = self.grid;
         let options = self.term_options();
-        Session::start(cols, rows, options, move || wake(), move |feed| Ok(crate::adb::spawn(&handle, connection, (cols, rows), feed)))
+        Session::start(cols, rows, options, move || wake(), move |feed| Ok(crate::files::adb::spawn(&handle, connection, (cols, rows), feed)))
     }
 
     fn serial_session(&mut self, connection: Connection) -> anyhow::Result<Session> {
         let wake = self.wake();
         let (cols, rows) = self.grid;
         let options = self.term_options();
-        Session::start(cols, rows, options, move || wake(), move |feed| Ok(crate::serial::spawn(&connection, feed)))
+        Session::start(cols, rows, options, move || wake(), move |feed| Ok(crate::connect::serial::spawn(&connection, feed)))
     }
 
     /// ¿La pestaña activa es una conexión con explorador de archivos (SSH o un dispositivo Android)?
@@ -961,8 +967,8 @@ impl App {
         let Some(master) = self.active_master() else { return };
         let accounts = self.secret_accounts();
         let result = match from {
-            MigrateFrom::Keyring => crate::secrets::migrate(&KeyringStore, master.as_ref(), &accounts),
-            MigrateFrom::Master => crate::secrets::migrate(master.as_ref(), &KeyringStore, &accounts),
+            MigrateFrom::Keyring => crate::data::secrets::migrate(&KeyringStore, master.as_ref(), &accounts),
+            MigrateFrom::Master => crate::data::secrets::migrate(master.as_ref(), &KeyringStore, &accounts),
         };
         match result {
             Ok(1) => self.notify("Se migró 1 contraseña al nuevo almacén"),
@@ -1029,7 +1035,7 @@ impl App {
 
     /// Inserta el snippet; si tiene variables, primero pide sus valores.
     fn insert_snippet(&mut self, snippet: &Snippet, run: bool) {
-        if crate::snippet_vars::variables(&snippet.body).is_empty() {
+        if crate::terminal::snippet_vars::variables(&snippet.body).is_empty() {
             self.insert_into_active(&snippet.body, run);
         } else {
             self.dialog = Some(Dialog::SnippetVars(VarsPrompt::new(snippet, run)));
@@ -1254,7 +1260,7 @@ impl App {
                         Frame::popup(ui.style()).inner_margin(Margin::symmetric(14, 10)).show(ui, |ui| {
                             ui.horizontal(|ui| {
                                 ui.label(&toast.text);
-                                if toast.undo.is_some() && crate::ui_kit::button_with(ui, Button::new(RichText::new("Deshacer").color(theme::accent())), crate::ui_kit::Variant::Ghost).clicked() {
+                                if toast.undo.is_some() && crate::ui::kit::button_with(ui, Button::new(RichText::new("Deshacer").color(theme::accent())), crate::ui::kit::Variant::Ghost).clicked() {
                                     undone = Some(index);
                                 }
                                 if ui.add(Button::new(icons::X).frame(false)).on_hover_text("Cerrar").clicked() {
@@ -1492,13 +1498,13 @@ impl App {
             ui.spacing_mut().button_padding = Vec2::new(10.0, 4.0);
             ui.spacing_mut().item_spacing.x = 6.0;
             // Outline: el acento marca la acción principal en el borde y el texto, sin relleno.
-            if crate::ui_kit::button_rich(ui, RichText::new("Nuevo terminal local").size(theme::size::LABEL), crate::ui_kit::Variant::PrimaryOutline).clicked() {
+            if crate::ui::kit::button_rich(ui, RichText::new("Nuevo terminal local").size(theme::size::LABEL), crate::ui::kit::Variant::PrimaryOutline).clicked() {
                 action = Some(EmptyAction::Local);
             }
-            if crate::ui_kit::button_rich(ui, RichText::new("Nueva conexión").size(theme::size::LABEL), crate::ui_kit::Variant::Secondary).clicked() {
+            if crate::ui::kit::button_rich(ui, RichText::new("Nueva conexión").size(theme::size::LABEL), crate::ui::kit::Variant::Secondary).clicked() {
                 action = Some(EmptyAction::NewConnection);
             }
-            if crate::ui_kit::button_rich(ui, RichText::new("Contenedores").size(theme::size::LABEL), crate::ui_kit::Variant::Secondary).clicked() {
+            if crate::ui::kit::button_rich(ui, RichText::new("Contenedores").size(theme::size::LABEL), crate::ui::kit::Variant::Secondary).clicked() {
                 action = Some(EmptyAction::Containers);
             }
         });
@@ -1507,21 +1513,21 @@ impl App {
         let recents: Vec<Connection> = self.recent_connections().into_iter().take(4).collect();
         if recents.is_empty() {
             child.label(RichText::new("Aún no hay conexiones guardadas.").color(theme::subtext()));
-            if crate::ui_kit::button_rich(child, RichText::new("Importar de ~/.ssh/config").size(theme::size::LABEL), crate::ui_kit::Variant::Secondary).clicked() {
+            if crate::ui::kit::button_rich(child, RichText::new("Importar de ~/.ssh/config").size(theme::size::LABEL), crate::ui::kit::Variant::Secondary).clicked() {
                 action = Some(EmptyAction::Import);
             }
         } else {
-            crate::ui_kit::section_title(child, "Recientes");
-            crate::ui_kit::card_frame().inner_margin(Margin::symmetric(6, 4)).show(child, |ui| {
+            crate::ui::kit::section_title(child, "Recientes");
+            crate::ui::kit::card_frame().inner_margin(Margin::symmetric(6, 4)).show(child, |ui| {
                 ui.spacing_mut().item_spacing.y = 0.0;
                 ui.set_width(ui.available_width());
                 for connection in &recents {
-                    let (rect, response) = crate::ui_kit::row_frame(ui, 44.0, Sense::click());
+                    let (rect, response) = crate::ui::kit::row_frame(ui, 44.0, Sense::click());
                     let subtitle = format!("{}  ·  {}", connection.kind_label(), connection.destination());
-                    crate::ui_kit::row_content(
+                    crate::ui::kit::row_content(
                         ui,
                         rect,
-                        crate::ui_kit::RowContent { leading: crate::ui_kit::Leading::Glyph(crate::ui_kit::connection_glyph(connection)), title: &connection.name, subtitle: &subtitle, right_limit: rect.max.x - 10.0 },
+                        crate::ui::kit::RowContent { leading: crate::ui::kit::Leading::Glyph(crate::ui::kit::connection_glyph(connection)), title: &connection.name, subtitle: &subtitle, right_limit: rect.max.x - 10.0 },
                     );
                     let response = response.hand();
                     if response.on_hover_text("Conectar").clicked() {
@@ -1532,7 +1538,7 @@ impl App {
         }
 
         child.add_space(theme::space::L);
-        crate::ui_kit::section_title(child, "Atajos");
+        crate::ui::kit::section_title(child, "Atajos");
         for (keys, what) in [
             ("Ctrl+Shift+P", "Paleta de comandos"),
             ("Ctrl+Shift+D / E", "Dividir el panel a la derecha / hacia abajo"),
@@ -1546,7 +1552,7 @@ impl App {
                         if n > 0 {
                             ui.label(RichText::new("/").color(theme::subtext()));
                         }
-                        crate::ui_kit::keycap(ui, combo);
+                        crate::ui::kit::keycap(ui, combo);
                     }
                 });
                 ui.label(RichText::new(what).color(theme::subtext()));
@@ -1798,7 +1804,7 @@ impl App {
                     // Se registra antes que el resto: los menús y botones, añadidos después, tienen prioridad sobre la zona de arrastre.
                     let response = ui.interact(bar, egui::Id::NULL.with("titlebar-drag"), Sense::click_and_drag());
                     ui.horizontal_centered(|ui| {
-                        ui.add(egui::Image::new(&crate::dialogs::app_logo(ui.ctx())).fit_to_exact_size(Vec2::splat(16.0)));
+                        ui.add(egui::Image::new(&crate::ui::dialogs::app_logo(ui.ctx())).fit_to_exact_size(Vec2::splat(16.0)));
                         ui.add_space(theme::space::XS);
                         egui::MenuBar::new().ui(ui, |ui| {
                             ui.spacing_mut().button_padding.x = theme::space::M;
@@ -1822,7 +1828,7 @@ impl App {
                         theme::subtext(),
                     );
                     let gear_slot = Rect::from_center_size(Pos2::new(bar.max.x - controls - 18.0, bar.center().y), Vec2::splat(1.0));
-                    if crate::ui_kit::IconButton::new(icons::GEAR).size(theme::size::ICON).show_at(ui, gear_slot, "titlebar-settings").on_hover_text("Ajustes (Ctrl+,)").clicked() {
+                    if crate::ui::kit::IconButton::new(icons::GEAR).size(theme::size::ICON).show_at(ui, gear_slot, "titlebar-settings").on_hover_text("Ajustes (Ctrl+,)").clicked() {
                         open_settings = true;
                     }
                     let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
@@ -2023,7 +2029,7 @@ impl App {
         let mut jumps: Vec<(i64, String)> = Vec::new();
         {
             let store = self.store.lock().unwrap();
-            for host in crate::sshconfig::parse(&text, &user) {
+            for host in crate::connect::sshconfig::parse(&text, &user) {
                 if self.connections.iter().any(|c| c.name == host.connection.name) {
                     continue;
                 }
@@ -2501,7 +2507,7 @@ impl App {
                             let color = if selected { theme::text() } else { theme::subtext() };
                             let font = FontId::new(theme::size::LABEL, if selected { strong_family() } else { FontFamily::Proportional });
                             let button = Button::new(RichText::new(label).font(font).color(color));
-                            let response = crate::ui_kit::button_with(ui, button, crate::ui_kit::Variant::Ghost);
+                            let response = crate::ui::kit::button_with(ui, button, crate::ui::kit::Variant::Ghost);
                             if selected {
                                 let y = response.rect.max.y + 1.0;
                                 ui.painter().line_segment(
@@ -2567,10 +2573,10 @@ impl App {
                         ui.label(RichText::new(title).small().color(theme::subtext()));
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                                         if connections_view {
-                                if crate::ui_kit::icon_button(ui, icons::PLUS, theme::size::ICON, theme::text()).on_hover_text("Nueva conexión").clicked() {
+                                if crate::ui::kit::icon_button(ui, icons::PLUS, theme::size::ICON, theme::text()).on_hover_text("Nueva conexión").clicked() {
                                     new_connection = true;
                                 }
-                            } else if crate::ui_kit::icon_button(ui, icons::PLUS, theme::size::ICON, theme::text()).on_hover_text("Nuevo snippet").clicked() {
+                            } else if crate::ui::kit::icon_button(ui, icons::PLUS, theme::size::ICON, theme::text()).on_hover_text("Nuevo snippet").clicked() {
                                 new_snippet = true;
                             }
                         });
@@ -2706,8 +2712,8 @@ impl App {
                                 let actions = over || menu_open_before;
                                 let mut buttons = None;
                                 if actions {
-                                    let pencil = crate::ui_kit::IconButton::new(icons::PENCIL).show_at(ui, edit_slot, (response.id, "edit")).on_hover_text("Editar");
-                                    let more = crate::ui_kit::IconButton::new(icons::DOTS).size(theme::size::ICON_XL).active(menu_open_before).show_at(ui, more_slot, (response.id, "more")).on_hover_text("Más acciones");
+                                    let pencil = crate::ui::kit::IconButton::new(icons::PENCIL).show_at(ui, edit_slot, (response.id, "edit")).on_hover_text("Editar");
+                                    let more = crate::ui::kit::IconButton::new(icons::DOTS).size(theme::size::ICON_XL).active(menu_open_before).show_at(ui, more_slot, (response.id, "more")).on_hover_text("Más acciones");
                                     let menu_open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&more));
                                     ui.data_mut(|d| d.insert_temp(menu_state, menu_open));
                                     buttons = Some((pencil, more));
@@ -2717,7 +2723,7 @@ impl App {
 
                                 // Icono de tipo con la insignia del estado de la sesión en su esquina.
                                 let icon_center = Pos2::new(rect.min.x + 9.0, rect.center().y);
-                                let kind_icon = crate::ui_kit::connection_glyph(connection);
+                                let kind_icon = crate::ui::kit::connection_glyph(connection);
                                 ui.painter().text(icon_center, Align2::CENTER_CENTER, kind_icon, FontId::proportional(theme::size::ICON_LG), theme::subtext());
                                 let badge = match state {
                                     LinkState::Open => Some(theme::accent()),
@@ -2742,7 +2748,7 @@ impl App {
                                 let lock_width = if connection.insecure_protocol().is_some() { 18.0 } else { 0.0 };
                                 // El nombre cede sitio al candado y a la pastilla, que siempre se ven.
                                 let room = right_limit - ago_width - text_x - lock_width - pill_size.map_or(0.0, |s| s.x + 8.0);
-                                let name = crate::ui_kit::fit_text(&first_line, &connection.name, &name_font, room);
+                                let name = crate::ui::kit::fit_text(&first_line, &connection.name, &name_font, room);
                                 let name_width = first_line.layout_no_wrap(name.clone(), name_font.clone(), Color32::PLACEHOLDER).size().x;
                                 first_line.text(Pos2::new(text_x, rect.min.y + 9.0), Align2::LEFT_TOP, name, name_font, theme::text());
                                 let mut after_name = text_x + name_width + 8.0;
@@ -2762,7 +2768,7 @@ impl App {
                                 }
                                 let second_line = ui.painter().with_clip_rect(Rect::from_min_max(rect.min, Pos2::new(right_limit, rect.max.y)));
                                 let detail_font = FontId::new(theme::size::SMALL, FontFamily::Proportional);
-                                let detail = crate::ui_kit::fit_text(&second_line, &format!("{}  ·  {}", connection.kind_label(), connection.destination()), &detail_font, right_limit - text_x);
+                                let detail = crate::ui::kit::fit_text(&second_line, &format!("{}  ·  {}", connection.kind_label(), connection.destination()), &detail_font, right_limit - text_x);
                                 second_line.text(Pos2::new(text_x, rect.min.y + 27.0), Align2::LEFT_TOP, detail, detail_font, theme::subtext());
                                 let response = response.hand().on_hover_text(match state {
                                     LinkState::Closed => "Doble clic para conectar",
@@ -2808,7 +2814,7 @@ impl App {
                         });
                     } else {
                         if !self.snippets.is_empty() {
-                            if crate::ui_kit::button_with(ui, Button::new(RichText::new("Guardar selección").small().color(theme::subtext())), crate::ui_kit::Variant::Secondary).clicked() {
+                            if crate::ui::kit::button_with(ui, Button::new(RichText::new("Guardar selección").small().color(theme::subtext())), crate::ui::kit::Variant::Secondary).clicked() {
                                 snippet_from_selection = true;
                             }
                             ui.add_space(theme::space::XS);
@@ -2882,7 +2888,7 @@ impl App {
 
                                 let run_slot = Rect::from_center_size(Pos2::new(rect.max.x - 18.0, rect.center().y), Vec2::splat(26.0));
                                 let run_clicked = over
-                                    && crate::ui_kit::IconButton::new(icons::PLAY).show_at(ui, run_slot, (response.id, "run")).on_hover_text("Insertar y ejecutar").clicked();
+                                    && crate::ui::kit::IconButton::new(icons::PLAY).show_at(ui, run_slot, (response.id, "run")).on_hover_text("Insertar y ejecutar").clicked();
                                 if run_clicked {
                                     insert = Some((Snippet::clone(snippet), true));
                                 }
@@ -2924,7 +2930,7 @@ impl App {
 
                     // Pie: solo avisos; el estado normal de los secretos no hace falta mostrarlo.
                     ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
-                        if system_bar && crate::ui_kit::button_with(ui, Button::new(format!("{}  Ajustes", icons::GEAR)), crate::ui_kit::Variant::Secondary).clicked() {
+                        if system_bar && crate::ui::kit::button_with(ui, Button::new(format!("{}  Ajustes", icons::GEAR)), crate::ui::kit::Variant::Secondary).clicked() {
                             open_settings = true;
                         }
                         if keyring_fallback {
@@ -3139,12 +3145,12 @@ fn empty_state(ui: &mut egui::Ui, title: &str, body: &str, primary: &str, second
     ui.label(RichText::new(body).small().color(theme::subtext()));
     ui.add_space(theme::space::XL);
     let width = ui.available_width();
-    let create = crate::ui_kit::button_with(ui, Button::new(primary).min_size(Vec2::new(width, 32.0)), crate::ui_kit::Variant::Primary).clicked();
+    let create = crate::ui::kit::button_with(ui, Button::new(primary).min_size(Vec2::new(width, 32.0)), crate::ui::kit::Variant::Primary).clicked();
     let mut other = false;
     if let Some(label) = secondary {
         ui.add_space(theme::space::XS);
         let button = Button::new(RichText::new(label).color(theme::text())).min_size(Vec2::new(width, 32.0));
-        other = crate::ui_kit::button_with(ui, button, crate::ui_kit::Variant::Secondary).clicked();
+        other = crate::ui::kit::button_with(ui, button, crate::ui::kit::Variant::Secondary).clicked();
     }
     (create, other)
 }
@@ -3154,7 +3160,7 @@ fn pending_ssh_config_hosts(saved: &[Connection]) -> usize {
     let path = std::env::home_dir().unwrap_or_default().join(".ssh").join("config");
     let Ok(text) = std::fs::read_to_string(path) else { return 0 };
     let user = std::env::var("USER").unwrap_or_default();
-    crate::sshconfig::parse(&text, &user).iter().filter(|h| !saved.iter().any(|c| c.name == h.connection.name)).count()
+    crate::connect::sshconfig::parse(&text, &user).iter().filter(|h| !saved.iter().any(|c| c.name == h.connection.name)).count()
 }
 
 fn now_secs() -> u64 {
@@ -3273,7 +3279,7 @@ fn plus_menu(ui: &mut egui::Ui, recents: &[Connection], selected: &mut usize, ch
             theme::subtext(),
         );
         let files_slot = Rect::from_center_size(Pos2::new(rect.max.x - 20.0, rect.center().y), Vec2::splat(26.0));
-        let files_response = crate::ui_kit::IconButton::new(icons::FOLDER).color(theme::subtext()).show_at(ui, files_slot, ("plus-files", index));
+        let files_response = crate::ui::kit::IconButton::new(icons::FOLDER).color(theme::subtext()).show_at(ui, files_slot, ("plus-files", index));
         if files_response.on_hover_text("Abrir el explorador de archivos").clicked() {
             files_for = Some(index);
         } else if clicked {
@@ -3359,7 +3365,7 @@ fn credentials_for(kind: SecretKind, secret: Zeroizing<String>) -> Credentials {
 /// Si no se puede usar, se queda JetBrains Mono y se devuelve el motivo.
 fn install_fonts(ctx: &egui::Context, family: Option<&str>) -> Option<String> {
     let mut problem = None;
-    let system = family.and_then(|name| match crate::fonts::load_family(name) {
+    let system = family.and_then(|name| match crate::ui::fonts::load_family(name) {
         Ok(faces) if faces.iter().all(|f| ab_glyph::FontRef::try_from_slice_and_index(&f.data, f.index).is_ok()) => Some(faces),
         Ok(_) => {
             problem = Some(format!("La fuente «{name}» no se puede usar en el terminal"));
@@ -3721,7 +3727,7 @@ impl eframe::App for App {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 2.0;
                     let hint = if self.sidebar_collapsed { "Mostrar la barra lateral (Ctrl+Shift+B)" } else { "Ocultar la barra lateral (Ctrl+Shift+B)" };
-                    let toggle = crate::ui_kit::icon_button(ui, icons::SIDEBAR, theme::size::ICON_LG, theme::subtext());
+                    let toggle = crate::ui::kit::icon_button(ui, icons::SIDEBAR, theme::size::ICON_LG, theme::subtext());
                     if toggle.on_hover_text(hint).clicked() {
                         toggle_sidebar_button = true;
                     }
@@ -3786,7 +3792,7 @@ impl eframe::App for App {
                     });
                         });
                     ui.add_space(theme::space::S);
-                    let plus = crate::ui_kit::icon_button(ui, icons::PLUS, theme::size::ICON, theme::text());
+                    let plus = crate::ui::kit::icon_button(ui, icons::PLUS, theme::size::ICON, theme::text());
                     let plus = plus.on_hover_text("Nueva pestaña (Ctrl+Shift+T)");
                     let popup_id = egui::Popup::default_response_id(&plus);
                     if std::mem::take(&mut open_plus_menu) {
@@ -3799,7 +3805,7 @@ impl eframe::App for App {
                         plus_menu(ui, &plus_recents, &mut plus_selected, &mut plus_choice);
                     });
                     if overflowing {
-                        let list = crate::ui_kit::icon_button(ui, icons::CARET_DOWN, theme::size::ICON_SM, theme::subtext());
+                        let list = crate::ui::kit::icon_button(ui, icons::CARET_DOWN, theme::size::ICON_SM, theme::subtext());
                         let list = list.on_hover_text("Todas las pestañas");
                         egui::Popup::menu(&list).width(260.0).show(|ui| {
                             for (i, (title, _, _, _)) in tab_labels.iter().enumerate() {
@@ -3835,7 +3841,7 @@ impl eframe::App for App {
                             });
                         }
                         if let Some(TabKind::Connection(id)) = self.tabs.get(self.active).map(|t| t.kind) {
-                            if self.active_has_explorer() && crate::ui_kit::icon_button(ui, icons::FOLDER, theme::size::ICON_LG, theme::subtext()).on_hover_text("Abrir el explorador de archivos de esta conexión").clicked() {
+                            if self.active_has_explorer() && crate::ui::kit::icon_button(ui, icons::FOLDER, theme::size::ICON_LG, theme::subtext()).on_hover_text("Abrir el explorador de archivos de esta conexión").clicked() {
                                 files_tab = Some(id);
                             }
                         }
@@ -3856,11 +3862,11 @@ impl eframe::App for App {
                                     }
                                     ui.separator();
                                     let mut dtr = status.dtr;
-                                    if crate::ui_kit::switch_labeled(ui, &mut dtr, "DTR").clicked() {
+                                    if crate::ui::kit::switch_labeled(ui, &mut dtr, "DTR").clicked() {
                                         session.control(term::Control::Dtr(dtr));
                                     }
                                     let mut rts = status.rts;
-                                    if crate::ui_kit::switch_labeled(ui, &mut rts, "RTS").clicked() {
+                                    if crate::ui::kit::switch_labeled(ui, &mut rts, "RTS").clicked() {
                                         session.control(term::Control::Rts(rts));
                                     }
                                 });
@@ -4091,8 +4097,8 @@ impl eframe::App for App {
                 self.notify(message);
             }
             match container_request {
-                Some(containers::Request::Terminal(endpoint, container)) => self.open_container_terminal(endpoint, &container),
-                Some(containers::Request::Confirm(endpoint, container, action)) => {
+                Some(view::Request::Terminal(endpoint, container)) => self.open_container_terminal(endpoint, &container),
+                Some(view::Request::Confirm(endpoint, container, action)) => {
                     self.dialog = Some(Dialog::ConfirmContainer(dialogs::ContainerConfirm { endpoint, container, action }));
                 }
                 None => {}
@@ -4127,7 +4133,7 @@ impl eframe::App for App {
                             ui.horizontal(|ui| {
                                 ui.label("Sesión desconectada");
                                 let button = Button::new(RichText::new("Reconectar").color(theme::base()));
-                                clicked = crate::ui_kit::button_with(ui, button, crate::ui_kit::Variant::Primary).clicked();
+                                clicked = crate::ui::kit::button_with(ui, button, crate::ui::kit::Variant::Primary).clicked();
                             });
                         });
                     });
@@ -4176,7 +4182,7 @@ mod sidebar_tests {
     fn connection(id: i64, name: &str, env: Option<&str>) -> Connection {
         Connection {
             id: Some(id),
-            protocol: crate::store::Protocol::Ssh,
+            protocol: crate::data::store::Protocol::Ssh,
             name: name.into(),
             host: format!("{name}.test"),
             port: 22,

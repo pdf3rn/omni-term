@@ -8,8 +8,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 
-use crate::store::{Connection, Encoding, Protocol, TelnetOptions};
-use crate::term::{Backend, Feed};
+use crate::data::store::{Connection, Encoding, Protocol, TelnetOptions};
+use crate::terminal::term::{Backend, Feed};
 
 const IAC: u8 = 255;
 const DONT: u8 = 254;

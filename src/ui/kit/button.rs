@@ -2,8 +2,8 @@
 
 use eframe::egui::{self, Align2, Color32, CornerRadius, FontId, Rect, RichText, Sense, Stroke, Ui, Vec2};
 
-use crate::cursor::HandExt;
-use crate::theme;
+use crate::ui::cursor::HandExt;
+use crate::ui::theme;
 
 /// Qué papel juega el botón en la pantalla.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

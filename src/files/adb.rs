@@ -13,10 +13,10 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 
-use crate::remotefs::{PipeEnd, Reader, RemoteFs, Writer};
-use crate::sftp::Entry;
-use crate::store::Connection;
-use crate::term::{Backend, Feed};
+use crate::files::remotefs::{PipeEnd, Reader, RemoteFs, Writer};
+use crate::files::sftp::Entry;
+use crate::data::store::Connection;
+use crate::terminal::term::{Backend, Feed};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// Tamaño máximo de un bloque `DATA` del protocolo `sync`.
@@ -457,7 +457,7 @@ impl RemoteFs for AdbFs {
         for (name, stat) in entries {
             // Un enlace simbólico a una carpeta se navega como carpeta.
             let is_dir = if stat.mode & S_IFMT == S_IFLNK {
-                let target = crate::sftp::join(path, &name);
+                let target = crate::files::sftp::join(path, &name);
                 self.stat(&target).await.ok().flatten().is_some_and(|s| s.is_dir())
             } else {
                 stat.is_dir()
