@@ -37,3 +37,4 @@ pub const FOLDER_LOCK: &str = "\u{EA3C}";
 pub const CLOUD_UP: &str = "\u{E1AE}";
 pub const HARD_DRIVES: &str = "\u{E2A0}";
 pub const PHONE: &str = "\u{E1E0}";
+pub const DESKTOP: &str = "\u{E560}";

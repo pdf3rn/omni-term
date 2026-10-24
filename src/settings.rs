@@ -83,6 +83,8 @@ impl AnsiChoice {
 pub struct Settings {
     /// Qué hacer con las pestañas de la sesión anterior al arrancar.
     pub on_start: StartupChoice,
+    /// Perfil de terminal local que abren el botón + y Ctrl+Shift+T; sin él, el shell del sistema.
+    pub local_profile: Option<i64>,
     pub accent: AccentChoice,
     pub ansi: AnsiChoice,
     /// Barra de menú siempre visible; si no, `Alt` la muestra un momento.
@@ -142,6 +144,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             on_start: StartupChoice::Ask,
+            local_profile: None,
             accent: AccentChoice::Blue,
             ansi: AnsiChoice::Catppuccin,
             menu_bar: true,
@@ -170,6 +173,7 @@ impl Settings {
     pub fn load(store: &Store) -> Self {
         let defaults = Self::default();
         Self {
+            local_profile: text(store, "setting.local_profile").and_then(|t| t.parse::<i64>().ok()),
             on_start: text(store, "setting.on_start").and_then(|k| StartupChoice::from_key(&k)).unwrap_or(defaults.on_start),
             accent: text(store, "setting.accent").and_then(|k| AccentChoice::from_key(&k)).unwrap_or(defaults.accent),
             ansi: text(store, "setting.ansi").and_then(|k| AnsiChoice::from_key(&k)).unwrap_or(defaults.ansi),
@@ -218,6 +222,7 @@ impl Settings {
             CursorChoice::Beam => "beam",
             CursorChoice::Underline => "underline",
         };
+        store.set_meta("setting.local_profile", self.local_profile.map(|id| id.to_string()).unwrap_or_default().as_bytes())?;
         store.set_meta("setting.on_start", self.on_start.key().as_bytes())?;
         store.set_meta("setting.accent", self.accent.key().as_bytes())?;
         store.set_meta("setting.ansi", self.ansi.key().as_bytes())?;
@@ -254,6 +259,7 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         let settings = Settings {
             on_start: StartupChoice::Restore,
+            local_profile: Some(7),
             accent: AccentChoice::Mauve,
             ansi: AnsiChoice::Gnome,
             menu_bar: false,

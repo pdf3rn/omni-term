@@ -278,6 +278,7 @@ mod tests {
             jump: None,
             color: None,
             env: None,
+            vars: String::new(),
         };
         let known_hosts = sshd.dir.join("known_hosts");
         let client = runtime
@@ -396,6 +397,7 @@ mod tests {
             jump: None,
             color: None,
             env: None,
+            vars: String::new(),
         };
         let credentials = Credentials {
             jump: Some(Box::new(JumpHost { connection: connection(&jump, "salto"), credentials: Credentials::default() })),

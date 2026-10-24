@@ -479,11 +479,24 @@ impl App {
         Arc::new(move || ctx.request_repaint())
     }
 
+    /// Terminal local nuevo: el del perfil elegido como predeterminado en Ajustes, o el shell del sistema.
     fn local_session(&mut self) -> anyhow::Result<Session> {
+        let default = self.settings.local_profile.and_then(|id| self.connections.iter().find(|c| c.id == Some(id) && c.is_local()).cloned());
+        match default {
+            Some(profile) => self.local_profile_session(profile),
+            None => self.local_profile_session_with(crate::local::Profile::default()),
+        }
+    }
+
+    fn local_profile_session(&mut self, connection: Connection) -> anyhow::Result<Session> {
+        self.local_profile_session_with(crate::local::Profile::from_connection(&connection))
+    }
+
+    fn local_profile_session_with(&mut self, profile: crate::local::Profile) -> anyhow::Result<Session> {
         let wake = self.wake();
         let (cols, rows) = self.grid;
         let options = self.term_options();
-        Session::start(cols, rows, options, move || wake(), move |feed| crate::local::spawn(cols, rows, feed))
+        Session::start(cols, rows, options, move || wake(), move |feed| crate::local::spawn_profile(cols, rows, feed, &profile))
     }
 
     fn ssh_session(&mut self, connection: Connection, credentials: Credentials, tunnels: Tunnels) -> anyhow::Result<Session> {
@@ -531,7 +544,9 @@ impl App {
 
     /// Sesión de terminal de una conexión: SSH, Telnet, puerto serie o Android.
     fn connection_session(&mut self, connection: Connection, credentials: Credentials, tunnels: Tunnels) -> anyhow::Result<Session> {
-        if connection.is_serial() {
+        if connection.is_local() {
+            self.local_profile_session(connection)
+        } else if connection.is_serial() {
             self.serial_session(connection)
         } else if connection.is_adb() {
             self.adb_session(connection)
@@ -810,6 +825,14 @@ impl App {
     fn begin_open(&mut self, connection: Connection, slot: Option<u64>, purpose: Purpose) {
         // Las conexiones de archivos no tienen terminal: abrirlas es abrir su explorador.
         let purpose = if connection.is_files() && matches!(purpose, Purpose::Terminal) { Purpose::Explorer(None, None) } else { purpose };
+        if connection.is_local() {
+            if matches!(purpose, Purpose::Explorer(..)) {
+                self.notify("Un terminal local no tiene explorador de archivos");
+            } else {
+                self.finish_open(connection, Credentials::default(), slot, purpose);
+            }
+            return;
+        }
         if connection.is_serial() {
             if matches!(purpose, Purpose::Explorer(..)) {
                 self.notify("Un puerto serie no tiene explorador de archivos");
@@ -4164,6 +4187,7 @@ mod sidebar_tests {
             jump: None,
             color: None,
             env: env.map(str::to_string),
+            vars: String::new(),
         }
     }
 

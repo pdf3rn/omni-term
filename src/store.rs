@@ -325,6 +325,9 @@ pub enum Protocol {
     Files(FilesKind),
     /// Dispositivo Android por el servidor `adb`: el número de serie (o `ip:puerto`) va en `host`.
     Adb,
+    /// Perfil de terminal local: intérprete en `host` (vacío = el del sistema), argumentos en `user`,
+    /// directorio inicial en `key_path` y variables de entorno en `Connection::vars`.
+    Local,
 }
 
 impl Protocol {
@@ -336,6 +339,7 @@ impl Protocol {
             Protocol::Serial(o) => ("serial", false, "utf8", false, Some(o.to_text())),
             Protocol::Files(kind) => ("files", false, "utf8", false, Some(kind.to_text())),
             Protocol::Adb => ("adb", false, "utf8", false, None),
+            Protocol::Local => ("local", false, "utf8", false, None),
         }
     }
 
@@ -345,6 +349,7 @@ impl Protocol {
             "serial" => Protocol::Serial(SerialOptions::parse(serial.unwrap_or(""))),
             "files" => Protocol::Files(FilesKind::parse(serial.unwrap_or(""))),
             "adb" => Protocol::Adb,
+            "local" => Protocol::Local,
             _ => Protocol::Ssh,
         }
     }
@@ -367,6 +372,8 @@ pub struct Connection {
     pub color: Option<u8>,
     /// Entorno en texto libre, por ejemplo «producción».
     pub env: Option<String>,
+    /// Variables de entorno de un perfil local, una por línea con la forma `NOMBRE=valor`.
+    pub vars: String,
 }
 
 impl Connection {
@@ -403,6 +410,20 @@ impl Connection {
         self.protocol == Protocol::Adb
     }
 
+    pub fn is_local(&self) -> bool {
+        self.protocol == Protocol::Local
+    }
+
+    /// Nombre corto del intérprete de un perfil local, o «shell del sistema» si no se eligió uno.
+    pub fn local_shell_name(&self) -> String {
+        let program = self.host.trim();
+        if program.is_empty() {
+            return "shell del sistema".to_string();
+        }
+        let name = program.rsplit(['/', '\\']).next().unwrap_or(program);
+        name.strip_suffix(".exe").unwrap_or(name).to_string()
+    }
+
     pub fn is_serial(&self) -> bool {
         matches!(self.protocol, Protocol::Serial(_))
     }
@@ -421,6 +442,7 @@ impl Connection {
             Protocol::Files(FilesKind::Ftp(_)) => "FTP",
             Protocol::Files(FilesKind::Smb) => "SMB",
             Protocol::Adb => "ADB",
+            Protocol::Local => "Local",
         }
     }
 
@@ -434,6 +456,7 @@ impl Connection {
             Protocol::Files(FilesKind::Smb) => format!("\\\\{}\\{}", self.host, self.smb_share()),
             Protocol::Adb if self.host.is_empty() => "el dispositivo conectado".to_string(),
             Protocol::Adb => self.host.clone(),
+            Protocol::Local => self.local_shell_name(),
         }
     }
 
@@ -445,6 +468,7 @@ impl Connection {
             Protocol::Serial(o) => format!("serie · {} · {}", self.host, o.baud),
             Protocol::Adb if self.host.is_empty() => "adb · el dispositivo conectado".to_string(),
             Protocol::Adb => format!("adb · {}", self.host),
+            Protocol::Local => format!("local · {}", self.local_shell_name()),
             Protocol::Files(FilesKind::Sftp) => format!("sftp · {}@{}", self.user, self.host),
             Protocol::Files(FilesKind::Ftp(o)) => {
                 let who = if o.anonymous { "anónimo" } else { self.user.as_str() };
@@ -648,8 +672,10 @@ impl Store {
         })?;
         rows.map(|row| {
             let (id, name, host, port, user, auth, key_path, init_command, jump, color, env, protocol, raw, encoding, quiet, serial) = row?;
+            let protocol_value = Protocol::from_columns(&protocol, raw, &encoding, quiet, serial.as_deref());
+            let vars = if protocol_value == Protocol::Local { serial.clone().unwrap_or_default() } else { String::new() };
             Ok(Connection {
-                protocol: Protocol::from_columns(&protocol, raw, &encoding, quiet, serial.as_deref()),
+                protocol: protocol_value,
                 id: Some(id),
                 name,
                 host,
@@ -661,6 +687,7 @@ impl Store {
                 jump,
                 color,
                 env,
+                vars,
             })
         })
         .collect()
@@ -668,7 +695,10 @@ impl Store {
 
     /// Inserta o actualiza y devuelve el id.
     pub fn save_connection(&self, connection: &Connection) -> anyhow::Result<i64> {
-        let columns = connection.protocol.columns();
+        let mut columns = connection.protocol.columns();
+        if connection.protocol == Protocol::Local {
+            columns.4 = Some(connection.vars.clone());
+        }
         match connection.id {
             Some(id) => {
                 self.db.execute(
@@ -726,6 +756,10 @@ impl Store {
     /// Vuelve a insertar una conexión borrada, con su mismo id (para «Deshacer»).
     pub fn restore_connection(&self, connection: &Connection) -> anyhow::Result<()> {
         let id = connection.id.context("la conexión no tiene id")?;
+        let mut columns = connection.protocol.columns();
+        if connection.protocol == Protocol::Local {
+            columns.4 = Some(connection.vars.clone());
+        }
         self.db.execute(
             "INSERT INTO connections (id, name, host, port, user, auth, key_path, init_command, jump_id, color, env,
                                       protocol, telnet_raw, encoding, telnet_quiet, serial_opts)
@@ -742,11 +776,11 @@ impl Store {
                 connection.jump,
                 connection.color,
                 connection.env,
-                connection.protocol.columns().0,
-                connection.protocol.columns().1,
-                connection.protocol.columns().2,
-                connection.protocol.columns().3,
-                connection.protocol.columns().4
+                columns.0,
+                columns.1,
+                columns.2,
+                columns.3,
+                columns.4
             ],
         )?;
         Ok(())
@@ -990,6 +1024,7 @@ mod tests {
             jump: None,
             color: None,
             env: None,
+            vars: String::new(),
         }
     }
 
@@ -1242,6 +1277,32 @@ mod tests {
         let reopened = Store::open(&path).unwrap();
         assert_eq!(reopened.list_connections().unwrap().len(), 1);
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn a_local_profile_keeps_its_fields_and_variables() {
+        let store = Store::open_in_memory().unwrap();
+        let mut profile = sample("dev");
+        profile.protocol = Protocol::Local;
+        profile.host = "/bin/zsh".into();
+        profile.user = "-l".into();
+        profile.key_path = Some("~/proyectos".into());
+        profile.init_command = Some("ls".into());
+        profile.auth = Auth::Agent;
+        profile.vars = "A=1\nB=dos".into();
+        let id = store.save_connection(&profile).unwrap();
+        let mut ssh = sample("web");
+        ssh.vars = String::new();
+        store.save_connection(&ssh).unwrap();
+
+        let loaded = store.list_connections().unwrap();
+        let back = loaded.iter().find(|c| c.id == Some(id)).unwrap();
+        assert_eq!(back.protocol, Protocol::Local);
+        assert_eq!((back.host.as_str(), back.user.as_str(), back.vars.as_str()), ("/bin/zsh", "-l", "A=1\nB=dos"));
+        assert_eq!(back.key_path.as_deref(), Some("~/proyectos"));
+        assert_eq!(back.local_shell_name(), "zsh");
+        assert_eq!(back.target(), "local · zsh");
+        assert!(loaded.iter().find(|c| c.name == "web").unwrap().vars.is_empty());
     }
 
     #[test]
