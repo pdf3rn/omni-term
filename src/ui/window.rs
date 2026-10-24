@@ -342,3 +342,18 @@ pub(super) const WINDOW_BUTTON_WIDTH: f32 = 46.0;
 
 /// Grosor de los bordes de la ventana sin decoraciones donde se puede redimensionar.
 pub(super) const RESIZE_BORDER: f32 = 5.0;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn saved_window_position_is_used_only_when_it_is_on_screen() {
+        let (monitor, size) = (Vec2::new(1920.0, 1080.0), Vec2::new(960.0, 600.0));
+        assert_eq!(parse_window_position("100,80", monitor, size), Some(Pos2::new(100.0, 80.0)));
+        assert_eq!(parse_window_position("-950,40", monitor, size), None);
+        assert_eq!(parse_window_position("3000,40", monitor, size), None);
+        assert_eq!(parse_window_position("100,-20", monitor, size), None);
+        assert_eq!(parse_window_position("basura", monitor, size), None);
+    }
+}

@@ -828,18 +828,7 @@ pub(super) fn sidebar_groups(connections: &[Connection], query: &str, pinned: &[
 
 #[cfg(test)]
 mod sidebar_tests {
-    use super::super::window::parse_window_position;
     use super::*;
-
-    #[test]
-    fn saved_window_position_is_used_only_when_it_is_on_screen() {
-        let (monitor, size) = (Vec2::new(1920.0, 1080.0), Vec2::new(960.0, 600.0));
-        assert_eq!(parse_window_position("100,80", monitor, size), Some(Pos2::new(100.0, 80.0)));
-        assert_eq!(parse_window_position("-950,40", monitor, size), None);
-        assert_eq!(parse_window_position("3000,40", monitor, size), None);
-        assert_eq!(parse_window_position("100,-20", monitor, size), None);
-        assert_eq!(parse_window_position("basura", monitor, size), None);
-    }
 
     fn connection(id: i64, name: &str, env: Option<&str>) -> Connection {
         Connection {

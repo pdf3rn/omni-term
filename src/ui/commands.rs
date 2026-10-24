@@ -117,4 +117,61 @@ impl App {
             }
         }
     }
+
+    pub(super) fn global_shortcuts(&mut self, ctx: &egui::Context) {
+        // Con Ctrl solo (B, K) chocarían con tmux y readline.
+        let (toggle_sidebar, search_sidebar) = ctx.input_mut(|i| {
+            let both = Modifiers::CTRL | Modifiers::SHIFT;
+            (i.consume_key(both, Key::B), i.consume_key(both, Key::K))
+        });
+        if toggle_sidebar {
+            self.set_sidebar_collapsed(!self.sidebar_collapsed);
+        }
+        if ctx.input_mut(|i| i.consume_key(Modifiers::CTRL | Modifiers::SHIFT, Key::P)) && self.dialog.is_none() {
+            self.palette = if self.palette.is_some() { None } else { Some(Palette::default()) };
+        }
+        if ctx.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::Comma)) {
+            self.open_settings(dialogs::SettingsTab::General);
+        }
+        if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F11)) {
+            self.run_command(Command::Fullscreen);
+        }
+        if ctx.input_mut(|i| i.consume_key(Modifiers::CTRL | Modifiers::SHIFT, Key::T)) && self.dialog.is_none() {
+            self.open_plus_menu = true;
+        }
+        // Alt+1…9 salta a esa pestaña (Alt+9, a la última); Ctrl+Tab y Ctrl+Mayús+Tab recorren.
+        let (jump, step) = ctx.input_mut(|i| {
+            let digits = [Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5, Key::Num6, Key::Num7, Key::Num8, Key::Num9];
+            let jump = digits.iter().position(|k| i.consume_key(Modifiers::ALT, *k));
+            if jump.is_some() {
+                // El dígito también llega como texto: no debe escribirse en el terminal.
+                i.events.retain(|e| !matches!(e, egui::Event::Text(_)));
+            }
+            let step = if i.consume_key(Modifiers::CTRL | Modifiers::SHIFT, Key::Tab) {
+                -1
+            } else if i.consume_key(Modifiers::CTRL, Key::Tab) {
+                1
+            } else {
+                0
+            };
+            (jump, step)
+        });
+        if !self.tabs.is_empty() {
+            let last = self.tabs.len() - 1;
+            if let Some(n) = jump {
+                self.active = if n == 8 { last } else { n.min(last) };
+            }
+            if step != 0 {
+                self.active = (self.active as i32 + step).rem_euclid(self.tabs.len() as i32) as usize;
+            }
+        }
+        if search_sidebar {
+            self.set_sidebar_collapsed(false);
+            self.focus_search = true;
+        }
+        if ctx.input(|i| i.viewport().close_requested()) && !self.close_confirmed {
+            ctx.send_viewport_cmd(ViewportCommand::CancelClose);
+            self.request_close(CloseAction::Window);
+        }
+    }
 }

@@ -348,3 +348,271 @@ pub(super) fn tunnel_line(ui: &mut egui::Ui, status: &ssh::TunnelStatus) {
     }
     response.on_hover_text(tip);
 }
+
+impl App {
+    pub(super) fn tab_strip(&mut self, ui: &mut egui::Ui) {
+        let ctx = ui.ctx().clone();
+        let mut activate = None;
+        let mut close = None;
+        let mut toggle_sidebar_button = false;
+        let mut files_tab: Option<i64> = None;
+        let mut split: Option<Dir> = None;
+        let mut close_pane = false;
+        let tab_labels: Vec<(String, Option<Color32>, bool, bool)> = self
+            .tabs
+            .iter()
+            .map(|t| {
+                let insecure = matches!(t.kind, TabKind::Connection(id) if self.connections.iter().any(|c| c.id == Some(id) && c.insecure_protocol().is_some()));
+                (t.title(), self.identity_for(t.kind), t.attention, insecure)
+            })
+            .collect();
+        let mut renaming = self.renaming.take();
+        let mut rename_done: Option<(usize, Option<String>)> = None;
+        let mut tab_menu: Option<(usize, TabAction)> = None;
+        let mut tab_rects: Vec<Rect> = Vec::new();
+        let mut overflowing = false;
+        let mut strip_scrolled_to: Option<u64> = None;
+        let plus_recents = self.recent_connections();
+        let mut plus_selected = self.plus_selected;
+        let mut plus_choice: Option<PlusChoice> = None;
+        let mut open_plus_menu = std::mem::take(&mut self.open_plus_menu);
+        let mut dragging: Option<usize> = None;
+        Panel::top("tabs")
+            .exact_size(TAB_BAR_HEIGHT)
+            .show_separator_line(false)
+            .frame(Frame::NONE.fill(theme::mantle()).inner_margin(Margin { left: 8, right: 8, top: 6, bottom: 0 }))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 2.0;
+                    let hint = if self.sidebar_collapsed { "Mostrar la barra lateral (Ctrl+Shift+B)" } else { "Ocultar la barra lateral (Ctrl+Shift+B)" };
+                    let toggle = crate::ui::kit::icon_button(ui, icons::SIDEBAR, theme::size::ICON_LG, theme::subtext());
+                    if toggle.on_hover_text(hint).clicked() {
+                        toggle_sidebar_button = true;
+                    }
+                    // Reserva sitio para «+», el menú de pestañas y las acciones de la derecha.
+                    let strip_width = (ui.available_width() - 150.0).max(120.0);
+                    let tab_cap = (strip_width / tab_labels.len().max(1) as f32).max(MIN_TAB_WIDTH);
+                    overflowing = tab_labels.len() as f32 * (MIN_TAB_WIDTH + 2.0) > strip_width;
+                    egui::ScrollArea::horizontal()
+                        .id_salt("tab-strip")
+                        .max_width(strip_width)
+                        .auto_shrink([true, false])
+                        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                        .show(ui, |ui| {
+                    // La rueda del ratón sobre las pestañas las desplaza de lado.
+                    if ui.rect_contains_pointer(ui.clip_rect()) {
+                        let delta = ui.input(|i| i.smooth_scroll_delta.y);
+                        if delta != 0.0 {
+                            ui.scroll_with_delta(Vec2::new(delta, 0.0));
+                        }
+                    }
+                    ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 2.0;
+                    for (i, (title, identity, attention, insecure)) in tab_labels.iter().enumerate() {
+                        if let Some((index, text, focus)) = renaming.as_mut().filter(|(index, _, _)| *index == i) {
+                            let _ = index;
+                            let field = ui.add_sized([150.0, TAB_HEIGHT - 8.0], egui::TextEdit::singleline(text).hint_text("Nombre de la pestaña"));
+                            if std::mem::take(focus) {
+                                field.request_focus();
+                            }
+                            // Se consumen para que el terminal, que recupera el foco, no reciba Enter ni Esc.
+                            let enter = field.has_focus() && ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Enter));
+                            let escape = field.has_focus() && ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape));
+                            if escape {
+                                rename_done = Some((i, None));
+                            } else if enter || field.lost_focus() {
+                                rename_done = Some((i, Some(text.trim().to_string())));
+                            }
+                            tab_rects.push(field.rect);
+                            continue;
+                        }
+                        let can_duplicate = !matches!(self.tabs[i].kind, TabKind::Explorer(_) | TabKind::Settings | TabKind::Containers);
+                        let can_rename = self.tabs[i].kind != TabKind::Settings;
+                        let outcome = tab(ui, title, i == self.active, i, *identity, *attention, *insecure, self.tabs.len(), can_duplicate, can_rename, tab_cap, &mut tab_menu);
+                        tab_rects.push(outcome.rect);
+                        if i == self.active && self.tabs.get(i).is_some_and(|t| t.id != self.tab_strip_seen) {
+                            ui.scroll_to_rect(outcome.rect.expand2(Vec2::new(24.0, 0.0)), None);
+                            strip_scrolled_to = self.tabs.get(i).map(|t| t.id);
+                        }
+                        if outcome.clicked {
+                            activate = Some(i);
+                        }
+                        if outcome.closed {
+                            close = Some(i);
+                        }
+                        if outcome.dragged {
+                            dragging = Some(i);
+                        }
+                        if outcome.rename {
+                            tab_menu = Some((i, TabAction::Rename));
+                        }
+                    }
+                    });
+                        });
+                    ui.add_space(theme::space::S);
+                    let plus = crate::ui::kit::icon_button(ui, icons::PLUS, theme::size::ICON, theme::text());
+                    let plus = plus.on_hover_text("Nueva pestaña (Ctrl+Shift+T)");
+                    let popup_id = egui::Popup::default_response_id(&plus);
+                    if std::mem::take(&mut open_plus_menu) {
+                        egui::Popup::open_id(ui.ctx(), popup_id);
+                    }
+                    if !egui::Popup::is_id_open(ui.ctx(), popup_id) {
+                        plus_selected = 0;
+                    }
+                    egui::Popup::menu(&plus).width(330.0).show(|ui| {
+                        plus_menu(ui, &plus_recents, &mut plus_selected, &mut plus_choice);
+                    });
+                    if overflowing {
+                        let list = crate::ui::kit::icon_button(ui, icons::CARET_DOWN, theme::size::ICON_SM, theme::subtext());
+                        let list = list.on_hover_text("Todas las pestañas");
+                        egui::Popup::menu(&list).width(260.0).show(|ui| {
+                            for (i, (title, _, _, _)) in tab_labels.iter().enumerate() {
+                                let shown: String = title.chars().take(32).collect();
+                                if ui.selectable_label(i == self.active, shown).clicked() {
+                                    activate = Some(i);
+                                    ui.close();
+                                }
+                            }
+                        });
+                    }
+
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.spacing_mut().item_spacing.x = 4.0;
+                        if self.tabs.get(self.active).is_some_and(|t| matches!(t.body, Body::Terminal { .. })) {
+                            ui.scope(|ui| {
+                                ui.visuals_mut().widgets.inactive.weak_bg_fill = Color32::TRANSPARENT;
+                                let split_menu = ui.menu_button(RichText::new(icons::SPLIT).size(theme::size::ICON_LG).color(theme::subtext()), |ui| {
+                                    if ui.button("A la derecha  (Ctrl+Shift+D)").clicked() {
+                                        split = Some(Dir::Horizontal);
+                                        ui.close();
+                                    }
+                                    if ui.button("Hacia abajo  (Ctrl+Shift+E)").clicked() {
+                                        split = Some(Dir::Vertical);
+                                        ui.close();
+                                    }
+                                    if ui.button("Cerrar panel  (Ctrl+Shift+W)").clicked() {
+                                        close_pane = true;
+                                        ui.close();
+                                    }
+                                });
+                                split_menu.response.on_hover_text("Dividir el panel");
+                            });
+                        }
+                        if let Some(TabKind::Connection(id)) = self.tabs.get(self.active).map(|t| t.kind) {
+                            if self.active_has_explorer() && crate::ui::kit::icon_button(ui, icons::FOLDER, theme::size::ICON_LG, theme::subtext()).on_hover_text("Abrir el explorador de archivos de esta conexión").clicked() {
+                                files_tab = Some(id);
+                            }
+                        }
+                        if let Some(session) = self.tabs.get(self.active).and_then(|t| t.pane()).map(|p| &p.session).filter(|s| s.serial_status().is_some()) {
+                            if let Some(status) = session.serial_status() {
+                                let menu = ui.menu_button(RichText::new(format!("{} baudios", status.baud)).small().color(theme::subtext()), |ui| {
+                                    ui.menu_button("Velocidad", |ui| {
+                                        for rate in store::BAUD_RATES {
+                                            if ui.selectable_label(rate == status.baud, rate.to_string()).clicked() {
+                                                session.control(term::Control::Baud(rate));
+                                                ui.close();
+                                            }
+                                        }
+                                    });
+                                    if ui.button("Enviar break").clicked() {
+                                        session.control(term::Control::Break);
+                                        ui.close();
+                                    }
+                                    ui.separator();
+                                    let mut dtr = status.dtr;
+                                    if crate::ui::kit::switch_labeled(ui, &mut dtr, "DTR").clicked() {
+                                        session.control(term::Control::Dtr(dtr));
+                                    }
+                                    let mut rts = status.rts;
+                                    if crate::ui::kit::switch_labeled(ui, &mut rts, "RTS").clicked() {
+                                        session.control(term::Control::Rts(rts));
+                                    }
+                                });
+                                menu.response.on_hover_text("Ajustes del puerto serie");
+                            }
+                        }
+                    });
+                });
+            });
+
+        if let Some(id) = strip_scrolled_to {
+            self.tab_strip_seen = id;
+        }
+        self.renaming = renaming;
+        self.plus_selected = plus_selected;
+        match plus_choice {
+            Some(PlusChoice::Local) => self.open_queue.push_back(SavedTab::plain(TabKind::Local)),
+            Some(PlusChoice::Connect(connection)) => self.begin_open(connection, None, Purpose::Terminal),
+            Some(PlusChoice::Files(connection)) => self.begin_open(connection, None, Purpose::Explorer(None, None)),
+            Some(PlusChoice::Containers) => self.open_containers(),
+            Some(PlusChoice::All) => self.palette = Some(Palette::default()),
+            None => {}
+        }
+        if let Some((i, name)) = rename_done {
+            self.renaming = None;
+            if let (Some(tab), Some(name)) = (self.tabs.get_mut(i), name) {
+                tab.custom = if name.is_empty() { None } else { Some(name) };
+            }
+        }
+        if let Some(from) = dragging {
+            let pointer = ctx.input(|i| i.pointer.interact_pos());
+            let target = pointer.and_then(|p| tab_rects.iter().position(|r| r.x_range().contains(p.x)));
+            if let Some(target) = target.filter(|t| *t != from && *t < self.tabs.len() && from < self.tabs.len()) {
+                let moved = self.tabs.remove(from);
+                self.tabs.insert(target, moved);
+                self.active = target;
+            }
+        }
+        if let Some((i, action)) = tab_menu {
+            match action {
+                TabAction::Rename => {
+                    if let Some(tab) = self.tabs.get(i) {
+                        self.renaming = Some((i, tab.title(), true));
+                    }
+                }
+                TabAction::Duplicate => match self.tabs.get(i).map(|t| t.kind) {
+                    Some(TabKind::Local) => self.open_queue.push_back(SavedTab::plain(TabKind::Local)),
+                    Some(TabKind::Connection(id)) => {
+                        if let Some(connection) = self.connections.iter().find(|c| c.id == Some(id)).cloned() {
+                            self.begin_open(connection, None, Purpose::Terminal);
+                        }
+                    }
+                    _ => {}
+                },
+                TabAction::CloseOthers => {
+                    if let Some(id) = self.tabs.get(i).map(|t| t.id) {
+                        self.request_close(CloseAction::Others(id));
+                    }
+                }
+                TabAction::CloseRight => {
+                    if let Some(id) = self.tabs.get(i).map(|t| t.id) {
+                        self.request_close(CloseAction::Right(id));
+                    }
+                }
+                TabAction::Close => close = Some(i),
+            }
+        }
+        if toggle_sidebar_button {
+            self.set_sidebar_collapsed(!self.sidebar_collapsed);
+        }
+        if let Some(i) = activate {
+            self.active = i;
+        }
+        if let Some(dir) = split {
+            self.split_active(dir);
+        }
+        if close_pane {
+            self.close_focused_pane();
+        }
+        if let Some(id) = files_tab {
+            if let Some(connection) = self.connections.iter().find(|c| c.id == Some(id)).cloned() {
+                self.begin_open(connection, None, Purpose::Explorer(None, None));
+            }
+        }
+        if let Some(i) = close {
+            if let Some(id) = self.tabs.get(i).map(|t| t.id) {
+                self.request_close(CloseAction::Tab(id));
+            }
+        }
+    }
+}
