@@ -305,8 +305,13 @@ impl Pane {
             let multi_click = self.click_count >= 2;
             if let Some(pos) = response.interact_pointer_pos() {
                 if response.drag_started_by(egui::PointerButton::Primary) && !multi_click {
-                    let (point, side) = to_point(pos, offset);
-                    term.selection = Some(Selection::new(SelectionType::Simple, point, side));
+                    // `drag_started` llega cuando el ratón ya se movió unos píxeles: el inicio es donde se pulsó.
+                    let origin = ui.input(|i| i.pointer.press_origin()).unwrap_or(pos);
+                    let (point, side) = to_point(origin, offset);
+                    let mut selection = Selection::new(SelectionType::Simple, point, side);
+                    let (now, now_side) = to_point(pos, offset);
+                    selection.update(now, now_side);
+                    term.selection = Some(selection);
                 } else if response.dragged_by(egui::PointerButton::Primary) {
                     let (point, side) = to_point(pos, offset);
                     if let Some(selection) = term.selection.as_mut() {
