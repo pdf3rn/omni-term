@@ -240,10 +240,12 @@ impl ContainersView {
     fn empty(&mut self, ui: &mut Ui) {
         ui.add_space(theme::space::XXL);
         ui.label(RichText::new("No se encontró Docker ni Podman").font(FontId::new(theme::size::HEADING, crate::ui::strong_family())).color(theme::text()));
-        ui.label(RichText::new("Inicia el motor y vuelve a buscar. Se buscan sus sockets en /var/run/docker.sock, en DOCKER_HOST y en el directorio de ejecución del usuario.").color(theme::subtext()));
-        if cfg!(not(unix)) {
-            ui.label(RichText::new("En Windows todavía no está soportado (usa una tubería con nombre).").color(theme::subtext()));
-        }
+        let places = if cfg!(windows) {
+            "Inicia Docker Desktop o la máquina de Podman y vuelve a buscar. Se busca la tubería de DOCKER_HOST, \\\\.\\pipe\\docker_engine y las de podman-machine."
+        } else {
+            "Inicia el motor y vuelve a buscar. Se buscan sus sockets en /var/run/docker.sock, en DOCKER_HOST y en el directorio de ejecución del usuario."
+        };
+        ui.label(RichText::new(places).color(theme::subtext()));
         ui.add_space(theme::space::XS);
         if ui.button("Buscar de nuevo").hand().clicked() {
             self.redetect();

@@ -1,4 +1,4 @@
-//! Docker y Podman: cliente propio de la API del motor por su socket Unix.
+//! Docker y Podman: cliente propio de la API del motor por su socket Unix o, en Windows, su tubería con nombre.
 //!
 //! Solo lo necesario para un administrador pequeño: listar contenedores (también los apagados),
 //! iniciar, detener, reiniciar y abrir un shell (`exec` con tty).
@@ -34,14 +34,48 @@ impl Engine {
     }
 }
 
-/// Un motor y el socket por el que se le habla.
+/// Un motor y el socket (en Windows, la tubería con nombre) por el que se le habla.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Endpoint {
     pub engine: Engine,
     pub socket: PathBuf,
 }
 
+#[cfg(windows)]
+const PIPES: &str = r"\\.\pipe\";
+
+/// Motores con tubería en este equipo: Docker Desktop (`DOCKER_HOST` o `docker_engine`) y las máquinas de Podman.
+/// Las tuberías se buscan listando `\\.\pipe\`: abrirlas para comprobarlas ocuparía una conexión del motor.
+#[cfg(windows)]
+pub fn detect_endpoints() -> Vec<Endpoint> {
+    let pipes: Vec<String> = std::fs::read_dir(PIPES)
+        .map(|entries| entries.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect())
+        .unwrap_or_default();
+    let exists = |name: &str| pipes.iter().any(|p| p.eq_ignore_ascii_case(name));
+    let mut found = Vec::new();
+    let from_env = std::env::var("DOCKER_HOST").ok().and_then(|h| npipe_name(&h));
+    if let Some(name) = from_env.into_iter().chain(["docker_engine".to_string()]).find(|name| exists(name)) {
+        found.push(Endpoint { engine: Engine::Docker, socket: format!("{PIPES}{name}").into() });
+    }
+    // La máquina por defecto de Podman primero; si no hay, la primera por nombre.
+    let mut machines: Vec<&String> = pipes.iter().filter(|p| p.starts_with("podman-machine-")).collect();
+    machines.sort_by_key(|p| (p.as_str() != "podman-machine-default", p.as_str()));
+    if let Some(name) = machines.first() {
+        found.push(Endpoint { engine: Engine::Podman, socket: format!("{PIPES}{name}").into() });
+    }
+    found
+}
+
+/// Nombre de la tubería de un `DOCKER_HOST` como `npipe:////./pipe/docker_engine`.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn npipe_name(host: &str) -> Option<String> {
+    let path = host.strip_prefix("npipe://")?.replace('\\', "/");
+    let name = path.trim_start_matches('/').strip_prefix("./pipe/")?;
+    (!name.is_empty()).then(|| name.to_string())
+}
+
 /// Motores con socket en este equipo: Docker (`DOCKER_HOST`, el socket de sistema o el rootless) y Podman.
+#[cfg(not(windows))]
 pub fn detect_endpoints() -> Vec<Endpoint> {
     let runtime = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from);
     let home = std::env::home_dir();
@@ -166,15 +200,32 @@ async fn connect_socket(path: &std::path::Path) -> io::Result<Stream> {
     Ok(Box::new(tokio::net::UnixStream::connect(path).await?))
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+async fn connect_socket(path: &std::path::Path) -> io::Result<Stream> {
+    use tokio::net::windows::named_pipe::ClientOptions;
+    const ERROR_PIPE_BUSY: i32 = 231;
+    // Con todas las instancias de la tubería ocupadas se reintenta; el tiempo límite lo pone quien llama.
+    loop {
+        match ClientOptions::new().open(path) {
+            Ok(pipe) => return Ok(Box::new(pipe)),
+            Err(error) if error.raw_os_error() == Some(ERROR_PIPE_BUSY) => tokio::time::sleep(Duration::from_millis(50)).await,
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
 async fn connect_socket(_path: &std::path::Path) -> io::Result<Stream> {
-    Err(io::Error::new(io::ErrorKind::Unsupported, "Docker en Windows (tubería con nombre) aún no está soportado"))
+    Err(io::Error::new(io::ErrorKind::Unsupported, "plataforma sin sockets Unix ni tuberías con nombre"))
 }
 
 /// Mensaje con la causa y qué hacer cuando no se puede abrir el socket.
 fn connect_error(endpoint: &Endpoint, error: &io::Error) -> anyhow::Error {
     let path = endpoint.socket.display();
     match error.kind() {
+        io::ErrorKind::PermissionDenied if cfg!(windows) => anyhow!(
+            "Permiso denegado en {path}. Con Docker Desktop hay que estar en el grupo local «docker-users» y volver a iniciar sesión."
+        ),
         io::ErrorKind::PermissionDenied => anyhow!(
             "Permiso denegado en {path}. En Linux hay que estar en el grupo «docker»:\n  sudo usermod -aG docker $USER\nY volver a iniciar sesión."
         ),
@@ -362,11 +413,10 @@ async fn run_shell(client: Client, id: String, name: String, size: (usize, usize
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::Mutex;
-    use tokio::net::UnixListener;
 
     const LIST: &str = r#"[
         {"Id":"aaa111","Names":["/minio"],"Image":"minio/minio:latest","State":"running","Status":"Up 19 minutes",
@@ -391,65 +441,97 @@ mod tests {
         assert_eq!(dechunk(b"5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n"), b"hello world");
     }
 
-    /// Motor mínimo en un socket Unix: lista, acciones y un `exec` que repite lo que se escribe.
-    async fn serve(listener: UnixListener, log: Arc<Mutex<Vec<String>>>) {
+    #[test]
+    fn docker_host_names_a_pipe() {
+        assert_eq!(npipe_name("npipe:////./pipe/docker_engine").as_deref(), Some("docker_engine"));
+        assert_eq!(npipe_name(r"npipe://\\.\pipe\dockerDesktopLinuxEngine").as_deref(), Some("dockerDesktopLinuxEngine"));
+        assert_eq!(npipe_name("unix:///var/run/docker.sock"), None);
+        assert_eq!(npipe_name("npipe:////./pipe/"), None);
+    }
+
+    #[cfg(unix)]
+    async fn serve(listener: tokio::net::UnixListener, log: Arc<Mutex<Vec<String>>>) {
         loop {
-            let Ok((mut stream, _)) = listener.accept().await else { return };
-            let log = log.clone();
-            tokio::spawn(async move {
-                let mut raw = Vec::new();
-                let mut buffer = [0u8; 4096];
-                loop {
-                    let Ok(n) = stream.read(&mut buffer).await else { return };
-                    if n == 0 {
-                        return;
-                    }
-                    raw.extend_from_slice(&buffer[..n]);
-                    if let Some(split) = raw.windows(4).position(|w| w == b"\r\n\r\n") {
-                        let head = String::from_utf8_lossy(&raw[..split]).into_owned();
-                        let length = head.lines().find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length: ").and_then(|v| v.trim().parse::<usize>().ok())).unwrap_or(0);
-                        if raw.len() >= split + 4 + length {
-                            break;
-                        }
-                    }
-                }
-                let line = String::from_utf8_lossy(&raw).lines().next().unwrap_or("").to_string();
-                log.lock().unwrap().push(line.clone());
-                let reply = |status: &str, body: &str| format!("HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
-                if line.starts_with("GET /containers/json") {
-                    let _ = stream.write_all(reply("200 OK", LIST).as_bytes()).await;
-                } else if line.contains("/containers/bbb222/start") {
-                    let _ = stream.write_all(reply("204 No Content", "").as_bytes()).await;
-                } else if line.contains("/containers/aaa111/stop") {
-                    let _ = stream.write_all(reply("304 Not Modified", "").as_bytes()).await;
-                } else if line.contains("/containers/zzz/restart") {
-                    let _ = stream.write_all(reply("404 Not Found", r#"{"message":"No such container: zzz"}"#).as_bytes()).await;
-                } else if line.contains("/containers/aaa111/exec") {
-                    let _ = stream.write_all(reply("201 Created", r#"{"Id":"exec1"}"#).as_bytes()).await;
-                } else if line.contains("/exec/exec1/start") {
-                    let _ = stream.write_all(b"HTTP/1.1 101 UPGRADED\r\nContent-Type: application/vnd.docker.raw-stream\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\n# ").await;
-                    let mut buffer = [0u8; 256];
-                    loop {
-                        let Ok(n) = stream.read(&mut buffer).await else { return };
-                        if n == 0 {
-                            return;
-                        }
-                        let _ = stream.write_all(&buffer[..n]).await;
-                    }
-                } else {
-                    let _ = stream.write_all(reply("404 Not Found", "{}").as_bytes()).await;
-                }
-            });
+            let Ok((stream, _)) = listener.accept().await else { return };
+            tokio::spawn(answer(stream, log.clone()));
         }
     }
 
+    /// En una tubería con nombre cada conexión ocupa una instancia: se crea la siguiente antes de atenderla.
+    #[cfg(windows)]
+    async fn serve(name: String, mut server: tokio::net::windows::named_pipe::NamedPipeServer, log: Arc<Mutex<Vec<String>>>) {
+        use tokio::net::windows::named_pipe::ServerOptions;
+        while server.connect().await.is_ok() {
+            let next = ServerOptions::new().create(&name).unwrap();
+            tokio::spawn(answer(std::mem::replace(&mut server, next), log.clone()));
+        }
+    }
+
+    /// Motor mínimo: lista, acciones y un `exec` que repite lo que se escribe.
+    async fn answer(mut stream: impl Io + 'static, log: Arc<Mutex<Vec<String>>>) {
+        let mut raw = Vec::new();
+        let mut buffer = [0u8; 4096];
+        loop {
+            let Ok(n) = stream.read(&mut buffer).await else { return };
+            if n == 0 {
+                return;
+            }
+            raw.extend_from_slice(&buffer[..n]);
+            if let Some(split) = raw.windows(4).position(|w| w == b"\r\n\r\n") {
+                let head = String::from_utf8_lossy(&raw[..split]).into_owned();
+                let length = head.lines().find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length: ").and_then(|v| v.trim().parse::<usize>().ok())).unwrap_or(0);
+                if raw.len() >= split + 4 + length {
+                    break;
+                }
+            }
+        }
+        let line = String::from_utf8_lossy(&raw).lines().next().unwrap_or("").to_string();
+        log.lock().unwrap().push(line.clone());
+        let reply = |status: &str, body: &str| format!("HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+        if line.starts_with("GET /containers/json") {
+            let _ = stream.write_all(reply("200 OK", LIST).as_bytes()).await;
+        } else if line.contains("/containers/bbb222/start") {
+            let _ = stream.write_all(reply("204 No Content", "").as_bytes()).await;
+        } else if line.contains("/containers/aaa111/stop") {
+            let _ = stream.write_all(reply("304 Not Modified", "").as_bytes()).await;
+        } else if line.contains("/containers/zzz/restart") {
+            let _ = stream.write_all(reply("404 Not Found", r#"{"message":"No such container: zzz"}"#).as_bytes()).await;
+        } else if line.contains("/containers/aaa111/exec") {
+            let _ = stream.write_all(reply("201 Created", r#"{"Id":"exec1"}"#).as_bytes()).await;
+        } else if line.contains("/exec/exec1/start") {
+            let _ = stream.write_all(b"HTTP/1.1 101 UPGRADED\r\nContent-Type: application/vnd.docker.raw-stream\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\n# ").await;
+            let mut buffer = [0u8; 256];
+            loop {
+                let Ok(n) = stream.read(&mut buffer).await else { return };
+                if n == 0 {
+                    return;
+                }
+                let _ = stream.write_all(&buffer[..n]).await;
+            }
+        } else {
+            let _ = stream.write_all(reply("404 Not Found", "{}").as_bytes()).await;
+        }
+    }
+
+    #[cfg(unix)]
     fn start() -> (Client, Arc<Mutex<Vec<String>>>, PathBuf) {
         let socket = std::env::temp_dir().join(format!("omniterm-docker-{}-{:?}.sock", std::process::id(), std::thread::current().id()));
         let _ = std::fs::remove_file(&socket);
-        let listener = UnixListener::bind(&socket).unwrap();
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
         let log = Arc::new(Mutex::new(Vec::new()));
         tokio::spawn(serve(listener, log.clone()));
         (Client::new(Endpoint { engine: Engine::Docker, socket: socket.clone() }), log, socket)
+    }
+
+    #[cfg(windows)]
+    fn start() -> (Client, Arc<Mutex<Vec<String>>>, PathBuf) {
+        use tokio::net::windows::named_pipe::ServerOptions;
+        let name = format!(r"{PIPES}omniterm-docker-{}-{:?}", std::process::id(), std::thread::current().id());
+        // La primera instancia se crea aquí para que exista antes de que el cliente conecte.
+        let first = ServerOptions::new().first_pipe_instance(true).create(&name).unwrap();
+        let log = Arc::new(Mutex::new(Vec::new()));
+        tokio::spawn(serve(name.clone(), first, log.clone()));
+        (Client::new(Endpoint { engine: Engine::Docker, socket: name.clone().into() }), log, name.into())
     }
 
     #[tokio::test]
