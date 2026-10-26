@@ -385,6 +385,9 @@ impl Pane {
                 self.handle_input(ui);
             }
         }
+        if self.input_enabled && ui.memory(|m| m.has_focus(id)) {
+            self.publish_ime(ui, area, cell_w, cell_h);
+        }
         if self.window_focused && self.session.term.lock().unwrap().cursor_style().blinking {
             ui.ctx().request_repaint_after(Duration::from_millis(265));
         }
@@ -825,6 +828,17 @@ impl Pane {
                     }
                     out.extend(text.as_bytes());
                 }
+                // Texto confirmado por el IME o insertado desde un panel del sistema; con saltos de línea es un pegado.
+                Event::Ime(egui::ImeEvent::Commit(text)) if !text.is_empty() => {
+                    if self.debug_keys {
+                        eprintln!("ime {text:?}");
+                    }
+                    if text.contains(['\n', '\r']) {
+                        pasted = Some(text.clone());
+                    } else {
+                        out.extend(text.as_bytes());
+                    }
+                }
                 _ => {}
             }
         }
@@ -838,6 +852,22 @@ impl Pane {
         if let Some(text) = pasted {
             self.paste(text);
         }
+    }
+
+    /// Activa el IME mientras el terminal tiene el foco. Sin él, Windows no puede llevar el teclado a sus
+    /// paneles (historial del portapapeles con Win+V, emojis con Win+.), y los métodos de entrada
+    /// colocan su ventana junto al cursor.
+    fn publish_ime(&self, ui: &egui::Ui, area: Rect, cell_w: f32, cell_h: f32) {
+        let cursor = {
+            let term = self.session.term.lock().unwrap();
+            point_to_viewport(term.grid().display_offset(), term.grid().cursor.point)
+        };
+        let cursor_rect = cursor.map_or(area, |vp| {
+            Rect::from_min_size(area.min + Vec2::new(vp.column.0 as f32 * cell_w, vp.line as f32 * cell_h), Vec2::new(cell_w, cell_h))
+        });
+        ui.ctx().output_mut(|o| {
+            o.ime = Some(egui::output::IMEOutput { purpose: egui::IMEPurpose::Normal, rect: area, cursor_rect, should_interrupt_composition: false });
+        });
     }
 
     fn copy_selection(&self, ui: &egui::Ui) {
