@@ -120,7 +120,7 @@ pub fn show(
             plain(action, Outcome::Submit)
         }
         Dialog::TelnetWarning(warning) => {
-            let spec = Spec::new("Conexión sin cifrar").width(440.0).accept("Conectar").icon(DialogIcon::Warning).no_enter();
+            let spec = Spec::new("Conexión sin cifrar").width(440.0).accept("Conectar").icon(DialogIcon::Warning).click_only();
             let action = shell(ctx, spec, |ui| {
                 ui.label(format!("«{}» usa {}: todo lo que envíes, contraseñas incluidas, viaja en texto claro y cualquiera en la red puede leerlo.", warning.connection.name, warning.label));
                 ui.label(RichText::new("Úsalo solo en redes de confianza o con equipos que no admiten SSH.").color(theme::subtext()));
@@ -151,7 +151,7 @@ pub fn show(
         }
         Dialog::Edit(form) => {
             let title = if form.id.is_some() { "Editar conexión" } else { "Nueva conexión" };
-            let mut spec = Spec::new(title).width(780.0).side(KIND_LIST_WIDTH).accept("Guardar").no_enter();
+            let mut spec = Spec::new(title).width(780.0).side(KIND_LIST_WIDTH).accept("Guardar").ctrl_enter();
             if form.ssh_like() {
                 spec = spec.extra("Probar conexión");
             }
@@ -176,7 +176,7 @@ pub fn show(
         }
         Dialog::Snippet(form) => {
             let title = if form.id.is_some() { "Editar snippet" } else { "Nuevo snippet" };
-            let action = shell(ctx, Spec::new(title).accept("Guardar").no_enter(), |ui| snippet_body(ui, form));
+            let action = shell(ctx, Spec::new(title).accept("Guardar").ctrl_enter(), |ui| snippet_body(ui, form));
             plain(action, Outcome::Save)
         }
         Dialog::SnippetVars(prompt) => {
@@ -291,7 +291,7 @@ pub fn show(
             plain(action, Outcome::Submit)
         }
         Dialog::HostKey(request) => {
-            let spec = Spec::new("Servidor desconocido").icon(DialogIcon::Info).accept("Confiar y conectar").no_enter();
+            let spec = Spec::new("Servidor desconocido").icon(DialogIcon::Info).accept("Confiar y conectar").click_only();
             match shell(ctx, spec, |ui| host_key_body(ui, request)) {
                 Action::Accept => Outcome::Trust(true),
                 Action::Cancel => Outcome::Trust(false),

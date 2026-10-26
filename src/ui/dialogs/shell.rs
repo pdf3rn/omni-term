@@ -6,8 +6,18 @@ use super::*;
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Tone {
     Normal,
-    /// Acción destructiva: botón rojo y sin confirmar con Enter.
+    /// Acción destructiva: botón rojo y sin confirmar con el teclado.
     Danger,
+}
+
+/// Qué tecla confirma el diálogo, como si se pulsara su botón principal.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Submit {
+    Enter,
+    /// Formularios con texto multilínea, donde Enter escribe un salto de línea.
+    CtrlEnter,
+    /// Acciones destructivas o de seguridad: solo con un clic deliberado.
+    Never,
 }
 
 /// Lo que cada diálogo declara de sí mismo; el marco común dibuja el resto.
@@ -29,7 +39,7 @@ pub struct Spec {
     tone: Tone,
     cancel: String,
     extras: Vec<String>,
-    enter_submits: bool,
+    submit: Submit,
     backdrop_cancels: bool,
     status: Option<(String, Color32)>,
     /// Ancho de una columna lateral hundida entre el título y el pie, a la izquierda; el cuerpo dibuja su contenido.
@@ -48,7 +58,7 @@ impl Spec {
             tone: Tone::Normal,
             cancel: "Cancelar".into(),
             extras: Vec::new(),
-            enter_submits: true,
+            submit: Submit::Enter,
             backdrop_cancels: false,
             status: None,
             side_width: 0.0,
@@ -83,7 +93,7 @@ impl Spec {
 
     pub fn danger(mut self) -> Self {
         self.tone = Tone::Danger;
-        self.enter_submits = false;
+        self.submit = Submit::Never;
         self.backdrop_cancels = true;
         self
     }
@@ -98,9 +108,15 @@ impl Spec {
         self
     }
 
-    /// Enter dentro de un campo no confirma (formularios con texto multilínea, confianza de huellas).
-    pub fn no_enter(mut self) -> Self {
-        self.enter_submits = false;
+    /// Confirma con Ctrl+Enter en lugar de Enter (formularios con texto multilínea).
+    pub fn ctrl_enter(mut self) -> Self {
+        self.submit = Submit::CtrlEnter;
+        self
+    }
+
+    /// Sin atajo de teclado: avisos de seguridad que solo se aceptan con un clic.
+    pub fn click_only(mut self) -> Self {
+        self.submit = Submit::Never;
         self
     }
 
@@ -131,9 +147,24 @@ pub enum Action {
 }
 
 /// Marco común: título, contexto, cuerpo y pie con los botones a la derecha.
-/// `Esc` cancela; `Enter` confirma cuando el cuerpo lo pide (devolviendo `true`).
+/// `Esc` cancela. Enter (o Ctrl+Enter, según `Spec`) pulsa el botón principal: el de aceptar o, si no
+/// hay, el de cerrar. Con un botón enfocado con Tab, Enter pulsa ese botón. El cuerpo devuelve `true`
+/// cuando se pulsó Enter en uno de sus campos de una línea.
 pub fn shell(ctx: &egui::Context, spec: Spec, body: impl FnOnce(&mut egui::Ui) -> bool) -> Action {
     let mut action = Action::None;
+    // En el fotograma en que aparece, el Enter que lo abrió (p. ej. en la barra lateral) no lo confirma.
+    // Se guarda (abierto en, visto por última vez en): un hueco de fotogramas significa que es un diálogo nuevo.
+    let now = ctx.cumulative_frame_nr();
+    let shown_key = id().with("shown");
+    let just_opened = ctx.data_mut(|d| {
+        let (opened, last) = d.get_temp::<(u64, u64)>(shown_key).unwrap_or((now, now));
+        let opened = if last + 1 < now { now } else { opened };
+        d.insert_temp(shown_key, (opened, now));
+        opened == now
+    });
+    // Se consume antes del cuerpo para que un campo multilínea no lo convierta en salto de línea.
+    let ctrl_enter = !just_opened && spec.submit == Submit::CtrlEnter && ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Enter));
+    let enter = !just_opened && spec.submit == Submit::Enter && ctx.input(|i| i.modifiers.is_none() && i.key_pressed(egui::Key::Enter));
     let strip = if theme::is_light() { theme::surface() } else { theme::base() };
     let frame = egui::Frame::popup(&ctx.global_style())
         .inner_margin(egui::Margin::ZERO)
@@ -158,7 +189,7 @@ pub fn shell(ctx: &egui::Context, spec: Spec, body: impl FnOnce(&mut egui::Ui) -
             action = Action::Cancel;
         }
 
-        let mut enter = false;
+        let mut field_enter = false;
         let body_margin = if side > 0.0 { egui::Margin::ZERO } else { egui::Margin { left: 18, right: 18, top: 16, bottom: 18 } };
         egui::Frame::NONE.inner_margin(body_margin).show(ui, |ui| {
             ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
@@ -190,7 +221,7 @@ pub fn shell(ctx: &egui::Context, spec: Spec, body: impl FnOnce(&mut egui::Ui) -
                     None => body(ui),
                 }
             };
-            enter = content(ui);
+            field_enter = content(ui);
         });
 
         if let Some((text, color)) = &spec.status {
@@ -218,7 +249,9 @@ pub fn shell(ctx: &egui::Context, spec: Spec, body: impl FnOnce(&mut egui::Ui) -
             let primary = |label: &str| egui::Button::new(label).min_size(size);
             match &spec.accept {
                 Some(label) => {
-                    if ui.add_enabled_ui(spec.accept_enabled, |ui| crate::ui::kit::button_with(ui, primary(label), variant)).inner.clicked() {
+                    let accept = ui.add_enabled_ui(spec.accept_enabled, |ui| crate::ui::kit::button_with(ui, primary(label), variant)).inner;
+                    let accept = if spec.submit == Submit::CtrlEnter { accept.on_hover_text("Ctrl+Enter") } else { accept };
+                    if accept.clicked() {
                         action = Action::Accept;
                     }
                     let cancel = egui::Button::new(spec.cancel.as_str()).min_size(size);
@@ -242,8 +275,15 @@ pub fn shell(ctx: &egui::Context, spec: Spec, body: impl FnOnce(&mut egui::Ui) -
                 egui::Shape::line_segment([panel.right_top(), panel.right_bottom()], egui::Stroke::new(theme::stroke::HAIRLINE, theme::surface())),
             ]));
         }
-        if enter && spec.enter_submits && spec.accept.is_some() && spec.accept_enabled && matches!(action, Action::None) {
-            action = Action::Accept;
+        // Con un widget enfocado con Tab, Enter ya lo pulsa a él; un campo de una línea suelta el foco al pulsarlo.
+        let unfocused = ui.memory(|m| m.focused().is_none());
+        let submitted = ctrl_enter || (enter && (unfocused || field_enter));
+        if submitted && matches!(action, Action::None) {
+            match &spec.accept {
+                Some(_) if spec.accept_enabled => action = Action::Accept,
+                Some(_) => {}
+                None => action = Action::Cancel,
+            }
         }
     });
     if matches!(action, Action::None) {
