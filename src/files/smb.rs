@@ -23,8 +23,19 @@ const CHUNK: usize = 60 * 1024;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
 pub struct SmbFs {
-    client: Arc<Client>,
+    /// Solo es `None` durante `drop`.
+    client: Option<Arc<Client>>,
     base: UncPath,
+    /// Los `Drop` de la crate `smb` lanzan tareas de tokio, así que el cliente se libera dentro del runtime
+    /// aunque la pestaña se cierre desde el hilo de la interfaz.
+    runtime: tokio::runtime::Handle,
+}
+
+impl Drop for SmbFs {
+    fn drop(&mut self) {
+        let _guard = self.runtime.enter();
+        drop(self.client.take());
+    }
 }
 
 fn failure(error: impl std::fmt::Display) -> anyhow::Error {
@@ -39,7 +50,7 @@ impl SmbFs {
     }
 
     async fn open(&self, path: &str, args: &FileCreateArgs) -> anyhow::Result<Resource> {
-        self.client.create_file(&self.unc(path), args).await.map_err(failure).with_context(|| format!("abriendo {path}"))
+        self.client.as_ref().expect("cliente SMB").create_file(&self.unc(path), args).await.map_err(failure).with_context(|| format!("abriendo {path}"))
     }
 
     async fn directory(&self, path: &str) -> anyhow::Result<Arc<Directory>> {
@@ -263,7 +274,7 @@ pub async fn connect(connection: &Connection, credentials: &Credentials) -> anyh
         let client = Client::new(config);
         let attempt = tokio::time::timeout(CONNECT_TIMEOUT, client.share_connect(&base, &user, password.clone())).await.context("tiempo de espera agotado")?;
         match attempt {
-            Ok(()) => return Ok(Arc::new(SmbFs { client: Arc::new(client), base })),
+            Ok(()) => return Ok(Arc::new(SmbFs { client: Some(Arc::new(client)), base, runtime: tokio::runtime::Handle::current() })),
             Err(error) => {
                 let message = error.to_string();
                 let retry = !smb2_only && message.contains("wildcard dialect");
