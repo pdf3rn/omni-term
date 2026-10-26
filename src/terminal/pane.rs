@@ -1219,17 +1219,26 @@ fn clipboard_text() -> Option<String> {
     arboard::Clipboard::new().ok()?.get_text().ok().filter(|t| !t.is_empty())
 }
 
+/// Los saltos de línea se envían como `\r`, que es lo que manda Enter: un `\r\n` de Windows llegaría como dos.
 fn paste_bytes(text: &str, mode: TermMode) -> Vec<u8> {
+    let text = text.replace("\r\n", "\r").replace('\n', "\r");
     if mode.contains(TermMode::BRACKETED_PASTE) {
         [b"\x1b[200~", text.replace('\x1b', "").as_bytes(), b"\x1b[201~"].concat()
     } else {
-        text.replace("\r\n", "\r").replace('\n', "\r").into_bytes()
+        text.into_bytes()
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::box_segments;
+    use super::{box_segments, paste_bytes};
+    use alacritty_terminal::term::TermMode;
+
+    #[test]
+    fn paste_sends_each_line_break_once() {
+        assert_eq!(paste_bytes("a\r\nb\nc", TermMode::empty()), b"a\rb\rc");
+        assert_eq!(paste_bytes("a\r\nb", TermMode::BRACKETED_PASTE), b"\x1b[200~a\rb\x1b[201~");
+    }
 
     #[test]
     fn box_table_matches_unicode_order() {
