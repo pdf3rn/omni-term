@@ -21,7 +21,7 @@ impl App {
             (Outcome::Cancel, Dialog::SecretsMode(_) | Dialog::Restart) => {}
             (Outcome::Cancel, Dialog::RestoreSession(prompt)) => self.answer_restore(false, prompt.remember),
             (Outcome::Submit, Dialog::RestoreSession(prompt)) => self.answer_restore(true, prompt.remember),
-            (Outcome::Cancel, Dialog::Secret(_) | Dialog::ConfirmContainer(_) | Dialog::Unlock(_) | Dialog::Edit(_) | Dialog::Error(_) | Dialog::HostKeyChanged(_) | Dialog::About | Dialog::ConfirmClose(_) | Dialog::TelnetWarning(_) | Dialog::Snippet(_) | Dialog::SnippetVars(_) | Dialog::ConfirmReset(_)) => {}
+            (Outcome::Cancel, Dialog::Secret(_) | Dialog::ConfirmContainer(_) | Dialog::Unlock(_) | Dialog::Edit(_) | Dialog::Error(_) | Dialog::HostKeyChanged(_) | Dialog::About | Dialog::ConfirmClose(_) | Dialog::ConfirmPaste(_) | Dialog::TelnetWarning(_) | Dialog::Snippet(_) | Dialog::SnippetVars(_) | Dialog::ConfirmReset(_)) => {}
             (Outcome::Cancel, dialog) => self.dialog = Some(dialog),
             (Outcome::Submit, Dialog::Prompt(request, answers)) => {
                 let _ = request.reply.send(Some(answers));
@@ -119,6 +119,13 @@ impl App {
                     let _ = self.settings.save(&self.store.lock().unwrap());
                 }
                 self.perform_close(confirm.action);
+            }
+            (Outcome::Submit, Dialog::ConfirmPaste(confirm)) => {
+                if confirm.dont_ask {
+                    self.settings.confirm_paste = false;
+                    let _ = self.settings.save(&self.store.lock().unwrap());
+                }
+                self.write_paste(confirm.tab, confirm.pane, &confirm.text);
             }
             (Outcome::Delete, Dialog::ConfirmReset(then)) => {
                 if let Some(master) = self.active_master() {

@@ -185,6 +185,9 @@ pub(super) fn settings_content(ui: &mut egui::Ui, tab: SettingsTab, settings: &m
         crate::ui::kit::setting_row(ui, "Confirmar al cerrar pestañas", Some("Solo si tienen algo en ejecución"), true, |ui| {
             crate::ui::kit::toggle(ui, &mut settings.confirm_close);
         });
+        crate::ui::kit::setting_row(ui, "Confirmar al pegar varias líneas", Some("Evita ejecutar comandos sin querer"), true, |ui| {
+            crate::ui::kit::toggle(ui, &mut settings.confirm_paste);
+        });
         crate::ui::kit::setting_row(ui, "Al iniciar", Some("Pestañas de la sesión anterior"), false, |ui| {
             ui.selectable_value(&mut settings.on_start, StartupChoice::Ask, "Preguntar");
             ui.selectable_value(&mut settings.on_start, StartupChoice::Restore, "Restaurar");

@@ -60,6 +60,16 @@ impl App {
         }
     }
 
+    /// Pega en un panel concreto, si sigue abierto.
+    pub(super) fn write_paste(&mut self, tab: u64, pane: u64, text: &str) {
+        let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab) else { return };
+        if let Body::Terminal { panes, .. } = &mut tab.body
+            && let Some(pane) = panes.get_mut(pane)
+        {
+            pane.write_paste(text);
+        }
+    }
+
     pub(super) fn close_tab(&mut self, index: usize) {
         self.tabs.remove(index);
         if self.active >= self.tabs.len() {
