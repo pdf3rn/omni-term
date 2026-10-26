@@ -78,7 +78,7 @@ impl App {
                 }
             }
             Command::Paste => {
-                if let Some(pane) = self.tabs.get(self.active).and_then(|t| t.pane()) {
+                if let Some(pane) = self.tabs.get_mut(self.active).and_then(|t| t.pane_mut()) {
                     pane.paste_clipboard();
                 }
             }

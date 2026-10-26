@@ -35,6 +35,7 @@ pub enum Dialog {
     HostKeyChanged(HostKeyChange),
     About,
     ConfirmClose(CloseConfirm),
+    ConfirmPaste(PasteConfirm),
     TelnetWarning(TelnetWarning),
     Edit(ConnForm),
     Snippet(SnippetForm),
@@ -94,6 +95,29 @@ pub fn show(
                 false
             });
             plain(action, Outcome::Delete)
+        }
+        Dialog::ConfirmPaste(confirm) => {
+            let spec = Spec::new("Pegar varias líneas").width(520.0).accept("Pegar").icon(DialogIcon::Warning);
+            let action = shell(ctx, spec, |ui| {
+                let lines = confirm.text.lines().count();
+                ui.label(if lines > 1 {
+                    format!("El texto tiene {lines} líneas: el shell puede ejecutar cada una al pegarlo.")
+                } else {
+                    "El texto termina en un salto de línea: el shell puede ejecutarlo al pegarlo.".to_string()
+                });
+                ui.add_space(theme::space::XS);
+                egui::Frame::new().fill(theme::surface()).corner_radius(theme::radius::SMALL).inner_margin(theme::space::S).show(ui, |ui| {
+                    ScrollArea::vertical().max_height(180.0).show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        let preview: String = confirm.text.chars().take(4000).collect();
+                        ui.label(RichText::new(preview.trim_end()).monospace());
+                    });
+                });
+                ui.add_space(theme::space::XS);
+                crate::ui::kit::switch_labeled(ui, &mut confirm.dont_ask, "No volver a preguntar");
+                false
+            });
+            plain(action, Outcome::Submit)
         }
         Dialog::TelnetWarning(warning) => {
             let spec = Spec::new("Conexión sin cifrar").width(440.0).accept("Conectar").icon(DialogIcon::Warning).no_enter();

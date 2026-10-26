@@ -71,6 +71,7 @@ impl App {
             let mut messages: Vec<String> = Vec::new();
             let mut request = None;
             let mut snippet_text: Option<String> = None;
+            let mut pasted: Option<(u64, String)> = None;
             if let Body::Settings(section) = self.tabs[active].body {
                 let section = self.settings_page(ui, area.shrink2(Vec2::new(24.0, 16.0)), section);
                 self.tabs[active].body = Body::Settings(section);
@@ -132,6 +133,7 @@ impl App {
                         disconnected = pane.session.is_disconnected();
                         request = pane.take_request();
                         snippet_text = pane.take_snippet();
+                        pasted = pane.take_paste().map(|text| (pane.id(), text));
                     }
                 }
                 Body::Explorer(explorer) => explorer.show(ui, area.shrink2(Vec2::new(8.0, 8.0))),
@@ -149,6 +151,14 @@ impl App {
                     self.dialog = Some(Dialog::ConfirmContainer(dialogs::ContainerConfirm { endpoint, container, action }));
                 }
                 None => {}
+            }
+            if let Some((pane, text)) = pasted {
+                let tab = self.tabs[active].id;
+                if !self.settings.confirm_paste {
+                    self.write_paste(tab, pane, &text);
+                } else if self.dialog.is_none() {
+                    self.dialog = Some(Dialog::ConfirmPaste(dialogs::PasteConfirm { tab, pane, text, dont_ask: false }));
+                }
             }
             if let Some(text) = snippet_text {
                 self.dialog = Some(Dialog::Snippet(SnippetForm::new(text)));

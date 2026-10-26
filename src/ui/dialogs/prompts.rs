@@ -174,6 +174,14 @@ pub struct CloseConfirm {
     pub dont_ask: bool,
 }
 
+/// Pegado con saltos de línea pendiente de confirmar, dirigido a un panel concreto.
+pub struct PasteConfirm {
+    pub tab: u64,
+    pub pane: u64,
+    pub text: String,
+    pub dont_ask: bool,
+}
+
 /// Aviso previo al abrir una conexión Telnet: viaja todo en texto claro.
 pub struct TelnetWarning {
     pub connection: Connection,

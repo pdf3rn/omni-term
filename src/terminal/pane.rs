@@ -152,11 +152,13 @@ pub struct Pane {
     /// Selección en curso con el ratón, para copiarla a la selección primaria al soltar.
     selecting: bool,
     snippet_request: Option<String>,
+    /// Pegado con saltos de línea a la espera de que la app decida si pide confirmación.
+    paste_request: Option<String>,
 }
 
 impl Pane {
     pub fn new(session: Session, debug_keys: bool, id: u64) -> Self {
-        Self { id, request: None, session, debug_keys, input_enabled: true, held: None, last_cell: None, hover_cell: (0, 0), window_focused: true, search: None, link: None, epoch: Instant::now(), click_count: 0, last_press: None, menu_link: None, selecting: false, snippet_request: None }
+        Self { id, request: None, session, debug_keys, input_enabled: true, held: None, last_cell: None, hover_cell: (0, 0), window_focused: true, search: None, link: None, epoch: Instant::now(), click_count: 0, last_press: None, menu_link: None, selecting: false, snippet_request: None, paste_request: None }
     }
 
     /// Escribe `text` como un pegado (con pegado entre corchetes si la aplicación lo pidió).
@@ -182,12 +184,34 @@ impl Pane {
         }
     }
 
-    pub fn paste_clipboard(&self) {
+    pub fn paste_clipboard(&mut self) {
         if let Some(text) = clipboard_text() {
-            let mode = *self.session.term.lock().unwrap().mode();
-            self.session.term.lock().unwrap().scroll_display(Scroll::Bottom);
-            self.session.write(&paste_bytes(&text, mode));
+            self.paste(text);
         }
+    }
+
+    /// Pega `text`; si tiene saltos de línea lo deja en `paste_request` para que la app pueda confirmarlo.
+    fn paste(&mut self, text: String) {
+        if text.contains(['\n', '\r']) {
+            self.paste_request = Some(text);
+        } else {
+            self.write_paste(&text);
+        }
+    }
+
+    /// Escribe `text` como pegado, sin más comprobaciones.
+    pub fn write_paste(&self, text: &str) {
+        let mode = *self.session.term.lock().unwrap().mode();
+        self.session.term.lock().unwrap().scroll_display(Scroll::Bottom);
+        self.session.write(&paste_bytes(text, mode));
+    }
+
+    pub fn take_paste(&mut self) -> Option<String> {
+        self.paste_request.take()
+    }
+
+    pub fn id(&self) -> u64 {
+        self.id
     }
 
     pub fn select_all(&self) {
@@ -413,11 +437,9 @@ impl Pane {
     }
 
     /// Pega la selección primaria (botón central del ratón, solo Linux).
-    fn paste_primary(&self) {
+    fn paste_primary(&mut self) {
         if let Some(text) = primary_text() {
-            let mode = *self.session.term.lock().unwrap().mode();
-            self.session.term.lock().unwrap().scroll_display(Scroll::Bottom);
-            self.session.write(&paste_bytes(&text, mode));
+            self.paste(text);
         }
     }
 
@@ -760,10 +782,19 @@ impl Pane {
         let mode = *self.session.term.lock().unwrap().mode();
         let ctrl_held = ui.input(|i| i.modifiers.ctrl);
         let mut out: Vec<u8> = Vec::new();
+        let mut pasted = None;
 
         for event in &events {
             match event {
                 Event::Key { key, pressed, modifiers, repeat, .. } => {
+                    // En Windows Ctrl+V pega, como en Windows Terminal: el historial del portapapeles (Win+V)
+                    // pega simulando esa tecla.
+                    if cfg!(windows) && *key == Key::V && modifiers.ctrl && !modifiers.shift && !modifiers.alt {
+                        if *pressed {
+                            pasted = clipboard_text();
+                        }
+                        continue;
+                    }
                     let reserved = modifiers.ctrl && modifiers.shift && matches!(key, Key::C | Key::V | Key::F | Key::D | Key::E | Key::W);
                     if reserved {
                         if *pressed && matches!(key, Key::D | Key::E | Key::W) {
@@ -777,9 +808,7 @@ impl Pane {
                         } else if *pressed && *key == Key::C {
                             self.copy_selection(ui);
                         } else if *pressed && *key == Key::V {
-                            if let Some(text) = clipboard_text() {
-                                out.extend(paste_bytes(&text, mode));
-                            }
+                            pasted = clipboard_text();
                         }
                         continue;
                     }
@@ -805,6 +834,9 @@ impl Pane {
             term.scroll_display(Scroll::Bottom);
             drop(term);
             self.session.write(&out);
+        }
+        if let Some(text) = pasted {
+            self.paste(text);
         }
     }
 
