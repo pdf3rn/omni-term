@@ -1,14 +1,19 @@
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
 
-use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
+use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 
 use crate::terminal::term::{Backend, Feed};
 
+/// La PTY; se vacía cuando el proceso termina (ver `spawn_profile`).
+type Master = Arc<Mutex<Option<Box<dyn MasterPty + Send>>>>;
+
 struct PtyBackend {
     writer: Mutex<Box<dyn Write + Send>>,
-    master: Mutex<Box<dyn MasterPty + Send>>,
-    child: Mutex<Box<dyn Child + Send + Sync>>,
+    master: Master,
+    killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
+    #[cfg_attr(not(unix), allow(dead_code))]
+    pid: Option<u32>,
 }
 
 impl Backend for PtyBackend {
@@ -17,14 +22,15 @@ impl Backend for PtyBackend {
     }
 
     fn resize(&self, cols: usize, rows: usize) {
-        let _ = self.master.lock().unwrap().resize(size(cols, rows));
+        if let Some(master) = &*self.master.lock().unwrap() {
+            let _ = master.resize(size(cols, rows));
+        }
     }
 
     #[cfg(unix)]
     fn is_busy(&self) -> Option<bool> {
-        let leader = self.master.lock().unwrap().process_group_leader()?;
-        let shell = self.child.lock().unwrap().process_id()?;
-        Some(leader != shell as i32)
+        let leader = self.master.lock().unwrap().as_ref()?.process_group_leader()?;
+        Some(leader != self.pid? as i32)
     }
 
     // ConPTY no expone el grupo de procesos en primer plano.
@@ -36,7 +42,7 @@ impl Backend for PtyBackend {
 
 impl Drop for PtyBackend {
     fn drop(&mut self) {
-        let _ = self.child.lock().unwrap().kill();
+        let _ = self.killer.lock().unwrap().kill();
     }
 }
 
@@ -239,8 +245,10 @@ pub fn spawn_profile(cols: usize, rows: usize, mut feed: Feed, profile: &Profile
             }
         }
     }
-    let child = pair.slave.spawn_command(cmd)?;
+    let mut child = pair.slave.spawn_command(cmd)?;
     drop(pair.slave);
+    let killer = child.clone_killer();
+    let pid = child.process_id();
 
     let mut reader = pair.master.try_clone_reader()?;
     std::thread::spawn(move || {
@@ -254,11 +262,17 @@ pub fn spawn_profile(cols: usize, rows: usize, mut feed: Feed, profile: &Profile
         feed.close();
     });
 
-    let backend = PtyBackend {
-        writer: Mutex::new(pair.master.take_writer()?),
-        master: Mutex::new(pair.master),
-        child: Mutex::new(child),
-    };
+    let writer = pair.master.take_writer()?;
+    let master: Master = Arc::new(Mutex::new(Some(pair.master)));
+    // En Windows la salida de ConPTY no llega a EOF al salir el shell mientras exista la pseudoconsola:
+    // al terminar el proceso se cierra, el lector recibe EOF y la pestaña se cierra.
+    let closing = master.clone();
+    std::thread::spawn(move || {
+        let _ = child.wait();
+        closing.lock().unwrap().take();
+    });
+
+    let backend = PtyBackend { writer: Mutex::new(writer), master, killer: Mutex::new(killer), pid };
     if let Some(init) = &profile.init {
         backend.write(format!("{init}\r").as_bytes());
     }
@@ -272,6 +286,19 @@ fn default_shell() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_session_ends_when_the_shell_exits() {
+        use std::time::{Duration, Instant};
+        let (program, args) = if cfg!(windows) { ("cmd.exe", vec!["/c".to_string(), "echo hola".to_string()]) } else { ("/bin/sh", vec!["-c".to_string(), "echo hola".to_string()]) };
+        let profile = Profile { program: program.into(), args, ..Profile::default() };
+        let session = crate::terminal::term::Session::start(80, 24, Default::default(), || {}, |feed| spawn_profile(80, 24, feed, &profile)).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !session.has_exited() {
+            assert!(Instant::now() < deadline, "la sesión no terminó al salir el shell");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
 
     #[test]
     fn arguments_are_split_like_a_shell() {
