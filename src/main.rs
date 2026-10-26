@@ -30,17 +30,33 @@ fn main() -> eframe::Result {
     if let Ok(icon) = eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png")) {
         viewport = viewport.with_icon(icon);
     }
-    let options = eframe::NativeOptions {
+    let mut options = eframe::NativeOptions {
         viewport,
         clipboard_shortcuts: false,
         ..Default::default()
     };
+    prefer_dx12(&mut options.wgpu_options);
     eframe::run_native(
         "omni-term",
         options,
         Box::new(|cc| ui::App::new(cc, debug_keys).map(|app| Box::new(app) as Box<dyn eframe::App>).map_err(Into::into)),
     )
 }
+
+/// En Windows, wgpu puede elegir Vulkan, y con algunos controladores la ventana parpadea al redibujarse.
+/// Se usa DX12 (con GL de reserva) salvo que `WGPU_BACKEND` pida otro.
+#[cfg(windows)]
+fn prefer_dx12(config: &mut eframe::WgpuConfiguration) {
+    use eframe::egui_wgpu::{wgpu::Backends, WgpuSetup};
+    if let WgpuSetup::CreateNew(setup) = &mut config.wgpu_setup
+        && Backends::from_env().is_none()
+    {
+        setup.instance_descriptor.backends = Backends::DX12 | Backends::GL;
+    }
+}
+
+#[cfg(not(windows))]
+fn prefer_dx12(_config: &mut eframe::WgpuConfiguration) {}
 
 /// Si el usuario eligió la barra de título del sistema; por defecto se dibuja la integrada.
 fn system_titlebar() -> bool {
