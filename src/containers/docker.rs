@@ -95,6 +95,10 @@ pub fn detect_endpoints() -> Vec<Endpoint> {
         podman.push(runtime.join("podman/podman.sock"));
     }
     podman.push("/run/podman/podman.sock".into());
+    // macOS (y Linux con `podman machine`): symlink hacia la máquina activa.
+    if let Some(home) = &home {
+        podman.push(home.join(".local/share/containers/podman/machine/podman.sock"));
+    }
 
     let mut found = Vec::new();
     for (engine, candidates) in [(Engine::Docker, docker), (Engine::Podman, podman)] {

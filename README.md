@@ -80,7 +80,7 @@ omni-term is below 1.0. These parts have only been tested against local servers:
 
 - FTPS with real certificates (self-signed certificates are rejected).
 - SMB uploads, renames and deletes against a fully conformant server (tested with a local test server only).
-- Podman support is untested (only Docker was available), and the container manager does not work on Windows yet (named pipe).
+- Podman support is untested (only Docker was available).
 - Android (ADB) has only been tested against a simulated `adb` server, not a real device. Files larger than 4 GB are not supported yet.
 
 Bug reports are welcome. For vulnerabilities, see [SECURITY.md](SECURITY.md).
