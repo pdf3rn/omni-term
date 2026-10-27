@@ -94,6 +94,7 @@ impl App {
             confirm: String::new(),
             error: None,
             then,
+            focus: true,
         }));
     }
 

@@ -110,6 +110,7 @@ pub struct UnlockPrompt {
     pub confirm: String,
     pub error: Option<String>,
     pub then: Pending,
+    pub focus: bool,
 }
 
 /// Qué repetir cuando el usuario pulsa «Reintentar» en un error.
@@ -259,7 +260,9 @@ pub(super) fn unlock_body(ui: &mut egui::Ui, prompt: &mut UnlockPrompt) -> bool 
         ui.label("Introduce tu clave maestra.");
     }
     let field = secret_field(ui, &mut prompt.input, &mut prompt.reveal, "clave maestra");
-    field.request_focus();
+    if std::mem::take(&mut prompt.focus) {
+        field.request_focus();
+    }
     let mut submitted = entered(ui, &field);
     if prompt.creating {
         let confirm = secret_field(ui, &mut prompt.confirm, &mut prompt.reveal, "repite la clave");

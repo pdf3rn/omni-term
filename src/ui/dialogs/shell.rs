@@ -225,8 +225,11 @@ pub fn shell(ctx: &egui::Context, spec: Spec, body: impl FnOnce(&mut egui::Ui) -
         });
 
         if let Some((text, color)) = &spec.status {
-            egui::Frame::NONE.inner_margin(egui::Margin { left: 18 + side as i8, right: 18, top: 0, bottom: 10 }).show(ui, |ui| {
-                ui.label(RichText::new(text.as_str()).small().color(*color));
+            ui.horizontal(|ui| {
+                ui.add_space(side);
+                egui::Frame::NONE.inner_margin(egui::Margin { left: 18, right: 18, top: 0, bottom: 10 }).show(ui, |ui| {
+                    ui.label(RichText::new(text.as_str()).small().color(*color));
+                });
             });
         }
 
