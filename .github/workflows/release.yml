@@ -50,25 +50,29 @@ jobs:
       - name: Compilar
         run: cargo build --release --locked
 
-      - name: Empaquetar (Linux y macOS)
-        if: runner.os != 'Windows'
+      - name: Empaquetar (Linux)
+        if: runner.os == 'Linux'
         shell: bash
         run: |
           name="omni-term-${GITHUB_REF_NAME}-${{ matrix.target }}"
           mkdir -p "dist/$name"
           cp target/release/omni-term "dist/$name/"
           cp README.md "dist/$name/"
-          if [ "$RUNNER_OS" = "Linux" ]; then
-            cp -r packaging "dist/$name/packaging"
-            cp packaging/install-linux.sh "dist/$name/install.sh"
-          fi
-          if [ "$RUNNER_OS" = "macOS" ]; then
-            app="dist/$name/omni-term.app/Contents"
-            mkdir -p "$app/MacOS" "$app/Resources"
-            cp target/release/omni-term "$app/MacOS/"
-            cp packaging/omni-term.icns "$app/Resources/"
-            version="${GITHUB_REF_NAME#v}"
-            cat > "$app/Info.plist" <<PLIST
+          cp -r packaging "dist/$name/packaging"
+          cp packaging/install-linux.sh "dist/$name/install.sh"
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+
+      - name: Empaquetar (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          name="omni-term-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          app="dist/$name/omni-term.app/Contents"
+          mkdir -p "$app/MacOS" "$app/Resources"
+          cp target/release/omni-term "$app/MacOS/"
+          cp packaging/omni-term.icns "$app/Resources/"
+          version="${GITHUB_REF_NAME#v}"
+          cat > "$app/Info.plist" <<PLIST
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0"><dict>
@@ -83,10 +87,11 @@ jobs:
             <key>NSHighResolutionCapable</key><true/>
           </dict></plist>
           PLIST
-            xattr -cr "dist/$name/omni-term.app"
-            codesign --force --deep --sign - "dist/$name/omni-term.app"
-          fi
-          tar -C dist -czf "dist/$name.tar.gz" "$name"
+          xattr -cr "dist/$name/omni-term.app"
+          codesign --force --deep --sign - "dist/$name/omni-term.app"
+          # Acceso directo a Applications dentro del propio volumen: arrastrar-para-instalar.
+          ln -s /Applications "dist/$name/Applications"
+          hdiutil create -volname "omni-term" -srcfolder "dist/$name" -ov -format UDZO "dist/$name.dmg"
 
       - name: Empaquetar (Windows)
         if: runner.os == 'Windows'
@@ -104,6 +109,7 @@ jobs:
           path: |
             dist/*.tar.gz
             dist/*.zip
+            dist/*.dmg
 
   publish:
     name: Publicar
@@ -122,7 +128,7 @@ jobs:
 
       - name: Sumas SHA-256
         working-directory: dist
-        run: sha256sum *.tar.gz *.zip > SHA256SUMS
+        run: sha256sum *.tar.gz *.zip *.dmg > SHA256SUMS
 
       - name: Atestación de procedencia
         uses: actions/attest-build-provenance@v4
@@ -130,6 +136,7 @@ jobs:
           subject-path: |
             dist/*.tar.gz
             dist/*.zip
+            dist/*.dmg
       - uses: softprops/action-gh-release@v3
         with:
           files: dist/*
