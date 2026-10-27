@@ -83,6 +83,8 @@ jobs:
             <key>NSHighResolutionCapable</key><true/>
           </dict></plist>
           PLIST
+            xattr -cr "dist/$name/omni-term.app"
+            codesign --force --deep --sign - "dist/$name/omni-term.app"
           fi
           tar -C dist -czf "dist/$name.tar.gz" "$name"
 
