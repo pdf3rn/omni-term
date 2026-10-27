@@ -47,6 +47,12 @@ packaging/install-linux.sh        # optional, Linux only
 
 On Linux you need the development headers for `libxkbcommon`, `wayland`, `x11` and `dbus`. `omni-term --version` prints the installed version.
 
+On macOS, the app is signed ad-hoc (no Apple Developer account), so after extracting the archive the first launch shows an "unidentified developer" warning instead of opening directly — right-click `omni-term.app` and choose **Open**, then confirm. If macOS instead reports that the app is damaged, clear the quarantine flag and try again:
+
+```bash
+xattr -cr omni-term.app
+```
+
 ## Shortcuts
 
 | Shortcut | Action |
