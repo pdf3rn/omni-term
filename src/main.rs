@@ -25,8 +25,12 @@ fn main() -> eframe::Result {
         .with_app_id("omni-term")
         .with_inner_size(size)
         .with_min_inner_size([320.0, 200.0])
-        .with_decorations(system_titlebar())
+        .with_decorations(data::settings::NATIVE_CHROME || system_titlebar())
         .with_maximized(saved_flag("window_maximized"));
+    if data::settings::NATIVE_CHROME {
+        // macOS: la barra de título es transparente y el contenido llega hasta arriba; los botones de la ventana quedan encima.
+        viewport = viewport.with_titlebar_shown(false).with_title_shown(false).with_fullsize_content_view(true);
+    }
     if let Ok(icon) = eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png")) {
         viewport = viewport.with_icon(icon);
     }
@@ -58,13 +62,13 @@ fn prefer_dx12(config: &mut eframe::WgpuConfiguration) {
 #[cfg(not(windows))]
 fn prefer_dx12(_config: &mut eframe::WgpuConfiguration) {}
 
-/// Si el usuario eligió la barra de título del sistema; por defecto se dibuja la integrada.
+/// Si el usuario eligió la barra de título del sistema; por defecto se dibuja la integrada (en macOS nunca).
 fn system_titlebar() -> bool {
     let read = || -> Option<bool> {
         let store = data::store::Store::open(&data::store::Store::default_path().ok()?).ok()?;
         Some(store.meta("setting.system_titlebar").ok()??.as_slice() == b"1")
     };
-    read().unwrap_or(false)
+    !data::settings::NATIVE_CHROME && read().unwrap_or(false)
 }
 
 /// Un ajuste guardado como «1» (verdadero) en la tabla `meta`.

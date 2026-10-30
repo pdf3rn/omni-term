@@ -76,7 +76,7 @@ impl App {
 
     /// Bordes redimensionables y marco fino de la ventana sin decoraciones.
     pub(super) fn window_frame(&self, ctx: &egui::Context) {
-        if self.settings.system_titlebar || ctx.input(|i| i.viewport().maximized.unwrap_or(false) || i.viewport().fullscreen.unwrap_or(false)) {
+        if crate::data::settings::NATIVE_CHROME || self.settings.system_titlebar || ctx.input(|i| i.viewport().maximized.unwrap_or(false) || i.viewport().fullscreen.unwrap_or(false)) {
             return;
         }
         let rect = ctx.content_rect();
@@ -101,6 +101,40 @@ impl App {
         if ctx.input(|i| i.pointer.primary_pressed()) {
             ctx.send_viewport_cmd(ViewportCommand::BeginResize(direction));
         }
+    }
+
+    /// Mantiene el menú nativo de macOS al día con la pestaña activa y las conexiones recientes.
+    #[cfg(target_os = "macos")]
+    pub(super) fn sync_native_menu(&mut self) {
+        let tab = self.tabs.get(self.active);
+        let pane = tab.and_then(|t| t.pane());
+        let enabled = native_menu::Enabled {
+            tabs: !self.tabs.is_empty(),
+            terminal: pane.is_some(),
+            selection: pane.is_some_and(|p| p.selection_text().is_some()),
+            several: self.tabs.len() > 1,
+            connection: matches!(tab.map(|t| t.kind), Some(TabKind::Connection(_))),
+        };
+        let recents = self.recent_connections();
+        if let Some(menu) = self.native_menu.as_mut()
+            && let Err(error) = menu.sync(enabled, &recents)
+        {
+            eprintln!("menú nativo: {error}");
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    pub(super) fn sync_native_menu(&mut self) {}
+
+    /// Comando o conexión elegidos desde el menú nativo de macOS.
+    #[cfg(target_os = "macos")]
+    pub(super) fn poll_native_menu(&mut self) -> (Option<Command>, Option<Connection>) {
+        self.native_menu.as_mut().map_or((None, None), |menu| menu.poll())
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    pub(super) fn poll_native_menu(&mut self) -> (Option<Command>, Option<Connection>) {
+        (None, None)
     }
 
     /// Alt suelto (pulsado y soltado sin otra tecla) muestra u oculta la barra de menú oculta.
@@ -234,21 +268,27 @@ impl App {
                     // Se registra antes que el resto: los menús y botones, añadidos después, tienen prioridad sobre la zona de arrastre.
                     let response = ui.interact(bar, egui::Id::NULL.with("titlebar-drag"), Sense::click_and_drag());
                     ui.horizontal_centered(|ui| {
+                        if crate::data::settings::NATIVE_CHROME {
+                            // Hueco para los botones de la ventana, que el sistema dibuja encima.
+                            ui.add_space(TRAFFIC_LIGHTS_SPACE);
+                        }
                         ui.add(egui::Image::new(&crate::ui::dialogs::app_logo(ui.ctx())).fit_to_exact_size(Vec2::splat(16.0)));
                         ui.add_space(theme::space::XS);
-                        egui::MenuBar::new().ui(ui, |ui| {
-                            ui.spacing_mut().button_padding.x = theme::space::M;
-                            ui.spacing_mut().item_spacing.x = 0.0;
-                            ui.style_mut().override_font_id = Some(FontId::new(theme::size::SMALL, FontFamily::Proportional));
-                            ui.visuals_mut().widgets.inactive.fg_stroke.color = theme::subtext();
-                            if menu_in_bar {
-                                menus(ui);
-                            } else {
-                                ui.menu_button(icons::DOTS, |ui| menus(ui));
-                            }
-                        });
+                        if !crate::data::settings::NATIVE_CHROME {
+                            egui::MenuBar::new().ui(ui, |ui| {
+                                ui.spacing_mut().button_padding.x = theme::space::M;
+                                ui.spacing_mut().item_spacing.x = 0.0;
+                                ui.style_mut().override_font_id = Some(FontId::new(theme::size::SMALL, FontFamily::Proportional));
+                                ui.visuals_mut().widgets.inactive.fg_stroke.color = theme::subtext();
+                                if menu_in_bar {
+                                    menus(ui);
+                                } else {
+                                    ui.menu_button(icons::DOTS, |ui| menus(ui));
+                                }
+                            });
+                        }
                     });
-                    let controls = 3.0 * WINDOW_BUTTON_WIDTH;
+                    let controls = if crate::data::settings::NATIVE_CHROME { 0.0 } else { 3.0 * WINDOW_BUTTON_WIDTH };
                     let title_area = Rect::from_min_max(Pos2::new(bar.min.x + 300.0, bar.min.y), Pos2::new(bar.max.x - controls - 36.0, bar.max.y));
                     ui.painter().with_clip_rect(title_area).text(
                         Pos2::new(bar.center().x, bar.center().y),
@@ -267,14 +307,16 @@ impl App {
                     } else if response.drag_started_by(egui::PointerButton::Primary) {
                         ctx.send_viewport_cmd(ViewportCommand::StartDrag);
                     }
-                    for (index, kind) in [WindowButton::Minimize, if maximized { WindowButton::Restore } else { WindowButton::Maximize }, WindowButton::Close].into_iter().enumerate() {
-                        let rect = Rect::from_min_size(Pos2::new(bar.max.x - controls + index as f32 * WINDOW_BUTTON_WIDTH, bar.min.y), Vec2::new(WINDOW_BUTTON_WIDTH, bar.height()));
-                        if window_button(ui, rect, kind).clicked() {
-                            ctx.send_viewport_cmd(match kind {
-                                WindowButton::Minimize => ViewportCommand::Minimized(true),
-                                WindowButton::Maximize | WindowButton::Restore => ViewportCommand::Maximized(!maximized),
-                                WindowButton::Close => ViewportCommand::Close,
-                            });
+                    if !crate::data::settings::NATIVE_CHROME {
+                        for (index, kind) in [WindowButton::Minimize, if maximized { WindowButton::Restore } else { WindowButton::Maximize }, WindowButton::Close].into_iter().enumerate() {
+                            let rect = Rect::from_min_size(Pos2::new(bar.max.x - controls + index as f32 * WINDOW_BUTTON_WIDTH, bar.min.y), Vec2::new(WINDOW_BUTTON_WIDTH, bar.height()));
+                            if window_button(ui, rect, kind).clicked() {
+                                ctx.send_viewport_cmd(match kind {
+                                    WindowButton::Minimize => ViewportCommand::Minimized(true),
+                                    WindowButton::Maximize | WindowButton::Restore => ViewportCommand::Maximized(!maximized),
+                                    WindowButton::Close => ViewportCommand::Close,
+                                });
+                            }
                         }
                     }
                 }
@@ -339,6 +381,9 @@ pub(super) fn parse_window_position(text: &str, monitor: Vec2, size: Vec2) -> Op
 }
 
 pub(super) const WINDOW_BUTTON_WIDTH: f32 = 46.0;
+
+/// Ancho que ocupan los botones de la ventana de macOS (rojo, amarillo y verde) al inicio de la barra.
+const TRAFFIC_LIGHTS_SPACE: f32 = 72.0;
 
 /// Grosor de los bordes de la ventana sin decoraciones donde se puede redimensionar.
 pub(super) const RESIZE_BORDER: f32 = 5.0;
