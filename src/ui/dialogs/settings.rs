@@ -166,17 +166,21 @@ pub(super) fn settings_content(ui: &mut egui::Ui, tab: SettingsTab, settings: &m
             ui.selectable_value(&mut settings.compact, false, "Cómoda");
             ui.selectable_value(&mut settings.compact, true, "Compacta");
         });
-        crate::ui::kit::setting_row(ui, "Usar barra de título del sistema", Some("Se aplica al reiniciar"), true, |ui| {
-            crate::ui::kit::toggle(ui, &mut settings.system_titlebar);
-        });
+        if !crate::data::settings::NATIVE_CHROME {
+            crate::ui::kit::setting_row(ui, "Usar barra de título del sistema", Some("Se aplica al reiniciar"), true, |ui| {
+                crate::ui::kit::toggle(ui, &mut settings.system_titlebar);
+            });
+        }
         if settings.system_titlebar {
             crate::ui::kit::setting_row(ui, "Barra de menú", Some("Si está oculta, Alt la muestra"), true, |ui| {
                 crate::ui::kit::toggle(ui, &mut settings.menu_bar);
             });
         } else {
-            crate::ui::kit::setting_row(ui, "Menú en la barra de título", Some("Si no, queda tras el botón ⋯"), true, |ui| {
-                crate::ui::kit::toggle(ui, &mut settings.titlebar_menu);
-            });
+            if !crate::data::settings::NATIVE_CHROME {
+                crate::ui::kit::setting_row(ui, "Menú en la barra de título", Some("Si no, queda tras el botón ⋯"), true, |ui| {
+                    crate::ui::kit::toggle(ui, &mut settings.titlebar_menu);
+                });
+            }
             crate::ui::kit::setting_row(ui, "Altura de la barra de título", None, true, |ui| {
                 ui.selectable_value(&mut settings.titlebar_compact, false, "Cómoda");
                 ui.selectable_value(&mut settings.titlebar_compact, true, "Compacta");

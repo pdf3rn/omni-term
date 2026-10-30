@@ -21,6 +21,8 @@ mod startup;
 mod tabs;
 mod toasts;
 mod window;
+#[cfg(target_os = "macos")]
+mod native_menu;
 
 pub use self::appearance::strong_family;
 use self::appearance::{install_fonts, install_visuals};
@@ -89,6 +91,8 @@ enum SidebarView {
 const SPLIT_GAP: f32 = 16.0;
 
 pub struct App {
+    #[cfg(target_os = "macos")]
+    native_menu: Option<native_menu::NativeMenu>,
     tabs: Vec<Tab>,
     active: usize,
     debug_keys: bool,
@@ -238,7 +242,11 @@ impl App {
         if has_session && settings.on_start == StartupChoice::Fresh {
             open_queue.clear();
         }
+        #[cfg(target_os = "macos")]
+        let native_menu = native_menu::NativeMenu::new(cc.egui_ctx.clone()).inspect_err(|error| eprintln!("menú nativo: {error}")).ok();
         let mut app = Self {
+            #[cfg(target_os = "macos")]
+            native_menu,
             tabs: Vec::new(),
             active: 0,
             debug_keys,
@@ -422,7 +430,10 @@ impl eframe::App for App {
         self.global_shortcuts(&ctx);
         self.track_alt(&ctx);
         self.window_frame(&ctx);
+        self.sync_native_menu();
         let (menu_command, menu_connection) = self.menu_bar(ui);
+        let (native_command, native_connection) = self.poll_native_menu();
+        let (menu_command, menu_connection) = (menu_command.or(native_command), menu_connection.or(native_connection));
         if menu_command.is_some() || menu_connection.is_some() {
             self.menu_peek = false;
         }

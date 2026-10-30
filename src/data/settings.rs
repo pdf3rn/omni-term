@@ -79,6 +79,9 @@ impl AnsiChoice {
     }
 }
 
+/// En macOS la barra de título la dibuja la app, con los botones de la ventana del sistema encima, y el menú es el nativo.
+pub const NATIVE_CHROME: bool = cfg!(target_os = "macos");
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Settings {
     /// Qué hacer con las pestañas de la sesión anterior al arrancar.
@@ -181,7 +184,7 @@ impl Settings {
             accent: text(store, "setting.accent").and_then(|k| AccentChoice::from_key(&k)).unwrap_or(defaults.accent),
             ansi: text(store, "setting.ansi").and_then(|k| AnsiChoice::from_key(&k)).unwrap_or(defaults.ansi),
             menu_bar: text(store, "setting.menu_bar").map_or(defaults.menu_bar, |t| t == "1"),
-            system_titlebar: text(store, "setting.system_titlebar").map_or(defaults.system_titlebar, |t| t == "1"),
+            system_titlebar: !NATIVE_CHROME && text(store, "setting.system_titlebar").map_or(defaults.system_titlebar, |t| t == "1"),
             titlebar_menu: text(store, "setting.titlebar_menu").map_or(defaults.titlebar_menu, |t| t == "1"),
             titlebar_compact: text(store, "setting.titlebar_compact").map_or(defaults.titlebar_compact, |t| t == "1"),
             confirm_close: text(store, "setting.confirm_close").map_or(defaults.confirm_close, |t| t == "1"),
@@ -268,7 +271,7 @@ mod tests {
             accent: AccentChoice::Mauve,
             ansi: AnsiChoice::Gnome,
             menu_bar: false,
-            system_titlebar: true,
+            system_titlebar: !NATIVE_CHROME,
             titlebar_menu: false,
             titlebar_compact: true,
             confirm_close: false,
