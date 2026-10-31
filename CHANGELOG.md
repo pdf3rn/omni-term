@@ -3,6 +3,33 @@
 Todos los cambios notables de omni-term. A partir de la 0.1.0 este archivo lo actualiza release-plz a partir de los commits convencionales.
 El formato sigue [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y el proyecto usa [versionado semántico](https://semver.org/lang/es/).
 
+## [0.1.5](https://github.com/pdf3rn/omni-term/compare/v0.1.4...v0.1.5) - 2026-10-31
+
+### Added
+
+- *(containers)* reach remote docker and podman engines over ssh
+- *(macos)* add native menu bar and fullsize titlebar
+- *(containers)* detect podman machine socket on macos
+- *(containers)* support docker and podman named pipes on windows
+- *(ui)* make dialog submit keys explicit per spec
+- *(terminal)* enable ime input and route ime commits
+
+### Fixed
+
+- *(ui)* add focus flag to unlock prompt and fix status margin
+- *(terminal)* close pty when shell exits so tab closes on windows
+- *(terminal)* send each pasted line break once as carriage return
+- *(main)* prefer dx12 backend on windows to avoid window flicker
+- *(ui)* ask before pasting multi-line text into the terminal
+- *(smb)* release client inside tokio runtime on drop
+
+### Other
+
+- *(release)* build macos dmg with applications shortcut
+- *(release)* ad-hoc sign macos app bundle
+- *(deps)* bump the cargo-minor-and-patch group with 3 updates ([#12](https://github.com/pdf3rn/omni-term/pull/12))
+- *(deps)* bump softprops/action-gh-release from 2 to 3 ([#11](https://github.com/pdf3rn/omni-term/pull/11))
+
 ## [0.1.4](https://github.com/pdf3rn/omni-term/compare/v0.1.3...v0.1.4) - 2026-10-24
 
 ### Added
