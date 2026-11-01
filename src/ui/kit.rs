@@ -54,7 +54,7 @@ mod style_guard {
     fn style_values_come_from_the_theme_or_the_kit() {
         let mut problems = Vec::new();
         for path in sources() {
-            let name = path.strip_prefix(Path::new(env!("CARGO_MANIFEST_DIR"))).unwrap().display().to_string();
+            let name = path.strip_prefix(Path::new(env!("CARGO_MANIFEST_DIR"))).unwrap().display().to_string().replace('\\', "/");
             if name.ends_with("ui/theme.rs") || name.contains("ui/kit") {
                 continue;
             }
