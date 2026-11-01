@@ -18,6 +18,43 @@ enum Node<T> {
     Split { dir: Dir, ratio: f32, a: Box<Node<T>>, b: Box<Node<T>> },
 }
 
+/// Sentido en el que se mueve el foco entre paneles.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Side {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+/// El panel vecino de `from` en el sentido `side`, según la posición de cada hoja en pantalla.
+/// Solo cuentan los paneles que quedan de ese lado y comparten tramo con `from`; de ellos gana el más cercano
+/// y, a igual distancia, el más alineado con el centro de `from`. Sin vecino devuelve `None`.
+pub fn neighbor(leaves: &[(u64, Rect)], from: u64, side: Side) -> Option<u64> {
+    let (_, current) = leaves.iter().find(|(id, _)| *id == from)?;
+    // Un panel está «al lado» si empieza donde termina el actual (con un margen por redondeos) y se solapa en el otro eje.
+    let tolerance = 1.0;
+    leaves
+        .iter()
+        .filter(|(id, _)| *id != from)
+        .filter_map(|(id, rect)| {
+            let (distance, overlap, offset) = match side {
+                Side::Right => (rect.min.x - current.max.x, overlap(current.y_range(), rect.y_range()), (rect.center().y - current.center().y).abs()),
+                Side::Left => (current.min.x - rect.max.x, overlap(current.y_range(), rect.y_range()), (rect.center().y - current.center().y).abs()),
+                Side::Down => (rect.min.y - current.max.y, overlap(current.x_range(), rect.x_range()), (rect.center().x - current.center().x).abs()),
+                Side::Up => (current.min.y - rect.max.y, overlap(current.x_range(), rect.x_range()), (rect.center().x - current.center().x).abs()),
+            };
+            (distance >= -tolerance && overlap > tolerance).then_some((*id, distance.max(0.0), offset))
+        })
+        .min_by(|a, b| a.1.total_cmp(&b.1).then(a.2.total_cmp(&b.2)))
+        .map(|(id, _, _)| id)
+}
+
+/// Longitud del tramo común entre dos rangos.
+fn overlap(a: eframe::egui::Rangef, b: eframe::egui::Rangef) -> f32 {
+    a.max.min(b.max) - a.min.max(b.min)
+}
+
 /// Asa para redimensionar una división.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Handle {
@@ -277,6 +314,48 @@ mod tests {
         tree.set_ratio(&handle.path, 0.25);
         let (leaves, _) = tree.layout(area(), 0.0);
         assert_eq!(leaves[0].1.height(), 150.0);
+    }
+
+    /// Izquierda: 1 · derecha arriba: 2 · derecha abajo: 3.
+    fn three_panes() -> Vec<(u64, Rect)> {
+        let mut tree = Tree::new(1, ());
+        tree.split(1, Dir::Horizontal, 2, ());
+        tree.split(2, Dir::Vertical, 3, ());
+        tree.layout(area(), 16.0).0
+    }
+
+    #[test]
+    fn focus_moves_to_the_adjacent_pane_on_that_side() {
+        let leaves = three_panes();
+        assert_eq!(neighbor(&leaves, 1, Side::Right), Some(2));
+        assert_eq!(neighbor(&leaves, 2, Side::Left), Some(1));
+        assert_eq!(neighbor(&leaves, 3, Side::Left), Some(1));
+        assert_eq!(neighbor(&leaves, 2, Side::Down), Some(3));
+        assert_eq!(neighbor(&leaves, 3, Side::Up), Some(2));
+    }
+
+    #[test]
+    fn focus_stays_put_at_the_edges() {
+        let leaves = three_panes();
+        assert_eq!(neighbor(&leaves, 1, Side::Left), None);
+        assert_eq!(neighbor(&leaves, 1, Side::Up), None);
+        assert_eq!(neighbor(&leaves, 1, Side::Down), None);
+        assert_eq!(neighbor(&leaves, 2, Side::Up), None);
+        assert_eq!(neighbor(&leaves, 3, Side::Right), None);
+        assert_eq!(neighbor(&leaves, 99, Side::Right), None);
+    }
+
+    #[test]
+    fn focus_crosses_between_rows_of_different_widths() {
+        // Arriba: 1 y 2 lado a lado. Abajo: 3 ocupa todo el ancho.
+        let mut tree = Tree::new(1, ());
+        tree.split(1, Dir::Vertical, 3, ());
+        tree.split(1, Dir::Horizontal, 2, ());
+        let leaves = tree.layout(area(), 16.0).0;
+        assert!(matches!(neighbor(&leaves, 3, Side::Up), Some(1 | 2)));
+        assert_eq!(neighbor(&leaves, 1, Side::Down), Some(3));
+        assert_eq!(neighbor(&leaves, 2, Side::Down), Some(3));
+        assert_eq!(neighbor(&leaves, 1, Side::Right), Some(2));
     }
 
     #[test]

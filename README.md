@@ -62,6 +62,7 @@ xattr -cr omni-term.app
 | `Ctrl+Shift+P` | Command palette |
 | `Ctrl+Shift+B` / `Ctrl+Shift+K` | Toggle sidebar / search connections |
 | `Ctrl+Shift+D` / `Ctrl+Shift+E` | Split right / split down |
+| `Ctrl+Shift+Arrows` | Move focus between split panes |
 | `Ctrl+Shift+W` | Close the focused pane (or the tab if it is the only one) |
 | `Ctrl+=` / `Ctrl+-` / `Ctrl+0` | Increase, decrease and reset the font |
 | `F11` | Fullscreen |
