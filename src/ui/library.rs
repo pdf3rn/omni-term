@@ -9,7 +9,6 @@ impl App {
         self.forwards = store.all_forwards().unwrap_or_default();
         self.snippets = store.list_snippets().unwrap_or_default();
         drop(store);
-        self.ssh_config_hosts = pending_ssh_config_hosts(&self.connections);
     }
 
     /// Inserta el snippet; si tiene variables, primero pide sus valores.

@@ -122,8 +122,6 @@ pub struct App {
     palette: Option<Palette>,
     close_confirmed: bool,
     known_hosts: dialogs::KnownHostsView,
-    /// Hosts de `~/.ssh/config` que aún no están guardados.
-    ssh_config_hosts: usize,
     loaded_font: Option<String>,
     /// Ids de conexión, de la usada más recientemente a la más antigua.
     recent: Vec<(i64, u64)>,
@@ -276,7 +274,6 @@ impl App {
             palette: None,
             close_confirmed: false,
             known_hosts: Default::default(),
-            ssh_config_hosts: 0,
             loaded_font: None,
             recent,
             pinned,
@@ -310,7 +307,6 @@ impl App {
             toasts: Vec::new(),
             next_toast: 0,
         };
-        app.ssh_config_hosts = pending_ssh_config_hosts(&app.connections);
         app.loaded_font = app.settings.font_family.clone();
         if let Some(problem) = font_error {
             app.settings.font_family = None;
@@ -328,32 +324,6 @@ impl App {
         Arc::new(move || ctx.request_repaint())
     }
 
-}
-
-/// Estado vacío de una lista: título, explicación y una acción principal (y otra opcional).
-fn empty_state(ui: &mut egui::Ui, title: &str, body: &str, primary: &str, secondary: Option<&str>) -> (bool, bool) {
-    ui.add_space(theme::space::GROUP);
-    ui.label(RichText::new(title).font(FontId::new(theme::size::HEADING, strong_family())).color(theme::text()));
-    ui.add_space(theme::space::XXS);
-    ui.label(RichText::new(body).small().color(theme::subtext()));
-    ui.add_space(theme::space::XL);
-    let width = ui.available_width();
-    let create = crate::ui::kit::button_with(ui, Button::new(primary).min_size(Vec2::new(width, 32.0)), crate::ui::kit::Variant::Primary).clicked();
-    let mut other = false;
-    if let Some(label) = secondary {
-        ui.add_space(theme::space::XS);
-        let button = Button::new(RichText::new(label).color(theme::text())).min_size(Vec2::new(width, 32.0));
-        other = crate::ui::kit::button_with(ui, button, crate::ui::kit::Variant::Secondary).clicked();
-    }
-    (create, other)
-}
-
-/// Cuántos hosts de `~/.ssh/config` aún no están guardados.
-fn pending_ssh_config_hosts(saved: &[Connection]) -> usize {
-    let path = std::env::home_dir().unwrap_or_default().join(".ssh").join("config");
-    let Ok(text) = std::fs::read_to_string(path) else { return 0 };
-    let user = std::env::var("USER").unwrap_or_default();
-    crate::connect::sshconfig::parse(&text, &user).iter().filter(|h| !saved.iter().any(|c| c.name == h.connection.name)).count()
 }
 
 fn now_secs() -> u64 {

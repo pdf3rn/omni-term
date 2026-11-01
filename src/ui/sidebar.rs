@@ -6,7 +6,6 @@ impl App {
     pub(super) fn sidebar(&mut self, ui: &mut egui::Ui) {
         let system_bar = self.settings.system_titlebar;
         let mut new_connection = false;
-        let mut import = false;
         let mut connect: Option<Connection> = None;
         let mut edit: Option<Connection> = None;
         let mut delete: Option<Connection> = None;
@@ -223,16 +222,7 @@ impl App {
 
                     if connections_view {
                         if self.connections.is_empty() {
-                            let secondary = (self.ssh_config_hosts > 0).then(|| format!("Importar {} de ~/.ssh/config", self.ssh_config_hosts));
-                            let (create, import_clicked) = empty_state(
-                                ui,
-                                "Aún no hay conexiones",
-                                "Guarda los servidores a los que te conectas y ábrelos con un doble clic.",
-                                "Nueva conexión",
-                                secondary.as_deref(),
-                            );
-                            new_connection |= create;
-                            import |= import_clicked;
+                            new_connection |= crate::ui::kit::empty_hint(ui, "Aún no hay conexiones.", "Crea una");
                         } else if groups.is_empty() {
                             ui.label(RichText::new("Ninguna conexión coincide con la búsqueda.").color(theme::subtext()));
                         }
@@ -460,14 +450,7 @@ impl App {
                         let query = self.sidebar_query.clone();
                         let visible: Vec<&Snippet> = self.snippets.iter().filter(|s| s.matches(&query)).collect();
                         if self.snippets.is_empty() {
-                            let (create, _) = empty_state(
-                                ui,
-                                "Aún no hay snippets",
-                                "Guarda los comandos que repites y pégalos en el terminal con un clic. También puedes seleccionar texto en el terminal y guardarlo desde el menú del clic derecho.",
-                                "Nuevo snippet",
-                                None,
-                            );
-                            new_snippet |= create;
+                            new_snippet |= crate::ui::kit::empty_hint(ui, "Aún no hay snippets.", "Crea uno");
                         } else if visible.is_empty() {
                             ui.label(RichText::new("Ningún snippet coincide con la búsqueda.").color(theme::subtext()));
                         }
@@ -664,9 +647,6 @@ impl App {
         }
         if new_connection {
             self.dialog = Some(Dialog::Edit(ConnForm::new()));
-        }
-        if import {
-            self.import_ssh_config();
         }
         if let Some(connection) = connect {
             self.begin_open(connection, None, Purpose::Terminal);

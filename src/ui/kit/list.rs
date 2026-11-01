@@ -95,3 +95,21 @@ pub fn fit_text(painter: &egui::Painter, text: &str, font: &FontId, width: f32) 
     }
     chars[..low].iter().collect::<String>().trim_end().to_string() + "…"
 }
+
+/// Estado vacío de una lista de la barra lateral: una frase discreta arriba y, en otra línea, el enlace que crea el
+/// primer elemento. Ambas a la izquierda; si la frase no cabe, se parte sin recortarse.
+pub fn empty_hint(ui: &mut Ui, text: &str, link: &str) -> bool {
+    use crate::ui::cursor::HandExt;
+    let font = FontId::proportional(theme::size::SMALL);
+    ui.add_space(theme::space::GROUP);
+    ui.vertical(|ui| {
+        ui.label(egui::RichText::new(text).font(font.clone()).color(theme::subtext()));
+        let response = ui.add(egui::Label::new(egui::RichText::new(link).font(font).color(theme::accent())).sense(Sense::click())).hand();
+        if response.hovered() {
+            let y = response.rect.max.y;
+            ui.painter().line_segment([Pos2::new(response.rect.min.x, y), Pos2::new(response.rect.max.x, y)], egui::Stroke::new(theme::stroke::HAIRLINE, theme::accent()));
+        }
+        response.clicked()
+    })
+    .inner
+}
