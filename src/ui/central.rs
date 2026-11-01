@@ -107,6 +107,19 @@ impl App {
                         panes.set_ratio(&path, ratio);
                     }
 
+                    // Ctrl+Mayús+flechas mueven el foco entre paneles. Con un solo panel las flechas siguen siendo del terminal.
+                    if input_enabled && leaves.len() > 1 {
+                        let both = Modifiers::CTRL | Modifiers::SHIFT;
+                        let side = ctx.input_mut(|i| {
+                            [(Key::ArrowLeft, Side::Left), (Key::ArrowRight, Side::Right), (Key::ArrowUp, Side::Up), (Key::ArrowDown, Side::Down)]
+                                .into_iter()
+                                .find_map(|(key, side)| i.consume_key(both, key).then_some(side))
+                        });
+                        if let Some(next) = side.and_then(|side| neighbor(&leaves, *focused, side)) {
+                            *focused = next;
+                        }
+                    }
+
                     let pressed = ctx.input(|i| (i.pointer.primary_pressed() || i.pointer.button_pressed(egui::PointerButton::Secondary)).then(|| i.pointer.interact_pos()).flatten());
                     if let Some(position) = pressed {
                         if let Some((id, _)) = leaves.iter().find(|(_, rect)| rect.contains(position)) {

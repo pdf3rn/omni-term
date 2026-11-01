@@ -67,6 +67,7 @@ pub(super) const SHORTCUTS: [(&str, &[(&str, &str)]); 4] = [
             ("Ctrl+Shift+F", "Buscar en la salida"),
             ("Ctrl+Shift+D / E", "Dividir a la derecha / hacia abajo"),
             ("Ctrl+Shift+W", "Cerrar el panel"),
+            ("Ctrl+Shift+←↑↓→", "Mover el foco entre paneles"),
             ("Ctrl+= / Ctrl+− / Ctrl+0", "Aumentar / reducir / restablecer la letra"),
         ],
     ),
