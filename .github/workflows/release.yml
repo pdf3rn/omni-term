@@ -57,10 +57,40 @@ jobs:
           name="omni-term-${GITHUB_REF_NAME}-${{ matrix.target }}"
           mkdir -p "dist/$name"
           cp target/release/omni-term "dist/$name/"
-          cp README.md "dist/$name/"
+          cp README.md LICENSE-MIT LICENSE-APACHE "dist/$name/"
           cp -r packaging "dist/$name/packaging"
           cp packaging/install-linux.sh "dist/$name/install.sh"
+          chmod +x "dist/$name/install.sh"
           tar -C dist -czf "dist/$name.tar.gz" "$name"
+
+      - name: Instalar cargo-deb (Linux)
+        if: runner.os == 'Linux'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deb
+
+      - name: Paquete .deb (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          name="omni-term-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          cargo deb --no-build --locked -o "dist/$name.deb"
+
+      - name: AppImage (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          name="omni-term-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          appdir=AppDir
+          install -Dm755 target/release/omni-term "$appdir/usr/bin/omni-term"
+          install -Dm644 packaging/omni-term.desktop "$appdir/usr/share/applications/omni-term.desktop"
+          install -Dm644 packaging/icons/256x256/omni-term.png "$appdir/usr/share/icons/hicolor/256x256/apps/omni-term.png"
+          cp packaging/omni-term.desktop "$appdir/omni-term.desktop"
+          cp packaging/icons/256x256/omni-term.png "$appdir/omni-term.png"
+          ln -s usr/bin/omni-term "$appdir/AppRun"
+          curl -fsSL -o appimagetool https://github.com/AppImage/appimagetool/releases/download/1.9.0/appimagetool-x86_64.AppImage
+          chmod +x appimagetool
+          ARCH=x86_64 ./appimagetool --appimage-extract-and-run "$appdir" "dist/$name.AppImage"
 
       - name: Empaquetar (macOS)
         if: runner.os == 'macOS'
@@ -103,12 +133,25 @@ jobs:
           Copy-Item README.md "dist/$name/"
           Compress-Archive -Path "dist/$name" -DestinationPath "dist/$name.zip"
 
+      - name: Instalador (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          $name = "omni-term-$env:GITHUB_REF_NAME-${{ matrix.target }}"
+          $version = $env:GITHUB_REF_NAME.TrimStart('v')
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$version" "/DSourceDir=$PWD\target\release" "/DOutputDir=$PWD\dist" "/DOutputName=$name-setup" packaging\omni-term.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - uses: actions/upload-artifact@v4
         with:
           name: omni-term-${{ matrix.target }}
           path: |
             dist/*.tar.gz
+            dist/*.deb
+            dist/*.AppImage
             dist/*.zip
+            dist/*.exe
             dist/*.dmg
 
   publish:
@@ -128,14 +171,17 @@ jobs:
 
       - name: Sumas SHA-256
         working-directory: dist
-        run: sha256sum *.tar.gz *.zip *.dmg > SHA256SUMS
+        run: sha256sum *.tar.gz *.deb *.AppImage *.zip *.exe *.dmg > SHA256SUMS
 
       - name: Atestación de procedencia
         uses: actions/attest-build-provenance@v4
         with:
           subject-path: |
             dist/*.tar.gz
+            dist/*.deb
+            dist/*.AppImage
             dist/*.zip
+            dist/*.exe
             dist/*.dmg
       - uses: softprops/action-gh-release@v3
         with:

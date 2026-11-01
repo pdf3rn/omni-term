@@ -32,11 +32,11 @@ A native, cross-platform terminal written in Rust, built like an IDE: local shel
 
 ## Install
 
-Download the archive for your system from the [Releases](https://github.com/pdf3rn/omni-term/releases) page. On Linux it includes `install.sh`, which installs the binary, icon and desktop entry for your user:
+Download the package for your system from the [Releases](https://github.com/pdf3rn/omni-term/releases) page:
 
-```bash
-./install.sh
-```
+- **Linux**: `.deb` (Debian, Ubuntu and derivatives: `sudo apt install ./omni-term-*.deb`), `.AppImage` (any distro: `chmod +x` and run it), or the `.tar.gz`, which includes `install.sh` to install the binary, icons and desktop entry for your user (`./install.sh`, and `./install.sh --uninstall` to remove them).
+- **Windows**: `-setup.exe` installer (per user, no administrator needed; optional PATH entry), or the portable `.zip`.
+- **macOS**: `.dmg`.
 
 Or build from source (Rust stable):
 
