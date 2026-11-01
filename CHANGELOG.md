@@ -3,6 +3,16 @@
 Todos los cambios notables de omni-term. A partir de la 0.1.0 este archivo lo actualiza release-plz a partir de los commits convencionales.
 El formato sigue [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y el proyecto usa [versionado semántico](https://semver.org/lang/es/).
 
+## [0.1.6](https://github.com/pdf3rn/omni-term/compare/v0.1.5...v0.1.6) - 2026-11-01
+
+### Fixed
+
+- *(ci)* bump macos-arm64 runner and update deps
+
+### Other
+
+- *(audit)* ignore RUSTSEC-2026-0387 in crypto-bigint
+
 ## [0.1.5](https://github.com/pdf3rn/omni-term/compare/v0.1.4...v0.1.5) - 2026-10-31
 
 ### Added
