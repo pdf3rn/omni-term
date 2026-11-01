@@ -14,6 +14,8 @@ maintainer = "pdf3rn <61333270+pdf3rn@users.noreply.github.com>"
 section = "utils"
 priority = "optional"
 depends = "$auto"
+# El binario carga estas librerías en tiempo de ejecución (dlopen), así que `$auto` no las detecta.
+recommends = "libxkbcommon0, libxkbcommon-x11-0, libwayland-client0, libwayland-egl1, libx11-6, libx11-xcb1, libxcb1, libdbus-1-3, libegl1, libvulkan1"
 extended-description = "Terminal nativa con SSH, Telnet, serie y conexiones de archivos (SFTP, FTP, SMB), túneles y snippets."
 assets = [
     ["target/release/omni-term", "usr/bin/", "755"],

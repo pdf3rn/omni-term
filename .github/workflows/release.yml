@@ -143,16 +143,53 @@ jobs:
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$version" "/DSourceDir=$PWD\target\release" "/DOutputDir=$PWD\dist" "/DOutputName=$name-setup" packaging\omni-term.iss
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - uses: actions/upload-artifact@v4
+      - name: Subir .tar.gz
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
         with:
-          name: omni-term-${{ matrix.target }}
-          path: |
-            dist/*.tar.gz
-            dist/*.deb
-            dist/*.AppImage
-            dist/*.zip
-            dist/*.exe
-            dist/*.dmg
+          name: omni-term-${{ matrix.target }}-tar
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+      - name: Subir .deb
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: omni-term-${{ matrix.target }}-deb
+          path: dist/*.deb
+          if-no-files-found: error
+
+      - name: Subir AppImage
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: omni-term-${{ matrix.target }}-appimage
+          path: dist/*.AppImage
+          if-no-files-found: error
+
+      - name: Subir instalador
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: omni-term-${{ matrix.target }}-setup
+          path: dist/*.exe
+          if-no-files-found: error
+
+      - name: Subir .zip
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: omni-term-${{ matrix.target }}-zip
+          path: dist/*.zip
+          if-no-files-found: error
+
+      - name: Subir .dmg
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: omni-term-${{ matrix.target }}-dmg
+          path: dist/*.dmg
+          if-no-files-found: error
 
   publish:
     name: Publicar
