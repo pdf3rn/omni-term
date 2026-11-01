@@ -3,6 +3,12 @@
 Todos los cambios notables de omni-term. A partir de la 0.1.0 este archivo lo actualiza release-plz a partir de los commits convencionales.
 El formato sigue [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y el proyecto usa [versionado semántico](https://semver.org/lang/es/).
 
+## [0.1.8](https://github.com/pdf3rn/omni-term/compare/v0.1.7...v0.1.8) - 2026-11-01
+
+### Added
+
+- *(release)* add deb, appimage, windows installer and uninstall
+
 ## [0.1.7](https://github.com/pdf3rn/omni-term/compare/v0.1.6...v0.1.7) - 2026-11-01
 
 ### Added
