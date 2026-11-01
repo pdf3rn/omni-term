@@ -22,6 +22,10 @@ use crate::ui::theme;
 
 pub const PADDING: f32 = 12.0;
 
+/// Cada cuánto se desplaza la vista al arrastrar una selección fuera del terminal, y cuántas líneas como máximo.
+const AUTOSCROLL_INTERVAL: Duration = Duration::from_millis(40);
+const AUTOSCROLL_MAX_LINES: i32 = 6;
+
 pub fn bold_family() -> FontFamily {
     FontFamily::Name("mono-bold".into())
 }
@@ -151,6 +155,12 @@ pub struct Pane {
     menu_link: Option<String>,
     /// Selección en curso con el ratón, para copiarla a la selección primaria al soltar.
     selecting: bool,
+    /// Punto del último clic simple: desde ahí se extiende la selección con Mayús+clic.
+    anchor: Option<(Point, Side)>,
+    /// El clic en curso se pulsó con Mayús (extiende la selección en vez de limpiarla).
+    extending: bool,
+    /// Último desplazamiento automático al arrastrar fuera del terminal.
+    last_autoscroll: Option<Instant>,
     snippet_request: Option<String>,
     /// Pegado con saltos de línea a la espera de que la app decida si pide confirmación.
     paste_request: Option<String>,
@@ -158,7 +168,7 @@ pub struct Pane {
 
 impl Pane {
     pub fn new(session: Session, debug_keys: bool, id: u64) -> Self {
-        Self { id, request: None, session, debug_keys, input_enabled: true, held: None, last_cell: None, hover_cell: (0, 0), window_focused: true, search: None, link: None, epoch: Instant::now(), click_count: 0, last_press: None, menu_link: None, selecting: false, snippet_request: None, paste_request: None }
+        Self { id, request: None, session, debug_keys, input_enabled: true, held: None, last_cell: None, hover_cell: (0, 0), window_focused: true, search: None, link: None, epoch: Instant::now(), click_count: 0, last_press: None, menu_link: None, selecting: false, anchor: None, extending: false, last_autoscroll: None, snippet_request: None, paste_request: None }
     }
 
     /// Escribe `text` como un pegado (con pegado entre corchetes si la aplicación lo pidió).
@@ -311,7 +321,22 @@ impl Pane {
                 if let Some(kind) = kind {
                     let (point, side) = to_point(pos, offset);
                     term.selection = Some(Selection::new(kind, point, side));
+                } else {
+                    // Mayús+clic extiende la selección hasta el punto pulsado, aunque se haya hecho scroll entre medias.
+                    let (point, side) = to_point(pos, offset);
+                    if shift {
+                        if let Some(selection) = term.selection.as_mut() {
+                            selection.update(point, side);
+                        } else if let Some((anchor, anchor_side)) = self.anchor {
+                            let mut selection = Selection::new(SelectionType::Simple, anchor, anchor_side);
+                            selection.update(point, side);
+                            term.selection = Some(selection);
+                        }
+                    } else {
+                        self.anchor = Some((point, side));
+                    }
                 }
+                self.extending = shift && self.click_count == 1;
             }
             if ui.input(|i| i.pointer.button_pressed(egui::PointerButton::Secondary)) && response.hovered() {
                 if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
@@ -329,21 +354,36 @@ impl Pane {
             let multi_click = self.click_count >= 2;
             if let Some(pos) = response.interact_pointer_pos() {
                 if response.drag_started_by(egui::PointerButton::Primary) && !multi_click {
-                    // `drag_started` llega cuando el ratón ya se movió unos píxeles: el inicio es donde se pulsó.
-                    let origin = ui.input(|i| i.pointer.press_origin()).unwrap_or(pos);
-                    let (point, side) = to_point(origin, offset);
-                    let mut selection = Selection::new(SelectionType::Simple, point, side);
-                    let (now, now_side) = to_point(pos, offset);
-                    selection.update(now, now_side);
-                    term.selection = Some(selection);
+                    if !(self.extending && term.selection.is_some()) {
+                        // `drag_started` llega cuando el ratón ya se movió unos píxeles: el inicio es donde se pulsó.
+                        let origin = ui.input(|i| i.pointer.press_origin()).unwrap_or(pos);
+                        let (point, side) = to_point(origin, offset);
+                        self.anchor = Some((point, side));
+                        let mut selection = Selection::new(SelectionType::Simple, point, side);
+                        let (now, now_side) = to_point(pos, offset);
+                        selection.update(now, now_side);
+                        term.selection = Some(selection);
+                    }
                 } else if response.dragged_by(egui::PointerButton::Primary) {
+                    // Arrastrando por encima o por debajo del terminal, la vista se desplaza y la selección la sigue.
+                    let beyond = (area.min.y - pos.y).max(pos.y - area.max.y);
+                    let mut offset = offset;
+                    if beyond > 0.0 {
+                        ui.ctx().request_repaint_after(AUTOSCROLL_INTERVAL);
+                        if self.last_autoscroll.is_none_or(|at| at.elapsed() >= AUTOSCROLL_INTERVAL) {
+                            let lines = ((beyond / cell_h).ceil() as i32).clamp(1, AUTOSCROLL_MAX_LINES);
+                            term.scroll_display(Scroll::Delta(if pos.y < area.min.y { lines } else { -lines }));
+                            self.last_autoscroll = Some(Instant::now());
+                            offset = term.grid().display_offset();
+                        }
+                    }
                     let (point, side) = to_point(pos, offset);
                     if let Some(selection) = term.selection.as_mut() {
                         selection.update(point, side);
                     }
                 }
             }
-            if response.clicked() && !multi_click {
+            if response.clicked() && !multi_click && !self.extending {
                 term.selection = None;
             }
             if self.selecting && ui.input(|i| i.pointer.primary_released()) {
@@ -385,7 +425,9 @@ impl Pane {
                 self.handle_input(ui);
             }
         }
-        if self.input_enabled && ui.memory(|m| m.has_focus(id)) {
+        // Solo en Windows: lo necesitan Win+V y Win+. En Linux, activar el IME hace que fcitx5/ibus intercepten el
+        // teclado y se pierdan eventos de soltar tecla (la tecla se queda repitiendo en equipos lentos).
+        if cfg!(windows) && self.input_enabled && ui.memory(|m| m.has_focus(id)) {
             self.publish_ime(ui, area, cell_w, cell_h);
         }
         if self.window_focused && self.session.term.lock().unwrap().cursor_style().blinking {
