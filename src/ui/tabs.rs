@@ -383,7 +383,7 @@ impl App {
         let mut plus_choice: Option<PlusChoice> = None;
         let mut open_plus_menu = std::mem::take(&mut self.open_plus_menu);
         let mut dragging: Option<usize> = None;
-        Panel::top("tabs")
+        let bar = Panel::top("tabs")
             .exact_size(TAB_BAR_HEIGHT)
             .show_separator_line(false)
             .frame(Frame::NONE.fill(theme::mantle()).inner_margin(Margin { left: 8, right: 8, top: 6, bottom: 0 }))
@@ -549,6 +549,9 @@ impl App {
                 });
             });
 
+        // Destinos para soltar un panel arrastrado (antes de reordenar, con las mismas posiciones que se ven).
+        self.drop_targets.tab_bar = bar.response.rect;
+        self.drop_targets.tabs = self.tabs.iter().map(|t| t.id).zip(tab_rects.iter().copied()).collect();
         if let Some(id) = strip_scrolled_to {
             self.tab_strip_seen = id;
         }

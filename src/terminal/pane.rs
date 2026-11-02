@@ -224,6 +224,11 @@ impl Pane {
         self.id
     }
 
+    /// Cambia el id al mover el panel a otra pestaña, donde debe coincidir con su hoja del árbol.
+    pub fn set_id(&mut self, id: u64) {
+        self.id = id;
+    }
+
     pub fn select_all(&self) {
         let mut term = self.session.term.lock().unwrap();
         let start = Point::new(term.topmost_line(), Column(0));

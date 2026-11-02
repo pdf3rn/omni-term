@@ -106,31 +106,43 @@ impl<T> Tree<T> {
     /// Divide la hoja `target`: se queda en un lado y la nueva (`new_id`) va al otro.
     /// Devuelve `false`, sin cambios, si `target` no existe.
     pub fn split(&mut self, target: u64, dir: Dir, new_id: u64, item: T) -> bool {
+        let side = match dir {
+            Dir::Horizontal => Side::Right,
+            Dir::Vertical => Side::Down,
+        };
+        self.insert(target, side, new_id, item)
+    }
+
+    /// Coloca una hoja nueva al lado `side` de `target`, partiendo su sitio por la mitad.
+    /// Devuelve `false`, sin cambios, si `target` no existe.
+    pub fn insert(&mut self, target: u64, side: Side, new_id: u64, item: T) -> bool {
         if !self.contains(target) {
             return false;
         }
-        fn go<T>(node: Node<T>, target: u64, dir: Dir, new_id: u64, item: &mut Option<T>) -> Node<T> {
+        let dir = match side {
+            Side::Left | Side::Right => Dir::Horizontal,
+            Side::Up | Side::Down => Dir::Vertical,
+        };
+        let before = matches!(side, Side::Left | Side::Up);
+        fn go<T>(node: Node<T>, target: u64, dir: Dir, before: bool, new_id: u64, item: &mut Option<T>) -> Node<T> {
             match node {
                 Node::Leaf { id, item: old } if id == target => {
-                    let new = item.take().expect("el elemento nuevo se usa una sola vez");
-                    Node::Split {
-                        dir,
-                        ratio: 0.5,
-                        a: Box::new(Node::Leaf { id, item: old }),
-                        b: Box::new(Node::Leaf { id: new_id, item: new }),
-                    }
+                    let old = Box::new(Node::Leaf { id, item: old });
+                    let new = Box::new(Node::Leaf { id: new_id, item: item.take().expect("el elemento nuevo se usa una sola vez") });
+                    let (a, b) = if before { (new, old) } else { (old, new) };
+                    Node::Split { dir, ratio: 0.5, a, b }
                 }
                 leaf @ Node::Leaf { .. } => leaf,
                 Node::Split { dir: d, ratio, a, b } => Node::Split {
                     dir: d,
                     ratio,
-                    a: Box::new(go(*a, target, dir, new_id, item)),
-                    b: Box::new(go(*b, target, dir, new_id, item)),
+                    a: Box::new(go(*a, target, dir, before, new_id, item)),
+                    b: Box::new(go(*b, target, dir, before, new_id, item)),
                 },
             }
         }
         let root = self.root.take().expect("el árbol nunca queda vacío");
-        self.root = Some(go(root, target, dir, new_id, &mut Some(item)));
+        self.root = Some(go(root, target, dir, before, new_id, &mut Some(item)));
         true
     }
 
@@ -138,6 +150,11 @@ impl<T> Tree<T> {
     /// primera de la hermana), o `None`, sin cambios, si es la única hoja o no existe: el árbol no
     /// puede quedar vacío.
     pub fn remove(&mut self, target: u64) -> Option<u64> {
+        self.take(target).map(|(_, heir)| heir)
+    }
+
+    /// Como `remove`, pero devuelve también el elemento quitado en vez de destruirlo.
+    pub fn take(&mut self, target: u64) -> Option<(T, u64)> {
         if self.len() <= 1 || !self.contains(target) {
             return None;
         }
@@ -148,12 +165,15 @@ impl<T> Tree<T> {
                 _ => sibling(a, target).or_else(|| sibling(b, target)),
             }
         }
-        let heir = sibling(self.root(), target);
-        fn go<T>(node: Node<T>, target: u64) -> Option<Node<T>> {
+        let heir = sibling(self.root(), target)?;
+        fn go<T>(node: Node<T>, target: u64, taken: &mut Option<T>) -> Option<Node<T>> {
             match node {
-                Node::Leaf { id, .. } if id == target => None,
+                Node::Leaf { id, item } if id == target => {
+                    *taken = Some(item);
+                    None
+                }
                 leaf @ Node::Leaf { .. } => Some(leaf),
-                Node::Split { dir, ratio, a, b } => match (go(*a, target), go(*b, target)) {
+                Node::Split { dir, ratio, a, b } => match (go(*a, target, taken), go(*b, target, taken)) {
                     (Some(a), Some(b)) => Some(Node::Split { dir, ratio, a: Box::new(a), b: Box::new(b) }),
                     (Some(only), None) | (None, Some(only)) => Some(only),
                     (None, None) => None,
@@ -161,8 +181,41 @@ impl<T> Tree<T> {
             }
         }
         let root = self.root.take().expect("el árbol nunca queda vacío");
-        self.root = go(root, target);
-        heir
+        let mut taken = None;
+        self.root = go(root, target, &mut taken);
+        taken.map(|item| (item, heir))
+    }
+
+    /// Intercambia de sitio dos hojas (cada una conserva su id). Devuelve `false` si falta alguna.
+    pub fn swap(&mut self, x: u64, y: u64) -> bool {
+        fn leaves<'a, T>(node: &'a mut Node<T>, out: &mut Vec<&'a mut Node<T>>) {
+            match node {
+                Node::Split { a, b, .. } => {
+                    leaves(a, out);
+                    leaves(b, out);
+                }
+                leaf => out.push(leaf),
+            }
+        }
+        let mut all = Vec::new();
+        leaves(self.root.as_mut().expect("el árbol nunca queda vacío"), &mut all);
+        let position = |all: &[&mut Node<T>], wanted: u64| all.iter().position(|node| matches!(node, Node::Leaf { id, .. } if *id == wanted));
+        let (Some(i), Some(j)) = (position(&all, x), position(&all, y)) else { return false };
+        if i == j {
+            return true;
+        }
+        let (low, high) = (i.min(j), i.max(j));
+        let (head, tail) = all.split_at_mut(high);
+        std::mem::swap(&mut *head[low], &mut *tail[0]);
+        true
+    }
+
+    /// El elemento de un árbol de una sola hoja; `None` si tiene más.
+    pub fn into_leaf(self) -> Option<T> {
+        match self.root {
+            Some(Node::Leaf { item, .. }) => Some(item),
+            _ => None,
+        }
     }
 
     /// Reparte `area` entre las hojas, dejando `gap` entre paneles. Devuelve la zona de cada
@@ -468,5 +521,38 @@ mod tests {
         for (_, rect) in &leaves {
             assert!((rect.width() - 1000.0 / 3.0).abs() < 0.01);
         }
+    }
+
+    #[test]
+    fn a_taken_leaf_survives_and_can_be_inserted_on_any_side() {
+        let mut tree = grid();
+        let (item, heir) = tree.take(1).expect("hay más de una hoja");
+        assert_eq!(heir, 2);
+        assert_eq!(item, ());
+        assert!(tree.insert(4, Side::Left, 1, item));
+        let (leaves, _) = tree.layout(area(), 0.0);
+        let rect = |id| leaves.iter().find(|(leaf, _)| *leaf == id).unwrap().1;
+        assert_eq!(rect(1).min.x, 0.0);
+        assert_eq!(rect(4).min.x, 500.0);
+        assert_eq!(rect(1).min.y, rect(4).min.y);
+        assert!(tree.insert(2, Side::Up, 5, ()));
+        assert_eq!(tree.neighbor(5, Side::Down), Some(2));
+        let mut single = Tree::new(1, "a");
+        assert!(single.take(1).is_none());
+        assert_eq!(single.into_leaf(), Some("a"));
+    }
+
+    #[test]
+    fn swapping_exchanges_the_places_of_two_leaves() {
+        let mut tree = grid();
+        let (before, _) = tree.layout(area(), 0.0);
+        assert!(tree.swap(1, 4));
+        let (after, _) = tree.layout(area(), 0.0);
+        let rect = |leaves: &[(u64, Rect)], id| leaves.iter().find(|(leaf, _)| *leaf == id).unwrap().1;
+        assert_eq!(rect(&after, 1), rect(&before, 4));
+        assert_eq!(rect(&after, 4), rect(&before, 1));
+        assert!(!tree.swap(1, 99));
+        assert!(Tree::new(1, ()).into_leaf().is_some());
+        assert!(grid().into_leaf().is_none());
     }
 }

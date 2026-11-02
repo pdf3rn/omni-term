@@ -14,6 +14,7 @@ mod connecting;
 mod dialog_flow;
 mod empty;
 mod library;
+mod pane_drag;
 mod secrets_flow;
 mod sessions;
 mod sidebar;
@@ -166,6 +167,10 @@ pub struct App {
     saved_layout: (Vec<SavedTab>, usize),
     toasts: Vec<Toast>,
     next_toast: u64,
+    /// Panel que se está arrastrando por su asa, si alguno.
+    pane_drag: Option<pane_drag::PaneDrag>,
+    /// Dónde se puede soltar un panel en este fotograma: paneles visibles y pestañas.
+    drop_targets: pane_drag::DropTargets,
 }
 
 impl App {
@@ -305,6 +310,8 @@ impl App {
             suspended: None,
             saved_layout: (Vec::new(), 0),
             toasts: Vec::new(),
+            pane_drag: None,
+            drop_targets: pane_drag::DropTargets::default(),
             next_toast: 0,
         };
         app.loaded_font = app.settings.font_family.clone();
@@ -423,6 +430,7 @@ impl eframe::App for App {
         self.sidebar(ui);
 
         self.tab_strip(ui);
+        self.drive_pane_drag(&ctx);
 
         self.central_area(ui, &ctx);
 
