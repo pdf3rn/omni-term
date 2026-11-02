@@ -3,6 +3,13 @@
 Todos los cambios notables de omni-term. A partir de la 0.1.0 este archivo lo actualiza release-plz a partir de los commits convencionales.
 El formato sigue [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y el proyecto usa [versionado semántico](https://semver.org/lang/es/).
 
+## [0.1.11](https://github.com/pdf3rn/omni-term/compare/v0.1.10...v0.1.11) - 2026-11-02
+
+### Added
+
+- *(pane)* add drag-and-drop to rearrange and move panes
+- *(pane)* add zoom, neighbor navigation, resize and close-pane
+
 ## [0.1.10](https://github.com/pdf3rn/omni-term/compare/v0.1.9...v0.1.10) - 2026-11-01
 
 ### Added
