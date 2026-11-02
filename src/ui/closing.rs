@@ -5,6 +5,19 @@ use super::*;
 impl App {
     /// Pestañas afectadas por una acción de cierre, y entre ellas las que tienen algo en marcha.
     pub(super) fn close_busy_lines(&self, action: CloseAction) -> Vec<String> {
+        if let CloseAction::Pane { tab, pane } = action {
+            let Some(tab) = self.tabs.iter().find(|t| t.id == tab) else { return Vec::new() };
+            let Body::Terminal { panes, .. } = &tab.body else { return Vec::new() };
+            return panes
+                .get(pane)
+                .filter(|p| tabs::pane_busy(p))
+                .map(|p| {
+                    let title = if p.title().is_empty() { tab.label.clone() } else { p.title() };
+                    format!("«{title}»: proceso en ejecución")
+                })
+                .into_iter()
+                .collect();
+        }
         let affected: Vec<usize> = match action {
             CloseAction::Tab(id) => self.tabs.iter().position(|t| t.id == id).into_iter().collect(),
             CloseAction::Others(id) => (0..self.tabs.len()).filter(|i| self.tabs[*i].id != id).collect(),
@@ -13,6 +26,7 @@ impl App {
                 None => Vec::new(),
             },
             CloseAction::Window => (0..self.tabs.len()).collect(),
+            CloseAction::Pane { .. } => Vec::new(),
         };
         affected
             .into_iter()
@@ -53,6 +67,7 @@ impl App {
                     self.active = self.active.min(self.tabs.len().saturating_sub(1));
                 }
             }
+            CloseAction::Pane { tab, pane } => self.remove_pane(tab, pane),
             CloseAction::Window => {
                 self.close_confirmed = true;
                 self.ctx.send_viewport_cmd(ViewportCommand::Close);

@@ -66,6 +66,7 @@ impl App {
         for (keys, what) in [
             ("Ctrl+Shift+P", "Paleta de comandos"),
             ("Ctrl+Shift+D / E", "Dividir el panel a la derecha / hacia abajo"),
+            ("Alt+flechas", "Ir al panel de al lado"),
             ("Ctrl+Shift+B", "Mostrar u ocultar la barra lateral"),
             ("Ctrl+,", "Abrir los ajustes"),
         ] {

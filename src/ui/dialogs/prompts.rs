@@ -160,6 +160,8 @@ pub enum CloseAction {
     Tab(u64),
     Others(u64),
     Right(u64),
+    /// Un panel de una pestaña dividida.
+    Pane { tab: u64, pane: u64 },
     Window,
 }
 

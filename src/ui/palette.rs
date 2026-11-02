@@ -15,6 +15,8 @@ pub enum Command {
     Settings,
     SplitRight,
     SplitDown,
+    TogglePaneZoom,
+    EqualizePanes,
     CloseTab,
     ToggleSidebar,
     ThemeDark,
@@ -40,13 +42,15 @@ pub enum Command {
     Containers,
 }
 
-pub const COMMANDS: [(Command, &str); 27] = [
+pub const COMMANDS: [(Command, &str); 29] = [
     (Command::NewTab, "Nueva pestaña de terminal local"),
     (Command::NewConnection, "Nueva conexión"),
     (Command::ImportConfig, "Importar conexiones de ~/.ssh/config"),
     (Command::Settings, "Abrir ajustes"),
     (Command::SplitRight, "Dividir el panel a la derecha"),
     (Command::SplitDown, "Dividir el panel hacia abajo"),
+    (Command::TogglePaneZoom, "Ampliar o restaurar el panel"),
+    (Command::EqualizePanes, "Igualar paneles"),
     (Command::CloseTab, "Cerrar la pestaña actual"),
     (Command::ToggleSidebar, "Mostrar u ocultar la barra lateral"),
     (Command::ThemeDark, "Tema oscuro"),

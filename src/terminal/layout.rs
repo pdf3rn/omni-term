@@ -134,12 +134,21 @@ impl<T> Tree<T> {
         true
     }
 
-    /// Quita la hoja `target`; su hermana ocupa su lugar. Devuelve `false` si es la única
-    /// hoja o no existe: el árbol no puede quedar vacío.
-    pub fn remove(&mut self, target: u64) -> bool {
+    /// Quita la hoja `target`; su hermana ocupa su lugar. Devuelve la hoja que hereda el foco (la
+    /// primera de la hermana), o `None`, sin cambios, si es la única hoja o no existe: el árbol no
+    /// puede quedar vacío.
+    pub fn remove(&mut self, target: u64) -> Option<u64> {
         if self.len() <= 1 || !self.contains(target) {
-            return false;
+            return None;
         }
+        fn sibling<T>(node: &Node<T>, target: u64) -> Option<u64> {
+            let Node::Split { a, b, .. } = node else { return None };
+            match (&**a, &**b) {
+                (Node::Leaf { id, .. }, other) | (other, Node::Leaf { id, .. }) if *id == target => Some(first_leaf(other)),
+                _ => sibling(a, target).or_else(|| sibling(b, target)),
+            }
+        }
+        let heir = sibling(self.root(), target);
         fn go<T>(node: Node<T>, target: u64) -> Option<Node<T>> {
             match node {
                 Node::Leaf { id, .. } if id == target => None,
@@ -153,7 +162,7 @@ impl<T> Tree<T> {
         }
         let root = self.root.take().expect("el árbol nunca queda vacío");
         self.root = go(root, target);
-        true
+        heir
     }
 
     /// Reparte `area` entre las hojas, dejando `gap` entre paneles. Devuelve la zona de cada
@@ -208,6 +217,103 @@ impl<T> Tree<T> {
             *current = ratio.clamp(MIN_RATIO, MAX_RATIO);
         }
     }
+
+    /// La hoja vecina de `id` hacia `toward`, según la posición en pantalla: la más cercana en esa
+    /// dirección; entre las igual de cercanas, la que más se solapa con `id` y, si empatan, la de
+    /// más arriba o más a la izquierda. `None` si no hay ninguna por ese lado.
+    pub fn neighbor(&self, id: u64, toward: Side) -> Option<u64> {
+        let (leaves, _) = self.layout(Rect::from_min_size(Pos2::ZERO, Vec2::splat(1.0)), 0.0);
+        let current = leaves.iter().find(|(leaf, _)| *leaf == id)?.1;
+        const EPS: f32 = 1e-4;
+        leaves
+            .iter()
+            .filter(|(leaf, _)| *leaf != id)
+            .filter_map(|(leaf, rect)| {
+                // Distancia hasta el borde enfrentado, solape en el eje perpendicular y posición para desempatar.
+                let (gap, overlap, order) = match toward {
+                    Side::Left => (current.min.x - rect.max.x, overlap(current.y_range(), rect.y_range()), rect.min.y),
+                    Side::Right => (rect.min.x - current.max.x, overlap(current.y_range(), rect.y_range()), rect.min.y),
+                    Side::Up => (current.min.y - rect.max.y, overlap(current.x_range(), rect.x_range()), rect.min.x),
+                    Side::Down => (rect.min.y - current.max.y, overlap(current.x_range(), rect.x_range()), rect.min.x),
+                };
+                (gap > -EPS && overlap > EPS).then_some((*leaf, gap, overlap, order))
+            })
+            .min_by(|x, y| {
+                let near = |v: f32| (v / EPS).round();
+                near(x.1).total_cmp(&near(y.1)).then(near(y.2).total_cmp(&near(x.2))).then(x.3.total_cmp(&y.3))
+            })
+            .map(|(leaf, ..)| leaf)
+    }
+
+    /// Mueve hacia `toward` el borde más cercano de `id` que corre en ese eje (la división
+    /// antecesora más próxima con esa orientación), en `step` de proporción. Devuelve `false` si no
+    /// hay ninguna división en ese eje.
+    pub fn nudge(&mut self, id: u64, toward: Side, step: f32) -> bool {
+        let axis = match toward {
+            Side::Left | Side::Right => Dir::Horizontal,
+            Side::Up | Side::Down => Dir::Vertical,
+        };
+        let delta = match toward {
+            Side::Left | Side::Up => -step,
+            Side::Right | Side::Down => step,
+        };
+        fn go<T>(node: &mut Node<T>, id: u64, axis: Dir, delta: f32) -> Option<bool> {
+            let Node::Split { dir, ratio, a, b } = node else {
+                return matches!(node, Node::Leaf { id: leaf, .. } if *leaf == id).then_some(false);
+            };
+            let found = match go(a, id, axis, delta) {
+                Some(done) => done,
+                None => go(b, id, axis, delta)?,
+            };
+            if found || *dir != axis {
+                return Some(found);
+            }
+            *ratio = (*ratio + delta).clamp(MIN_RATIO, MAX_RATIO);
+            Some(true)
+        }
+        let root = self.root.as_mut().expect("el árbol nunca queda vacío");
+        go(root, id, axis, delta).unwrap_or(false)
+    }
+
+    /// Reparte el espacio a partes iguales entre las hojas: tres paneles en fila quedan a un tercio.
+    pub fn equalize(&mut self) {
+        /// Cuántas columnas (o filas) aporta el nodo en el eje `axis`.
+        fn weight<T>(node: &Node<T>, axis: Dir) -> f32 {
+            match node {
+                Node::Split { dir, a, b, .. } if *dir == axis => weight(a, axis) + weight(b, axis),
+                _ => 1.0,
+            }
+        }
+        fn go<T>(node: &mut Node<T>) {
+            if let Node::Split { dir, ratio, a, b } = node {
+                let (wa, wb) = (weight(a, *dir), weight(b, *dir));
+                *ratio = wa / (wa + wb);
+                go(a);
+                go(b);
+            }
+        }
+        go(self.root.as_mut().expect("el árbol nunca queda vacío"));
+    }
+}
+
+/// Dirección de navegación o de redimensionado con el teclado.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Side {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+fn first_leaf<T>(node: &Node<T>) -> u64 {
+    match node {
+        Node::Leaf { id, .. } => *id,
+        Node::Split { a, .. } => first_leaf(a),
+    }
+}
+
+fn overlap(a: eframe::egui::Rangef, b: eframe::egui::Rangef) -> f32 {
+    a.max.min(b.max) - a.min.max(b.min)
 }
 
 #[cfg(test)]
@@ -234,7 +340,7 @@ mod tests {
         let mut tree = Tree::new(1, ());
         tree.split(1, Dir::Horizontal, 2, ());
         tree.split(2, Dir::Vertical, 3, ());
-        assert!(tree.remove(2));
+        assert_eq!(tree.remove(2), Some(3));
         assert_eq!(tree.ids(), vec![1, 3]);
 
         let (leaves, handles) = tree.layout(area(), 0.0);
@@ -245,10 +351,10 @@ mod tests {
     #[test]
     fn the_last_leaf_cannot_be_removed() {
         let mut tree = Tree::new(1, ());
-        assert!(!tree.remove(1));
+        assert_eq!(tree.remove(1), None);
         tree.split(1, Dir::Vertical, 2, ());
-        assert!(tree.remove(1));
-        assert!(!tree.remove(2));
+        assert_eq!(tree.remove(1), Some(2));
+        assert_eq!(tree.remove(2), None);
         assert_eq!(tree.ids(), vec![2]);
     }
 
@@ -291,5 +397,76 @@ mod tests {
         tree.set_ratio(&handles[1].path, 0.7);
         let (leaves, _) = tree.layout(area(), 0.0);
         assert_eq!(leaves[1].1.height(), 600.0 * 0.7);
+    }
+
+    /// 1 | 2 / 3 a la derecha, y 4 debajo de todo: una rejilla con vecinos ambiguos.
+    fn grid() -> Tree<()> {
+        let mut tree = Tree::new(1, ());
+        tree.split(1, Dir::Vertical, 4, ());
+        tree.split(1, Dir::Horizontal, 2, ());
+        tree.split(2, Dir::Vertical, 3, ());
+        tree
+    }
+
+    #[test]
+    fn the_heir_of_a_removed_leaf_is_its_sibling() {
+        let mut tree = grid();
+        // La hermana de 1 es la columna 2/3: hereda su primera hoja.
+        assert_eq!(tree.remove(1), Some(2));
+        let mut tree = grid();
+        assert_eq!(tree.remove(3), Some(2));
+        let mut tree = grid();
+        assert_eq!(tree.remove(4), Some(1));
+    }
+
+    #[test]
+    fn neighbors_follow_the_screen_position() {
+        let tree = grid();
+        assert_eq!(tree.neighbor(1, Side::Right), Some(2));
+        assert_eq!(tree.neighbor(3, Side::Left), Some(1));
+        assert_eq!(tree.neighbor(3, Side::Up), Some(2));
+        assert_eq!(tree.neighbor(2, Side::Down), Some(3));
+        assert_eq!(tree.neighbor(3, Side::Down), Some(4));
+        assert_eq!(tree.neighbor(1, Side::Down), Some(4));
+        // Arriba de 4 están 1 y 3: 1 solapa más (medio ancho frente a medio ancho) y está más a la izquierda.
+        assert_eq!(tree.neighbor(4, Side::Up), Some(1));
+        assert_eq!(tree.neighbor(1, Side::Left), None);
+        assert_eq!(tree.neighbor(2, Side::Up), None);
+    }
+
+    #[test]
+    fn the_overlap_decides_between_equally_close_neighbors() {
+        let mut tree = grid();
+        let (_, handles) = tree.layout(area(), 0.0);
+        // Columna izquierda estrecha: arriba de 4, el panel 3 solapa más que el 1.
+        tree.set_ratio(&handles[1].path, 0.3);
+        assert_eq!(tree.neighbor(4, Side::Up), Some(3));
+    }
+
+    #[test]
+    fn nudging_moves_the_closest_border_on_that_axis() {
+        let mut tree = grid();
+        assert!(tree.nudge(3, Side::Up, 0.1));
+        let (leaves, _) = tree.layout(area(), 0.0);
+        let height = |id| leaves.iter().find(|(leaf, _)| *leaf == id).unwrap().1.height();
+        assert!((height(2) - 300.0 * 0.4).abs() < 0.01);
+        // 3 no tiene división horizontal propia: se mueve la de 1 | 2/3.
+        assert!(tree.nudge(3, Side::Left, 0.1));
+        let (leaves, _) = tree.layout(area(), 0.0);
+        assert!((leaves[0].1.width() - 400.0).abs() < 0.01);
+        let mut single = Tree::new(1, ());
+        assert!(!single.nudge(1, Side::Left, 0.1));
+    }
+
+    #[test]
+    fn equalizing_gives_each_leaf_the_same_share() {
+        let mut tree = Tree::new(1, ());
+        tree.split(1, Dir::Horizontal, 2, ());
+        tree.split(2, Dir::Horizontal, 3, ());
+        tree.equalize();
+        let (leaves, _) = tree.layout(area(), 0.0);
+        for (_, rect) in &leaves {
+            assert!((rect.width() - 1000.0 / 3.0).abs() < 0.01);
+        }
     }
 }

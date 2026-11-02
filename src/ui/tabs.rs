@@ -9,6 +9,8 @@ pub(super) enum Body {
         next_pane: u64,
         /// Túneles de la conexión de la pestaña (los paneles divididos no repiten los túneles).
         tunnels: Option<Tunnels>,
+        /// Panel ampliado a toda la pestaña (Ctrl+Shift+Z); los demás siguen abiertos, ocultos.
+        zoomed: Option<u64>,
     },
     Explorer(Box<Explorer>),
     Containers(Box<ContainersView>),
@@ -29,7 +31,20 @@ pub(super) struct Tab {
 impl Body {
     pub(super) fn terminal(pane: Pane, tunnels: Option<Tunnels>) -> Self {
         let id = 1;
-        Body::Terminal { panes: Tree::new(id, pane), focused: id, next_pane: id + 1, tunnels }
+        Body::Terminal { panes: Tree::new(id, pane), focused: id, next_pane: id + 1, tunnels, zoomed: None }
+    }
+}
+
+/// Si cerrar el panel perdería algo en marcha.
+pub(super) fn pane_busy(pane: &Pane) -> bool {
+    let session = &pane.session;
+    if session.has_exited() || session.is_disconnected() {
+        return false;
+    }
+    match session.is_busy() {
+        Some(busy) => busy,
+        // SSH: no hay forma de saberlo; salida reciente se toma como «ocupado».
+        None => session.activity.lock().unwrap().recent(Duration::from_secs(3)),
     }
 }
 
@@ -44,17 +59,7 @@ impl Tab {
             }
             Body::Terminal { panes, .. } => {
                 let mut busy = false;
-                panes.for_each(&mut |_, pane| {
-                    let session = &pane.session;
-                    if session.has_exited() || session.is_disconnected() {
-                        return;
-                    }
-                    busy |= match session.is_busy() {
-                        Some(busy) => busy,
-                        // SSH: no hay forma de saberlo; salida reciente se toma como «ocupado».
-                        None => session.activity.lock().unwrap().recent(Duration::from_secs(3)),
-                    };
-                });
+                panes.for_each(&mut |_, pane| busy |= pane_busy(pane));
                 busy.then(|| "proceso en ejecución".to_string())
             }
         }
@@ -358,6 +363,7 @@ impl App {
         let mut files_tab: Option<i64> = None;
         let mut split: Option<Dir> = None;
         let mut close_pane = false;
+        let mut pane_command: Option<Command> = None;
         let tab_labels: Vec<(String, Option<Color32>, bool, bool)> = self
             .tabs
             .iter()
@@ -490,6 +496,14 @@ impl App {
                                         split = Some(Dir::Vertical);
                                         ui.close();
                                     }
+                                    if ui.button("Ampliar o restaurar el panel  (Ctrl+Shift+Z)").clicked() {
+                                        pane_command = Some(Command::TogglePaneZoom);
+                                        ui.close();
+                                    }
+                                    if ui.button("Igualar paneles").clicked() {
+                                        pane_command = Some(Command::EqualizePanes);
+                                        ui.close();
+                                    }
                                     if ui.button("Cerrar panel  (Ctrl+Shift+W)").clicked() {
                                         close_pane = true;
                                         ui.close();
@@ -602,7 +616,10 @@ impl App {
             self.split_active(dir);
         }
         if close_pane {
-            self.close_focused_pane();
+            self.request_close_focused_pane();
+        }
+        if let Some(command) = pane_command {
+            self.run_command(command);
         }
         if let Some(id) = files_tab {
             if let Some(connection) = self.connections.iter().find(|c| c.id == Some(id)).cloned() {

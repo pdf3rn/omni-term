@@ -57,6 +57,12 @@ impl App {
             }
             Command::SplitRight => self.split_active(Dir::Horizontal),
             Command::SplitDown => self.split_active(Dir::Vertical),
+            Command::TogglePaneZoom => self.toggle_pane_zoom(),
+            Command::EqualizePanes => {
+                if let Some(Body::Terminal { panes, .. }) = self.tabs.get_mut(self.active).map(|t| &mut t.body) {
+                    panes.equalize();
+                }
+            }
             Command::CloseTab => {
                 if let Some(id) = self.tabs.get(self.active).map(|t| t.id) {
                     self.request_close(CloseAction::Tab(id));

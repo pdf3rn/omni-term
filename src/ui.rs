@@ -46,7 +46,7 @@ use crate::containers::view::{self, ContainersView};
 use self::cursor::HandExt;
 use crate::containers::docker;
 use self::dialogs::{CloseAction, CloseConfirm, ConnForm, Dialog, ErrorInfo, Outcome, PaneTarget, Pending, Purpose, Retry, SecretPrompt, SnippetForm, TestState, UnlockPrompt, VarsPrompt};
-use crate::terminal::layout::{Dir, Tree};
+use crate::terminal::layout::{Dir, Side, Tree};
 use crate::files::explorer::Explorer;
 use crate::connect::known_hosts;
 use self::palette::{Command, Palette, Target};

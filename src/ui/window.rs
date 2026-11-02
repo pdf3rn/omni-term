@@ -225,6 +225,8 @@ impl App {
                         ui.separator();
                         item(ui, "Dividir a la derecha", "Ctrl+Shift+D", has_terminal, Command::SplitRight);
                         item(ui, "Dividir hacia abajo", "Ctrl+Shift+E", has_terminal, Command::SplitDown);
+                        item(ui, "Ampliar o restaurar el panel", "Ctrl+Shift+Z", has_terminal, Command::TogglePaneZoom);
+                        item(ui, "Igualar paneles", "", has_terminal, Command::EqualizePanes);
                         ui.separator();
                         item(ui, "Aumentar la letra", "Ctrl+=", true, Command::ZoomIn);
                         item(ui, "Reducir la letra", "Ctrl+−", true, Command::ZoomOut);

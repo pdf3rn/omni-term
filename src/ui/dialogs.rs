@@ -77,12 +77,14 @@ pub fn show(
             let title = match confirm.action {
                 CloseAction::Window => "Cerrar omni-term",
                 CloseAction::Tab(_) => "Cerrar la pestaña",
+                CloseAction::Pane { .. } => "Cerrar el panel",
                 _ => "Cerrar pestañas",
             };
             let spec = Spec::new(title).width(420.0).accept("Cerrar").danger();
             let action = shell(ctx, spec, |ui| {
                 let many = confirm.lines.len() > 1;
-                ui.label(if many { format!("{} pestañas tienen algo en ejecución:", confirm.lines.len()) } else { "Esta pestaña tiene algo en ejecución:".to_string() });
+                let what = if matches!(confirm.action, CloseAction::Pane { .. }) { "Este panel" } else { "Esta pestaña" };
+                ui.label(if many { format!("{} pestañas tienen algo en ejecución:", confirm.lines.len()) } else { format!("{what} tiene algo en ejecución:") });
                 for line in confirm.lines.iter().take(6) {
                     ui.label(RichText::new(line).color(theme::subtext()));
                 }

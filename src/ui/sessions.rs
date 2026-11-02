@@ -228,7 +228,7 @@ impl App {
 
     pub(super) fn place_pane(&mut self, tab: u64, target: PaneTarget, session: Session) {
         let debug_keys = self.debug_keys;
-        let Some(Body::Terminal { panes, focused, next_pane, .. }) =
+        let Some(Body::Terminal { panes, focused, next_pane, zoomed, .. }) =
             self.tabs.iter_mut().find(|t| t.id == tab).map(|t| &mut t.body)
         else {
             return;
@@ -239,6 +239,7 @@ impl App {
                 *next_pane += 1;
                 if panes.split(*focused, dir, id, Pane::new(session, debug_keys, id)) {
                     *focused = id;
+                    *zoomed = None;
                 }
             }
             PaneTarget::Replace(id) => {
@@ -270,18 +271,39 @@ impl App {
         }
     }
 
-    /// Cierra el panel con foco; si es el único, cierra la pestaña.
-    pub(super) fn close_focused_pane(&mut self) {
-        let active = self.active;
-        let Some(tab) = self.tabs.get_mut(active) else { return };
-        match &mut tab.body {
-            Body::Terminal { panes, focused, .. } if panes.len() > 1 => {
-                let closing = *focused;
-                if panes.remove(closing) {
-                    *focused = panes.ids().first().copied().unwrap_or(1);
-                }
+    /// Amplía el panel con foco a toda la pestaña, o lo restaura. Con un solo panel no hace nada.
+    pub(super) fn toggle_pane_zoom(&mut self) {
+        if let Some(Body::Terminal { panes, focused, zoomed, .. }) = self.tabs.get_mut(self.active).map(|t| &mut t.body) {
+            *zoomed = if zoomed.is_some() || panes.len() < 2 { None } else { Some(*focused) };
+        }
+    }
+
+    /// Cierra el panel con foco de la pestaña activa (o la pestaña, si es su único panel),
+    /// confirmando antes si hay algo en marcha.
+    pub(super) fn request_close_focused_pane(&mut self) {
+        let Some(tab) = self.tabs.get(self.active) else { return };
+        match &tab.body {
+            Body::Terminal { focused, .. } => self.request_close_pane(tab.id, *focused),
+            _ => self.request_close(CloseAction::Tab(tab.id)),
+        }
+    }
+
+    /// Cierra un panel concreto, o su pestaña si es el único, confirmando si hay algo en marcha.
+    pub(super) fn request_close_pane(&mut self, tab: u64, pane: u64) {
+        let several = self.tabs.iter().find(|t| t.id == tab).is_some_and(|t| matches!(&t.body, Body::Terminal { panes, .. } if panes.len() > 1));
+        self.request_close(if several { CloseAction::Pane { tab, pane } } else { CloseAction::Tab(tab) });
+    }
+
+    /// Quita un panel sin preguntar; el foco pasa al panel que ocupa su sitio.
+    pub(super) fn remove_pane(&mut self, tab: u64, pane: u64) {
+        let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab) else { return };
+        if let Body::Terminal { panes, focused, zoomed, .. } = &mut tab.body
+            && let Some(heir) = panes.remove(pane)
+        {
+            if *focused == pane {
+                *focused = heir;
             }
-            _ => self.close_tab(active),
+            *zoomed = None;
         }
     }
 

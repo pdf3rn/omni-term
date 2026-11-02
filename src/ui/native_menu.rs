@@ -84,6 +84,8 @@ const VIEW: &[Row] = &[
     Separator,
     Item("Dividir a la derecha", Command::SplitRight, Terminal),
     Item("Dividir hacia abajo", Command::SplitDown, Terminal),
+    Item("Ampliar o restaurar el panel", Command::TogglePaneZoom, Terminal),
+    Item("Igualar paneles", Command::EqualizePanes, Terminal),
     Separator,
     Item("Aumentar la letra", Command::ZoomIn, Always),
     Item("Reducir la letra", Command::ZoomOut, Always),

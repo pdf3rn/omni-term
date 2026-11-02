@@ -58,7 +58,7 @@ impl App {
         // Un panel cuyo proceso terminó se quita; si era el único de la pestaña, se cierra la pestaña.
         let mut closing_tabs = Vec::new();
         for (index, tab) in self.tabs.iter_mut().enumerate() {
-            let Body::Terminal { panes, focused, .. } = &mut tab.body else { continue };
+            let Body::Terminal { panes, focused, zoomed, .. } = &mut tab.body else { continue };
             let mut gone = Vec::new();
             panes.for_each(&mut |id, pane| {
                 if pane.session.has_exited() {
@@ -66,9 +66,12 @@ impl App {
                 }
             });
             for id in gone {
-                if panes.remove(id) {
+                if let Some(heir) = panes.remove(id) {
                     if *focused == id {
-                        *focused = panes.ids().first().copied().unwrap_or(1);
+                        *focused = heir;
+                    }
+                    if *zoomed == Some(id) {
+                        *zoomed = None;
                     }
                 } else {
                     closing_tabs.push(index);
