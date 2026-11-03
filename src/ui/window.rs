@@ -344,7 +344,7 @@ pub(super) fn window_button(ui: &mut egui::Ui, rect: Rect, kind: WindowButton) -
     let response = ui.interact(rect, id, Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
     let closing = kind == WindowButton::Close;
     if response.hovered() {
-        let fill = if closing { theme::red() } else { theme::selection() };
+        let fill = if closing { theme::close_hover() } else { theme::hover() };
         ui.painter().rect_filled(rect, 0.0, fill);
     }
     let ink = if closing && response.hovered() { Color32::WHITE } else { theme::text() };

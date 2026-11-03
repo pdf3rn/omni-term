@@ -40,13 +40,17 @@ pub fn button_with(ui: &mut Ui, button: egui::Button<'_>, variant: Variant) -> e
         match variant {
             Variant::Primary | Variant::Danger => {
                 let color = if variant == Variant::Danger { theme::red() } else { theme::accent() };
+                // El texto va en el color del fondo: en el tema oscuro (texto oscuro) el relleno se aclara al
+                // pasar el ratón; en el claro (texto claro) se oscurece, para no perder contraste.
+                let toward = if theme::is_light() { Color32::BLACK } else { Color32::WHITE };
                 widgets.inactive.weak_bg_fill = color;
-                widgets.hovered.weak_bg_fill = color.lerp_to_gamma(Color32::WHITE, 0.18);
-                widgets.active.weak_bg_fill = color.lerp_to_gamma(Color32::WHITE, 0.32);
+                widgets.hovered.weak_bg_fill = color.lerp_to_gamma(toward, 0.15);
+                widgets.active.weak_bg_fill = color.lerp_to_gamma(toward, 0.28);
                 ui.visuals_mut().override_text_color = Some(theme::base());
             }
             Variant::PrimaryOutline => {
-                let width = theme::stroke::MEDIUM;
+                // Grosor entero: 1.5 px cae entre píxeles y el borde se ve borroso.
+                let width = theme::stroke::HAIRLINE;
                 widgets.inactive.bg_stroke = Stroke::new(width, theme::accent());
                 widgets.hovered.bg_stroke = Stroke::new(width, theme::accent());
                 widgets.active.bg_stroke = Stroke::new(width, theme::accent());
@@ -56,11 +60,13 @@ pub fn button_with(ui: &mut Ui, button: egui::Button<'_>, variant: Variant) -> e
                 ui.visuals_mut().override_text_color = Some(theme::accent());
             }
             Variant::Secondary => {
-                widgets.inactive.bg_stroke = Stroke::new(theme::stroke::HAIRLINE, theme::selection());
-                widgets.hovered.bg_stroke = Stroke::new(theme::stroke::HAIRLINE, theme::subtext());
-                widgets.active.bg_stroke = Stroke::new(theme::stroke::HAIRLINE, theme::subtext());
+                // El borde no cambia: el hover solo rellena, y el pulsado rellena más.
+                let border = Stroke::new(theme::stroke::HAIRLINE, theme::selection());
+                widgets.inactive.bg_stroke = border;
+                widgets.hovered.bg_stroke = border;
+                widgets.active.bg_stroke = border;
                 widgets.inactive.weak_bg_fill = Color32::TRANSPARENT;
-                widgets.hovered.weak_bg_fill = theme::surface();
+                widgets.hovered.weak_bg_fill = theme::hover();
                 widgets.active.weak_bg_fill = theme::selection();
             }
             Variant::Ghost => {}
@@ -72,6 +78,8 @@ pub fn button_with(ui: &mut Ui, button: egui::Button<'_>, variant: Variant) -> e
 
 /// Lado de los botones de icono.
 const ICON_BUTTON: f32 = 26.0;
+/// Lado de los botones de icono pequeños (la X de las pestañas).
+const ICON_BUTTON_SMALL: f32 = 20.0;
 
 /// Lo que se dibuja dentro de un botón de icono.
 pub enum IconGlyph {
@@ -88,11 +96,12 @@ pub struct IconButton {
     color: Color32,
     enabled: bool,
     active: bool,
+    small: bool,
 }
 
 impl IconButton {
     pub fn new(glyph: &'static str) -> Self {
-        Self { glyph: IconGlyph::Text(glyph), size: theme::size::ICON, color: theme::text(), enabled: true, active: false }
+        Self { glyph: IconGlyph::Text(glyph), size: theme::size::ICON, color: theme::text(), enabled: true, active: false, small: false }
     }
 
     pub fn stop() -> Self {
@@ -116,6 +125,16 @@ impl IconButton {
         self
     }
 
+    /// Variante pequeña (20 px, radio pequeño) para controles dentro de otro control, como la X de una pestaña.
+    pub fn small(mut self) -> Self {
+        self.small = true;
+        self
+    }
+
+    fn side(&self) -> f32 {
+        if self.small { ICON_BUTTON_SMALL } else { ICON_BUTTON }
+    }
+
     /// Resaltado como encendido (un interruptor, o un menú abierto desde este botón).
     pub fn active(mut self, active: bool) -> Self {
         self.active = active;
@@ -123,13 +142,13 @@ impl IconButton {
     }
 
     pub fn show(self, ui: &mut Ui) -> egui::Response {
-        let (rect, response) = ui.allocate_exact_size(Vec2::splat(ICON_BUTTON), if self.enabled { Sense::click() } else { Sense::hover() });
+        let (rect, response) = ui.allocate_exact_size(Vec2::splat(self.side()), if self.enabled { Sense::click() } else { Sense::hover() });
         self.paint(ui, rect, response)
     }
 
     /// Igual que `show`, centrado en `slot` (para colocarlo en un sitio fijo de una fila). `id` lo distingue de los demás.
     pub fn show_at(self, ui: &mut Ui, slot: Rect, id: impl std::hash::Hash + std::fmt::Debug) -> egui::Response {
-        let rect = Rect::from_center_size(slot.center(), Vec2::splat(ICON_BUTTON));
+        let rect = Rect::from_center_size(slot.center(), Vec2::splat(self.side()));
         // Un hijo no avanza el cursor del padre: la fila donde se coloca conserva su altura.
         let mut child = ui.new_child(egui::UiBuilder::new().id_salt(id).max_rect(rect));
         self.show(&mut child)
@@ -137,11 +156,13 @@ impl IconButton {
 
     fn paint(self, ui: &mut Ui, rect: Rect, response: egui::Response) -> egui::Response {
         let response = if self.enabled { response.hand() } else { response };
-        let radius = CornerRadius::same(theme::radius::CONTROL);
+        let radius = CornerRadius::same(if self.small { theme::radius::SMALL } else { theme::radius::CONTROL });
         if self.active {
             ui.painter().rect_filled(rect, radius, theme::accent().gamma_multiply(0.28));
-        } else if self.enabled && response.hovered() {
+        } else if self.enabled && response.is_pointer_button_down_on() {
             ui.painter().rect_filled(rect, radius, theme::selection());
+        } else if self.enabled && response.hovered() {
+            ui.painter().rect_filled(rect, radius, theme::hover());
         }
         let ink = if self.enabled { self.color } else { self.color.gamma_multiply(0.45) };
         match self.glyph {
@@ -154,6 +175,12 @@ impl IconButton {
         }
         response
     }
+}
+
+/// Opción destructiva de un menú: separada de las demás por una línea y con el texto en rojo.
+pub fn danger_item(ui: &mut Ui, label: &str, shortcut: &str) -> egui::Response {
+    ui.separator();
+    ui.add(egui::Button::new(RichText::new(label).color(theme::red())).shortcut_text(shortcut))
 }
 
 /// Botón de icono sencillo: glifo, tamaño y color.

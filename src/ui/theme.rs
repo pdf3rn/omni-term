@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use alacritty_terminal::vte::ansi::{Color, Rgb};
 use eframe::egui::Color32;
 
-/// Colores de la interfaz y del terminal: Catppuccin Mocha (oscuro) y Latte (claro).
+/// Colores de la interfaz (grises neutros) y del terminal (paleta ANSI basada en Catppuccin Mocha y Latte).
 pub struct Palette {
     base: Color32,
     mantle: Color32,
@@ -12,6 +12,7 @@ pub struct Palette {
     subtext: Color32,
     surface: Color32,
     selection: Color32,
+    hover: Color32,
     cursor: Color32,
     red: Color32,
     ansi: [(u8, u8, u8); 16],
@@ -62,10 +63,10 @@ pub mod height {
 
 /// Tamaños de letra e iconos.
 pub mod size {
-    pub const CAPTION: f32 = 11.5;
+    pub const CAPTION: f32 = 12.0;
     pub const SMALL: f32 = 12.0;
     /// Títulos de sección de tarjetas y listas.
-    pub const SECTION: f32 = 12.5;
+    pub const SECTION: f32 = 13.0;
     pub const LABEL: f32 = 13.0;
     pub const BODY: f32 = 14.0;
     pub const HEADING: f32 = 16.0;
@@ -82,7 +83,8 @@ pub mod size {
 /// Grosor de los bordes.
 pub mod stroke {
     pub const HAIRLINE: f32 = 1.0;
-    pub const MEDIUM: f32 = 1.5;
+    /// Contornos de foco y de soltar. Entero, para que a escala 1x no caiga entre píxeles y se vea borroso.
+    pub const MEDIUM: f32 = 2.0;
     pub const THICK: f32 = 2.0;
 }
 
@@ -94,13 +96,15 @@ static DARK: Palette = Palette {
     subtext: rgb(0xa6a6a6),
     surface: rgb(0x303030),
     selection: rgb(0x575757),
+    hover: rgb(0x3c3c3c),
     cursor: rgb(0xf5e0dc),
     red: rgb(0xf38ba8),
+    // Los brillantes (8-15) son versiones más claras de los normales: la negrita brillante se nota.
     ansi: [
-        triple(0x454545), triple(0xf38ba8), triple(0xa6e3a1), triple(0xf9e2af),
+        triple(0x5a5a5a), triple(0xf38ba8), triple(0xa6e3a1), triple(0xf9e2af),
         triple(0x89b4fa), triple(0xf5c2e7), triple(0x94e2d5), triple(0xbababa),
-        triple(0x575757), triple(0xf38ba8), triple(0xa6e3a1), triple(0xf9e2af),
-        triple(0x89b4fa), triple(0xf5c2e7), triple(0x94e2d5), triple(0xa6a6a6),
+        triple(0x7f7f7f), triple(0xf7aec2), triple(0xc1ebbd), triple(0xfbebc7),
+        triple(0xaccafc), triple(0xf8d4ee), triple(0xb4ebe2), triple(0xe6e6e6),
     ],
 };
 
@@ -112,13 +116,15 @@ static LIGHT: Palette = Palette {
     subtext: rgb(0x555555),
     surface: rgb(0xd6d6d6),
     selection: rgb(0xb0b0b0),
+    hover: rgb(0xd0d0d0),
     cursor: rgb(0xdc8a78),
     red: rgb(0xd20f39),
+    // Todos los colores de texto llegan a 3:1 sobre el fondo; el «blanco» es un gris medio para que se lea.
     ansi: [
-        triple(0x5a5a5a), triple(0xd20f39), triple(0x40a02b), triple(0xdf8e1d),
-        triple(0x1e66f5), triple(0xea76cb), triple(0x179299), triple(0xb0b0b0),
-        triple(0x6e6e6e), triple(0xd20f39), triple(0x40a02b), triple(0xdf8e1d),
-        triple(0x1e66f5), triple(0xea76cb), triple(0x179299), triple(0xbdbdbd),
+        triple(0x3c3c3c), triple(0xd20f39), triple(0x40a02b), triple(0xb06d00),
+        triple(0x1e66f5), triple(0xb8369c), triple(0x137f86), triple(0x767676),
+        triple(0x5c5c5c), triple(0xe64553), triple(0x2f8a1c), triple(0xc27a00),
+        triple(0x4a83f7), triple(0xc94cad), triple(0x1a9aa1), triple(0x8a8a8a),
     ],
 };
 
@@ -183,8 +189,26 @@ pub fn subtext() -> Color32 {
 pub fn surface() -> Color32 {
     palette().surface
 }
+/// Fondo de un control pulsado o seleccionado.
 pub fn selection() -> Color32 {
     palette().selection
+}
+/// Fondo de un control con el ratón encima: más suave que `selection`, que queda para el pulsado.
+pub fn hover() -> Color32 {
+    palette().hover
+}
+/// Fondo del texto seleccionado en el terminal: el acento mezclado con el fondo, opaco, para que
+/// cualquier color de texto siga leyéndose encima.
+pub fn term_selection() -> Color32 {
+    base().lerp_to_gamma(accent(), if is_light() { 0.22 } else { 0.3 })
+}
+/// Rojo del botón de cerrar la ventana al pasar el ratón: lleva una X blanca en los dos temas.
+pub fn close_hover() -> Color32 {
+    rgb(0xc42b1c)
+}
+/// Verde de estado («conectado»): no depende del acento elegido.
+pub fn success() -> Color32 {
+    identity(3)
 }
 /// Sombra de las ventanas (`strong`) y de los menús desplegables.
 pub fn shadow(strong: bool) -> Color32 {
@@ -250,9 +274,9 @@ pub fn set_bold_bright(on: bool) {
     BOLD_BRIGHT.store(on, Ordering::Relaxed);
 }
 
+/// Texto atenuado (SGR 2): se acerca al fondo, así baja el contraste en los dos temas.
 pub fn dim(color: Color32) -> Color32 {
-    let scale = |c: u8| (c as f32 * 0.66) as u8;
-    Color32::from_rgb(scale(color.r()), scale(color.g()), scale(color.b()))
+    color.lerp_to_gamma(base(), 0.4)
 }
 
 fn indexed(index: u8) -> Color32 {
@@ -333,6 +357,71 @@ mod tests {
                 assert!(contrast(palette.subtext, background) >= 4.5, "texto secundario");
             }
         }
+    }
+
+    #[test]
+    fn hover_keeps_text_readable() {
+        for palette in [&DARK, &LIGHT] {
+            assert!(contrast(palette.text, palette.hover) >= 4.5, "texto sobre el hover");
+            assert!(contrast(palette.subtext, palette.hover) >= 4.5, "texto secundario sobre el hover");
+            assert_ne!(palette.hover, palette.surface, "el hover se distingue del relleno de los botones");
+            assert_ne!(palette.hover, palette.selection, "el hover se distingue del pulsado");
+        }
+    }
+
+    #[test]
+    fn ansi_text_colours_read_on_the_background() {
+        for palette in [&DARK, &LIGHT] {
+            let base = palette.base;
+            // 1-7 y 9-15 se usan como color de texto; 0 y 8 (negros) suelen ser fondos.
+            for index in (1..8).chain(9..16) {
+                let (r, g, b) = palette.ansi[index];
+                assert!(contrast(Color32::from_rgb(r, g, b), base) >= 3.0, "ANSI {index}");
+            }
+            let (r, g, b) = palette.ansi[0];
+            assert!(contrast(Color32::from_rgb(r, g, b), base) >= 1.8, "ANSI 0 casi invisible");
+        }
+    }
+
+    #[test]
+    fn bright_colours_differ_from_the_normal_ones() {
+        for palette in [&DARK, &LIGHT] {
+            for index in 0..8 {
+                assert_ne!(palette.ansi[index], palette.ansi[index + 8], "ANSI {index} y {}", index + 8);
+            }
+        }
+    }
+
+    #[test]
+    fn selected_text_stays_readable() {
+        for light in [false, true] {
+            set_light(light);
+            for accent in 0..ACCENTS.len() as u8 {
+                set_accent(accent);
+                assert!(contrast(text(), term_selection()) >= 4.5, "texto sobre la selección (acento {accent}, claro: {light})");
+                for index in [1usize, 2, 4, 7] {
+                    let (r, g, b) = palette().ansi[index];
+                    assert!(contrast(Color32::from_rgb(r, g, b), term_selection()) >= 2.0, "ANSI {index} seleccionado (claro: {light})");
+                }
+            }
+        }
+        set_light(false);
+        set_accent(0);
+    }
+
+    #[test]
+    fn dim_text_has_less_contrast_in_both_themes() {
+        for light in [false, true] {
+            set_light(light);
+            assert!(contrast(dim(text()), base()) < contrast(text(), base()), "claro: {light}");
+            assert!(contrast(dim(text()), base()) >= 3.0, "claro: {light}");
+        }
+        set_light(false);
+    }
+
+    #[test]
+    fn white_reads_on_the_window_close_red() {
+        assert!(contrast(Color32::WHITE, close_hover()) >= 4.5);
     }
 
     #[test]

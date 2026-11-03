@@ -118,16 +118,24 @@ pub(super) fn tab(
     max_width: f32,
     menu: &mut Option<(usize, TabAction)>,
 ) -> TabOutcome {
-    let font = FontId::new(theme::size::BODY, if selected { strong_family() } else { FontFamily::Proportional });
+    let regular = FontId::new(theme::size::BODY, FontFamily::Proportional);
+    let strong = FontId::new(theme::size::BODY, strong_family());
     // Un candado abierto rojo avisa de las conexiones sin cifrar (Telnet).
     let lock = if insecure { 16.0 } else { 0.0 };
     let chrome = 12.0 + 8.0 + 20.0 + 8.0 + lock;
     // Hasta 24 caracteres de ancho natural; si no caben todas las pestañas, el texto se corta con «…».
     let natural: String = label.chars().take(24).collect();
-    let mut job = egui::text::LayoutJob::simple_singleline(natural, font, Color32::PLACEHOLDER);
-    job.wrap = egui::text::TextWrapping::truncate_at_width((max_width - chrome).max(24.0));
-    let galley = ui.painter().layout_job(job);
-    let size = Vec2::new(galley.size().x + chrome, TAB_HEIGHT);
+    let wrap = (max_width - chrome).max(24.0);
+    let layout = |font: FontId| {
+        let mut job = egui::text::LayoutJob::simple_singleline(natural.clone(), font, Color32::PLACEHOLDER);
+        job.wrap = egui::text::TextWrapping::truncate_at_width(wrap);
+        ui.painter().layout_job(job)
+    };
+    // El ancho se mide siempre con la seminegrita de la pestaña activa: al activarse no cambia de tamaño
+    // ni empuja a las de al lado.
+    let measured = layout(strong.clone());
+    let galley = if selected { measured.clone() } else { layout(regular) };
+    let size = Vec2::new(measured.size().x + chrome, TAB_HEIGHT);
     let (rect, response) = ui.allocate_exact_size(size, Sense::click_and_drag());
     let response = response.hand();
 
@@ -136,13 +144,15 @@ pub(super) fn tab(
     let fill = if selected {
         theme::base()
     } else if hovered {
-        theme::surface()
+        theme::hover()
     } else {
         Color32::TRANSPARENT
     };
-    let corner = CornerRadius { nw: 8, ne: 8, sw: 0, se: 0 };
+    let tab_radius = theme::radius::CARD;
+    let corner = CornerRadius { nw: tab_radius, ne: tab_radius, sw: 0, se: 0 };
     ui.painter().rect_filled(rect, corner, fill);
     // La línea superior marca la pestaña activa; con identidad, usa el color del servidor y se ve siempre.
+    // Empieza y acaba donde termina la curva de las esquinas, para no asomar fuera de la pestaña.
     let line_color = match (selected, identity) {
         (true, Some(color)) => Some(color),
         (true, None) => Some(theme::accent()),
@@ -150,8 +160,14 @@ pub(super) fn tab(
         (false, None) => None,
     };
     if let Some(color) = line_color {
-        let line = Rect::from_min_size(rect.min, Vec2::new(rect.width(), 2.0));
-        ui.painter().rect_filled(line, CornerRadius { nw: 8, ne: 8, sw: 0, se: 0 }, color);
+        let inset = f32::from(tab_radius) - 2.0;
+        let line = Rect::from_min_max(Pos2::new(rect.min.x + inset, rect.min.y), Pos2::new(rect.max.x - inset, rect.min.y + 2.0));
+        ui.painter().rect_filled(line, CornerRadius::same(theme::radius::TINY), color);
+    }
+    // Las pestañas inactivas se separan con una línea corta a la derecha.
+    if !selected && !hovered {
+        let x = rect.max.x - 0.5;
+        ui.painter().vline(x, rect.center().y - 8.0..=rect.center().y + 8.0, Stroke::new(theme::stroke::HAIRLINE, theme::surface()));
     }
 
     let color = if selected { theme::text() } else { theme::subtext() };
@@ -166,11 +182,7 @@ pub(super) fn tab(
     }
     let mut close_clicked = false;
     if selected || hovered {
-        let close = ui.interact(close_rect, ui.auto_id_with(("tab-close", index)), Sense::click()).hand();
-        if close.hovered() {
-            ui.painter().rect_filled(close_rect, CornerRadius::same(theme::radius::SMALL), theme::selection());
-        }
-        ui.painter().text(close_rect.center(), Align2::CENTER_CENTER, icons::X, FontId::proportional(theme::size::LABEL), color);
+        let close = crate::ui::kit::IconButton::new(icons::X).small().size(theme::size::LABEL).color(color).show_at(ui, close_rect, ("tab-close", index));
         close_clicked = close.on_hover_text("Cerrar pestaña").clicked();
     }
     response.context_menu(|ui| {
@@ -485,32 +497,32 @@ impl App {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.spacing_mut().item_spacing.x = 4.0;
                         if self.tabs.get(self.active).is_some_and(|t| matches!(t.body, Body::Terminal { .. })) {
-                            ui.scope(|ui| {
-                                ui.visuals_mut().widgets.inactive.weak_bg_fill = Color32::TRANSPARENT;
-                                let split_menu = ui.menu_button(RichText::new(icons::SPLIT).size(theme::size::ICON_LG).color(theme::subtext()), |ui| {
-                                    if ui.button("A la derecha  (Ctrl+Shift+D)").clicked() {
-                                        split = Some(Dir::Horizontal);
-                                        ui.close();
-                                    }
-                                    if ui.button("Hacia abajo  (Ctrl+Shift+E)").clicked() {
-                                        split = Some(Dir::Vertical);
-                                        ui.close();
-                                    }
-                                    if ui.button("Ampliar o restaurar el panel  (Ctrl+Shift+Z)").clicked() {
-                                        pane_command = Some(Command::TogglePaneZoom);
-                                        ui.close();
-                                    }
-                                    if ui.button("Igualar paneles").clicked() {
-                                        pane_command = Some(Command::EqualizePanes);
-                                        ui.close();
-                                    }
-                                    if ui.button("Cerrar panel  (Ctrl+Shift+W)").clicked() {
-                                        close_pane = true;
-                                        ui.close();
-                                    }
-                                });
-                                split_menu.response.on_hover_text("Dividir el panel");
+                            // Botón de icono como los demás de la barra; el menú se abre debajo, con los atajos a la derecha.
+                            let menu_open = ui.data(|d| d.get_temp::<bool>(egui::Id::NULL.with("split-menu-open"))).unwrap_or(false);
+                            let split_button = crate::ui::kit::IconButton::new(icons::SPLIT).size(theme::size::ICON_LG).color(theme::subtext()).active(menu_open).show(ui);
+                            let popup = egui::Popup::menu(&split_button).show(|ui| {
+                                let entry = |ui: &mut egui::Ui, label: &str, shortcut: &str| ui.add(Button::new(label).shortcut_text(shortcut)).clicked();
+                                if entry(ui, "A la derecha", "Ctrl+Shift+D") {
+                                    split = Some(Dir::Horizontal);
+                                }
+                                if entry(ui, "Hacia abajo", "Ctrl+Shift+E") {
+                                    split = Some(Dir::Vertical);
+                                }
+                                if entry(ui, "Ampliar o restaurar el panel", "Ctrl+Shift+Z") {
+                                    pane_command = Some(Command::TogglePaneZoom);
+                                }
+                                if entry(ui, "Igualar paneles", "") {
+                                    pane_command = Some(Command::EqualizePanes);
+                                }
+                                ui.separator();
+                                if entry(ui, "Cerrar panel", "Ctrl+Shift+W") {
+                                    close_pane = true;
+                                }
                             });
+                            ui.data_mut(|d| d.insert_temp(egui::Id::NULL.with("split-menu-open"), popup.is_some()));
+                            if popup.is_none() {
+                                split_button.on_hover_text("Dividir el panel");
+                            }
                         }
                         if let Some(TabKind::Connection(id)) = self.tabs.get(self.active).map(|t| t.kind) {
                             if self.active_has_explorer() && crate::ui::kit::icon_button(ui, icons::FOLDER, theme::size::ICON_LG, theme::subtext()).on_hover_text("Abrir el explorador de archivos de esta conexión").clicked() {

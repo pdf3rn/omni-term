@@ -63,16 +63,18 @@ impl App {
 
         child.add_space(theme::space::L);
         crate::ui::kit::section_title(child, "Atajos");
-        for (keys, what) in [
+        let shortcuts = [
             ("Ctrl+Shift+P", "Paleta de comandos"),
             ("Ctrl+Shift+D / E", "Dividir el panel a la derecha / hacia abajo"),
             ("Alt+flechas", "Ir al panel de al lado"),
             ("Ctrl+Shift+B", "Mostrar u ocultar la barra lateral"),
             ("Ctrl+,", "Abrir los ajustes"),
-        ] {
-            child.horizontal(|ui| {
-                ui.allocate_ui_with_layout(Vec2::new(210.0, 24.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                    ui.set_min_width(210.0);
+        ];
+        // Rejilla: la columna de teclas mide lo que la combinación más larga, sin un hueco fijo.
+        egui::Grid::new("empty-shortcuts").num_columns(2).spacing(Vec2::new(theme::space::XL, theme::space::S)).show(child, |ui| {
+            for (keys, what) in shortcuts {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = theme::space::XS;
                     for (n, combo) in keys.split(" / ").enumerate() {
                         if n > 0 {
                             ui.label(RichText::new("/").color(theme::subtext()));
@@ -81,8 +83,9 @@ impl App {
                     }
                 });
                 ui.label(RichText::new(what).color(theme::subtext()));
-            });
-        }
+                ui.end_row();
+            }
+        });
         if child.add(Button::new(RichText::new("Ver todos los atajos").color(theme::accent())).frame(false)).clicked() {
             action = Some(EmptyAction::Shortcuts);
         }

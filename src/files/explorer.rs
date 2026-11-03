@@ -1291,7 +1291,7 @@ fn pane_ui(
                         ui.close();
                     }
                     ui.separator();
-                    if ui.add_enabled(state.selected.len() == 1, Button::new("Renombrar  (F2)")).clicked() {
+                    if ui.add_enabled(state.selected.len() == 1, Button::new("Renombrar").shortcut_text("F2")).clicked() {
                         actions.push(PaneAction::Rename);
                         ui.close();
                     }
@@ -1299,8 +1299,8 @@ fn pane_ui(
                         actions.push(PaneAction::Permissions);
                         ui.close();
                     }
-                    let delete = if can_delete { "Eliminar  (Supr)" } else { "Mover a la papelera  (Supr)" };
-                    if ui.button(delete).clicked() {
+                    let delete = if can_delete { "Eliminar" } else { "Mover a la papelera" };
+                    if crate::ui::kit::danger_item(ui, delete, "Supr").clicked() {
                         actions.push(PaneAction::Delete);
                         ui.close();
                     }

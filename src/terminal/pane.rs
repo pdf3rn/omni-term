@@ -1018,7 +1018,7 @@ impl Pane {
                     Some(theme::accent().gamma_multiply(0.35))
                 }
             } else if selected {
-                Some(theme::selection())
+                Some(theme::term_selection())
             } else if bg != theme::base() {
                 Some(bg)
             } else {

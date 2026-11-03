@@ -106,10 +106,14 @@ pub fn settings_page(ui: &mut egui::Ui, tab: &mut SettingsTab, settings: &mut Se
                 let selected = *tab == choice;
                 let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 32.0), egui::Sense::click());
                 let response = response.hand();
+                // La sección elegida lleva el tinte del acento y una marca a la izquierda; el hover, solo un gris
+                // suave: así no se confunden al pasar el ratón por otra sección.
                 if selected {
-                    ui.painter().rect_filled(rect, egui::CornerRadius::same(theme::radius::CONTROL), theme::selection());
+                    ui.painter().rect_filled(rect, egui::CornerRadius::same(theme::radius::CONTROL), theme::accent().gamma_multiply(0.16));
+                    let mark = egui::Rect::from_min_size(rect.min + egui::vec2(0.0, 8.0), egui::vec2(3.0, rect.height() - 16.0));
+                    ui.painter().rect_filled(mark, egui::CornerRadius::same(theme::radius::TINY), theme::accent());
                 } else if response.hovered() {
-                    ui.painter().rect_filled(rect, egui::CornerRadius::same(theme::radius::CONTROL), theme::surface());
+                    ui.painter().rect_filled(rect, egui::CornerRadius::same(theme::radius::CONTROL), theme::hover());
                 }
                 let font = FontId::new(theme::size::BODY, if selected { crate::ui::strong_family() } else { egui::FontFamily::Proportional });
                 ui.painter().text(rect.min + egui::vec2(12.0, 16.0), egui::Align2::LEFT_CENTER, label, font, if selected { theme::text() } else { theme::subtext() });

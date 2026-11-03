@@ -140,16 +140,21 @@ impl App {
                         ui.spacing_mut().item_spacing.x = 18.0;
                         for (view, label) in [(SidebarView::Connections, "Conexiones"), (SidebarView::Snippets, "Snippets")] {
                             let selected = self.sidebar_view == view;
-                            let color = if selected { theme::text() } else { theme::subtext() };
-                            let font = FontId::new(theme::size::LABEL, if selected { strong_family() } else { FontFamily::Proportional });
-                            let button = Button::new(RichText::new(label).font(font).color(color));
-                            let response = crate::ui::kit::button_with(ui, button, crate::ui::kit::Variant::Ghost);
-                            if selected {
-                                let y = response.rect.max.y + 1.0;
-                                ui.painter().line_segment(
-                                    [Pos2::new(response.rect.min.x, y), Pos2::new(response.rect.max.x, y)],
-                                    Stroke::new(theme::stroke::THICK, theme::accent()),
-                                );
+                            // Pestañas de texto: sin caja al pasar el ratón (con el relleno de un botón quedaba un bloque
+                            // gris pegado al texto). El hover aclara el texto y muestra un subrayado tenue; la elegida
+                            // lleva el subrayado del acento. El ancho se mide en seminegrita para que no salte al elegir.
+                            let strong = FontId::new(theme::size::LABEL, strong_family());
+                            let font = if selected { strong.clone() } else { FontId::new(theme::size::LABEL, FontFamily::Proportional) };
+                            let width = ui.painter().layout_no_wrap(label.to_string(), strong, Color32::PLACEHOLDER).size().x;
+                            let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 24.0), Sense::click());
+                            let response = response.hand();
+                            let hovered = response.hovered();
+                            let color = if selected || hovered { theme::text() } else { theme::subtext() };
+                            ui.painter().text(rect.left_center(), Align2::LEFT_CENTER, label, font, color);
+                            let underline = if selected { Some(theme::accent()) } else if hovered { Some(theme::selection()) } else { None };
+                            if let Some(line) = underline {
+                                let y = rect.max.y + 1.0;
+                                ui.painter().line_segment([Pos2::new(rect.min.x, y), Pos2::new(rect.max.x, y)], Stroke::new(theme::stroke::THICK, line));
                             }
                             if response.clicked() && self.sidebar_view != view {
                                 self.sidebar_view = view;
@@ -227,7 +232,8 @@ impl App {
                             ui.label(RichText::new("Ninguna conexión coincide con la búsqueda.").color(theme::subtext()));
                         }
                         ui.spacing_mut().item_spacing.y = 2.0;
-                        egui::ScrollArea::vertical().id_salt("connections").auto_shrink([false, false]).max_height(ui.available_height() - 64.0).show(ui, |ui| {
+                        let list = egui::ScrollArea::vertical().id_salt("connections").auto_shrink([false, false]).max_height(ui.available_height() - 64.0).show(ui, |ui| {
+                        reserve_scrollbar(ui, "connections");
                         let mut row_pos = 0usize;
                         for (label, indices) in &groups {
                             let key = label.to_lowercase();
@@ -323,11 +329,14 @@ impl App {
                                 let is_pinned = connection.id.is_some_and(|id| self.pinned.contains(&id));
                                 let ago = self.recent.iter().find(|(id, _)| Some(*id) == connection.id).map(|(_, at)| relative_time(*at, now)).unwrap_or_default();
                                 if response.hovered() || over {
-                                    ui.painter().rect_filled(rect.expand2(Vec2::new(8.0, 0.0)), CornerRadius::same(theme::radius::CONTROL), theme::surface());
+                                    ui.painter().rect_filled(rect.expand2(Vec2::new(8.0, 0.0)), CornerRadius::same(theme::radius::CONTROL), theme::hover());
                                 }
+                                // En el modo compacto la fila es más baja: todo el contenido sube lo mismo y sigue centrado.
+                                let dy = (rect.height() - ROW_HEIGHT) / 2.0;
                                 if let Some(color) = identity {
-                                    // Marca de identidad: informa de qué servidor es, no decora.
-                                    let bar = Rect::from_min_size(Pos2::new(rect.min.x - 8.0, rect.min.y + 7.0), Vec2::new(3.0, theme::row(ROW_HEIGHT) - 14.0));
+                                    // Marca de identidad: informa de qué servidor es, no decora. Va dentro del fondo
+                                    // de hover (que empieza 8 px antes), no sobre su esquina redondeada.
+                                    let bar = Rect::from_min_size(Pos2::new(rect.min.x - 4.0, rect.min.y + 7.0), Vec2::new(3.0, rect.height() - 14.0));
                                     ui.painter().rect_filled(bar, CornerRadius::same(theme::radius::TINY), color);
                                 }
                                 // Acciones al pasar el ratón: sustituyen a la hora, que vuelve a verse sin ratón encima.
@@ -353,7 +362,7 @@ impl App {
                                 let kind_icon = crate::ui::kit::connection_glyph(connection);
                                 ui.painter().text(icon_center, Align2::CENTER_CENTER, kind_icon, FontId::proportional(theme::size::ICON_LG), theme::subtext());
                                 let badge = match state {
-                                    LinkState::Open => Some(theme::accent()),
+                                    LinkState::Open => Some(theme::success()),
                                     LinkState::Lost => Some(theme::red()),
                                     LinkState::Closed => None,
                                 };
@@ -377,26 +386,27 @@ impl App {
                                 let room = right_limit - ago_width - text_x - lock_width - pill_size.map_or(0.0, |s| s.x + 8.0);
                                 let name = crate::ui::kit::fit_text(&first_line, &connection.name, &name_font, room);
                                 let name_width = first_line.layout_no_wrap(name.clone(), name_font.clone(), Color32::PLACEHOLDER).size().x;
-                                first_line.text(Pos2::new(text_x, rect.min.y + 9.0), Align2::LEFT_TOP, name, name_font, theme::text());
+                                first_line.text(Pos2::new(text_x, rect.min.y + 9.0 + dy), Align2::LEFT_TOP, name, name_font, theme::text());
                                 let mut after_name = text_x + name_width + 8.0;
                                 if lock_width > 0.0 {
-                                    first_line.text(Pos2::new(after_name + 5.0, rect.min.y + 19.0), Align2::CENTER_CENTER, icons::LOCK_OPEN, FontId::proportional(theme::size::LABEL), theme::red());
+                                    first_line.text(Pos2::new(after_name + 5.0, rect.min.y + 19.0 + dy), Align2::CENTER_CENTER, icons::LOCK_OPEN, FontId::proportional(theme::size::LABEL), theme::red());
                                     after_name += lock_width;
                                 }
                                 if let (Some(env), Some(size)) = (env, pill_size) {
                                     // Pastilla con el color de identidad: dice en qué entorno estás.
                                     let tint = identity.unwrap_or_else(theme::subtext);
-                                    let pill = Rect::from_min_size(Pos2::new(after_name, rect.min.y + 11.0), size);
-                                    first_line.rect_filled(pill, CornerRadius::same(theme::radius::CARD), tint.gamma_multiply(0.2));
+                                    let pill = Rect::from_min_size(Pos2::new(after_name, rect.min.y + 11.0 + dy), size);
+                                    // Cápsula: radio igual a media altura.
+                                    first_line.rect_filled(pill, CornerRadius::same((size.y / 2.0).round() as u8), tint.gamma_multiply(0.2));
                                     first_line.text(pill.center(), Align2::CENTER_CENTER, env, pill_font, tint);
                                 }
                                 if ago_width > 0.0 {
-                                    ui.painter().text(Pos2::new(rect.max.x - 4.0, rect.min.y + 11.0), Align2::RIGHT_TOP, &ago, ago_font, theme::subtext());
+                                    ui.painter().text(Pos2::new(rect.max.x - 4.0, rect.min.y + 11.0 + dy), Align2::RIGHT_TOP, &ago, ago_font, theme::subtext());
                                 }
                                 let second_line = ui.painter().with_clip_rect(Rect::from_min_max(rect.min, Pos2::new(right_limit, rect.max.y)));
                                 let detail_font = FontId::new(theme::size::SMALL, FontFamily::Proportional);
                                 let detail = crate::ui::kit::fit_text(&second_line, &format!("{}  ·  {}", connection.kind_label(), connection.destination()), &detail_font, right_limit - text_x);
-                                second_line.text(Pos2::new(text_x, rect.min.y + 27.0), Align2::LEFT_TOP, detail, detail_font, theme::subtext());
+                                second_line.text(Pos2::new(text_x, rect.min.y + 27.0 + dy), Align2::LEFT_TOP, detail, detail_font, theme::subtext());
                                 let response = response.hand().on_hover_text(match state {
                                     LinkState::Closed => "Doble clic para conectar",
                                     LinkState::Open => "Sesión abierta. Doble clic para otra pestaña",
@@ -439,6 +449,7 @@ impl App {
                             }
                         }
                         });
+                        remember_overflow(ui, "connections", &list);
                     } else {
                         if !self.snippets.is_empty() {
                             if crate::ui::kit::button_with(ui, Button::new(RichText::new("Guardar selección").small().color(theme::subtext())), crate::ui::kit::Variant::Secondary).clicked() {
@@ -455,7 +466,8 @@ impl App {
                             ui.label(RichText::new("Ningún snippet coincide con la búsqueda.").color(theme::subtext()));
                         }
                         ui.spacing_mut().item_spacing.y = 2.0;
-                        egui::ScrollArea::vertical().id_salt("snippets").auto_shrink([false, false]).max_height(ui.available_height() - 64.0).show(ui, |ui| {
+                        let list = egui::ScrollArea::vertical().id_salt("snippets").auto_shrink([false, false]).max_height(ui.available_height() - 64.0).show(ui, |ui| {
+                        reserve_scrollbar(ui, "snippets");
                         let mut tags: Vec<(String, Vec<&Snippet>)> = Vec::new();
                         for snippet in visible {
                             let label = if snippet.tag.trim().is_empty() { "Sin etiqueta".to_string() } else { snippet.tag.trim().to_string() };
@@ -497,14 +509,15 @@ impl App {
                                 let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), theme::row(ROW_HEIGHT)), Sense::click());
                                 let over = ui.rect_contains_pointer(rect);
                                 if response.hovered() || over {
-                                    ui.painter().rect_filled(rect, CornerRadius::same(theme::radius::CONTROL), theme::surface());
+                                    ui.painter().rect_filled(rect, CornerRadius::same(theme::radius::CONTROL), theme::hover());
                                 }
+                                let dy = (rect.height() - ROW_HEIGHT) / 2.0;
                                 let left = rect.min.x + 10.0;
                                 let painter = ui.painter().with_clip_rect(rect.shrink2(Vec2::new(4.0, 0.0)).with_max_x(rect.max.x - if over { 34.0 } else { 4.0 }));
-                                painter.text(Pos2::new(left, rect.min.y + 9.0), Align2::LEFT_TOP, &snippet.title, FontId::new(theme::size::BODY, strong_family()), theme::text());
+                                painter.text(Pos2::new(left, rect.min.y + 9.0 + dy), Align2::LEFT_TOP, &snippet.title, FontId::new(theme::size::BODY, strong_family()), theme::text());
                                 let preview = snippet.body.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
                                 let preview: String = preview.chars().take(80).collect();
-                                painter.text(Pos2::new(left, rect.min.y + 27.0), Align2::LEFT_TOP, preview, FontId::new(theme::size::SMALL, FontFamily::Monospace), theme::subtext());
+                                painter.text(Pos2::new(left, rect.min.y + 27.0 + dy), Align2::LEFT_TOP, preview, FontId::new(theme::size::SMALL, FontFamily::Monospace), theme::subtext());
 
                                 let run_slot = Rect::from_center_size(Pos2::new(rect.max.x - 18.0, rect.center().y), Vec2::splat(26.0));
                                 let run_clicked = over
@@ -538,7 +551,7 @@ impl App {
                                         edit_snippet = Some(Snippet::clone(snippet));
                                         ui.close();
                                     }
-                                    if ui.button("Eliminar").clicked() {
+                                    if crate::ui::kit::danger_item(ui, "Eliminar", "").clicked() {
                                         delete_snippet = Some(Snippet::clone(snippet));
                                         ui.close();
                                     }
@@ -546,6 +559,7 @@ impl App {
                             }
                         }
                         });
+                        remember_overflow(ui, "snippets", &list);
                     }
 
                     // Pie: solo avisos; el estado normal de los secretos no hace falta mostrarlo.
@@ -753,6 +767,29 @@ pub(super) fn group_environment(label: &str, members: &[&Connection]) -> Option<
     }
 }
 
+/// Si la lista desborda (según el fotograma anterior), las filas acaban antes de la barra de desplazamiento
+/// flotante: si no, sus botones de la derecha quedan debajo de la barra y esta se lleva el ratón. Sin
+/// desbordar no hay barra y las filas usan todo el ancho.
+fn reserve_scrollbar(ui: &mut egui::Ui, list: &str) {
+    let overflows = ui.data(|d| d.get_temp::<bool>(egui::Id::NULL.with(("sidebar-overflow", list)))).unwrap_or(false);
+    if overflows {
+        ui.set_max_width(ui.available_width() - SCROLLBAR_ROOM);
+    }
+}
+
+/// Guarda si la lista desborda, para reservar el sitio de la barra en el siguiente fotograma.
+fn remember_overflow<R>(ui: &egui::Ui, list: &str, output: &egui::scroll_area::ScrollAreaOutput<R>) {
+    let overflows = output.content_size.y > output.inner_rect.height() + 1.0;
+    let id = egui::Id::NULL.with(("sidebar-overflow", list));
+    if ui.data(|d| d.get_temp::<bool>(id)) != Some(overflows) {
+        ui.data_mut(|d| d.insert_temp(id, overflows));
+        ui.ctx().request_repaint();
+    }
+}
+
+/// Ancho de la barra de desplazamiento flotante; el hover de la fila sobresale 8 px y queda a 2 px de ella.
+const SCROLLBAR_ROOM: f32 = 10.0;
+
 pub(super) fn connection_menu(ui: &mut egui::Ui, connection: &Connection, pinned: bool, out: &mut Option<(RowAction, Connection)>) {
     for (label, action) in [
         ("Conectar", RowAction::Connect),
@@ -760,12 +797,15 @@ pub(super) fn connection_menu(ui: &mut egui::Ui, connection: &Connection, pinned
         ("Editar", RowAction::Edit),
         ("Duplicar", RowAction::Duplicate),
         (if pinned { "Desfijar" } else { "Fijar arriba" }, RowAction::Pin),
-        ("Eliminar", RowAction::Delete),
     ] {
         if ui.button(label).clicked() {
             *out = Some((action, connection.clone()));
             ui.close();
         }
+    }
+    if crate::ui::kit::danger_item(ui, "Eliminar", "").clicked() {
+        *out = Some((RowAction::Delete, connection.clone()));
+        ui.close();
     }
 }
 

@@ -132,8 +132,10 @@ pub(super) fn install_visuals(ctx: &egui::Context) {
     ]
     .into();
     style.animation_time = 0.12;
-    // Barras finas que solo aparecen al acercar el ratón o al desplazar.
+    // Barras finas que se ensanchan al acercar el ratón o al desplazar.
     style.spacing.scroll = egui::style::ScrollStyle::floating();
+    // La barra se ve tenue en reposo cuando hay contenido oculto: sin ella nada indica que hay más filas.
+    style.spacing.scroll.dormant_handle_opacity = 0.35;
     style.spacing.item_spacing = Vec2::new(8.0, 8.0);
     style.spacing.button_padding = Vec2::new(12.0, 6.0);
     style.spacing.interact_size.y = 30.0;
@@ -157,7 +159,7 @@ pub(super) fn install_visuals(ctx: &egui::Context) {
     v.widgets.noninteractive.bg_stroke = Stroke::new(theme::stroke::HAIRLINE, theme::surface());
     for (widget, fill) in [
         (&mut v.widgets.inactive, theme::surface()),
-        (&mut v.widgets.hovered, theme::selection()),
+        (&mut v.widgets.hovered, theme::hover()),
         (&mut v.widgets.active, theme::selection()),
     ] {
         widget.weak_bg_fill = fill;
