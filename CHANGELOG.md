@@ -3,6 +3,18 @@
 Todos los cambios notables de omni-term. A partir de la 0.1.0 este archivo lo actualiza release-plz a partir de los commits convencionales.
 El formato sigue [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y el proyecto usa [versionado semántico](https://semver.org/lang/es/).
 
+## [0.1.12](https://github.com/pdf3rn/omni-term/compare/v0.1.11...v0.1.12) - 2026-11-03
+
+### Added
+
+- *(ui)* ajusta menús, pestañas y listas del panel lateral
+
+### Other
+
+- *(deps)* bump muda from 0.17.2 to 0.21.2 ([#30](https://github.com/pdf3rn/omni-term/pull/30))
+- *(deps)* bump rusqlite from 0.40.2 to 0.41.1 ([#29](https://github.com/pdf3rn/omni-term/pull/29))
+- *(deps)* bump russh from 0.64.1 to 0.65.0 ([#28](https://github.com/pdf3rn/omni-term/pull/28))
+
 ## [0.1.11](https://github.com/pdf3rn/omni-term/compare/v0.1.10...v0.1.11) - 2026-11-02
 
 ### Added
