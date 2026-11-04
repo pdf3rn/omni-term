@@ -3,6 +3,12 @@
 Todos los cambios notables de omni-term. A partir de la 0.1.0 este archivo lo actualiza release-plz a partir de los commits convencionales.
 El formato sigue [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y el proyecto usa [versionado semántico](https://semver.org/lang/es/).
 
+## [0.1.13](https://github.com/pdf3rn/omni-term/compare/v0.1.12...v0.1.13) - 2026-11-04
+
+### Added
+
+- *(passwords)* añade gestor de contraseñas para escribir en el terminal
+
 ## [0.1.12](https://github.com/pdf3rn/omni-term/compare/v0.1.11...v0.1.12) - 2026-11-03
 
 ### Added
