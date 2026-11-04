@@ -1,4 +1,5 @@
 //! Paleta de comandos: un buscador único para conexiones, snippets, pestañas y acciones.
+//! En modo contraseñas es el selector del gestor de contraseñas (Ctrl+Alt+P).
 
 use eframe::egui::{self, Align2, CornerRadius, Frame, Id, Key, Margin, Modifiers, RichText, ScrollArea, Sense, TextEdit, Vec2};
 
@@ -40,9 +41,11 @@ pub enum Command {
     Fullscreen,
     KnownHosts,
     Containers,
+    TypePassword,
+    Passwords,
 }
 
-pub const COMMANDS: [(Command, &str); 29] = [
+pub const COMMANDS: [(Command, &str); 31] = [
     (Command::NewTab, "Nueva pestaña de terminal local"),
     (Command::NewConnection, "Nueva conexión"),
     (Command::ImportConfig, "Importar conexiones de ~/.ssh/config"),
@@ -72,13 +75,25 @@ pub const COMMANDS: [(Command, &str); 29] = [
     (Command::Fullscreen, "Pantalla completa"),
     (Command::KnownHosts, "Hosts conocidos"),
     (Command::Containers, "Administrador de contenedores"),
+    (Command::TypePassword, "Escribir una contraseña guardada en el terminal"),
+    (Command::Passwords, "Gestionar contraseñas"),
 ];
+
+/// De dónde sale la contraseña que se escribe en el terminal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PasswordSource {
+    /// La guardada para una conexión (la de la pestaña activa).
+    Connection(i64),
+    /// Una del gestor de contraseñas.
+    Saved(i64),
+}
 
 pub enum Target {
     Connect(Connection),
     Snippet(Snippet),
     Tab(usize),
     Command(Command),
+    Password(PasswordSource),
 }
 
 pub struct Item {
@@ -91,13 +106,23 @@ pub struct Item {
 pub enum Outcome {
     Open,
     Close,
-    Run(usize),
+    /// Elemento elegido; `true` si fue con Alt+Enter (en el selector de contraseñas: escribir sin enviar).
+    Run(usize, bool),
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub enum Mode {
+    #[default]
+    All,
+    /// Contraseñas para escribir en un panel concreto (el que tenía el foco al abrirla).
+    Passwords { tab: u64, pane: u64 },
 }
 
 #[derive(Default)]
 pub struct Palette {
     query: String,
     selected: usize,
+    pub mode: Mode,
 }
 
 /// Elementos que cumplen todos los términos de la búsqueda; los que empiezan por ella, primero.
@@ -119,16 +144,22 @@ pub fn filter(items: &[Item], query: &str) -> Vec<usize> {
 }
 
 impl Palette {
+    /// Selector de contraseñas para escribir en el panel `pane` de la pestaña `tab`.
+    pub fn passwords(tab: u64, pane: u64) -> Self {
+        Self { mode: Mode::Passwords { tab, pane }, ..Self::default() }
+    }
+
     pub fn show(&mut self, ctx: &egui::Context, items: &[Item]) -> Outcome {
         let matches = filter(items, &self.query);
         self.selected = self.selected.min(matches.len().saturating_sub(1));
 
         let mut moved = false;
-        let (down, up, enter, escape) = ctx.input_mut(|i| {
+        let (down, up, enter, alt_enter, escape) = ctx.input_mut(|i| {
             (
                 i.consume_key(Modifiers::NONE, Key::ArrowDown),
                 i.consume_key(Modifiers::NONE, Key::ArrowUp),
                 i.consume_key(Modifiers::NONE, Key::Enter),
+                i.consume_key(Modifiers::ALT, Key::Enter),
                 i.consume_key(Modifiers::NONE, Key::Escape),
             )
         });
@@ -144,11 +175,12 @@ impl Palette {
         if escape {
             outcome = Outcome::Close;
         }
-        if enter {
+        if enter || alt_enter {
             if let Some(index) = matches.get(self.selected) {
-                outcome = Outcome::Run(*index);
+                outcome = Outcome::Run(*index, alt_enter);
             }
         }
+        let passwords = matches!(self.mode, Mode::Passwords { .. });
 
         let id = Id::NULL.with("command-palette");
         let area = egui::Modal::default_area(id).anchor(Align2::CENTER_TOP, Vec2::new(0.0, 90.0));
@@ -157,7 +189,7 @@ impl Palette {
             ui.set_width(540.0);
             let field = ui.add(
                 TextEdit::singleline(&mut self.query)
-                    .hint_text("Buscar conexiones, snippets, pestañas y acciones")
+                    .hint_text(if passwords { "Buscar contraseñas" } else { "Buscar conexiones, snippets, pestañas y acciones" })
                     .desired_width(f32::INFINITY),
             );
             field.request_focus();
@@ -168,7 +200,8 @@ impl Palette {
             if matches.is_empty() {
                 ui.label(RichText::new("Nada coincide con la búsqueda.").color(theme::subtext()));
             }
-            ScrollArea::vertical().max_height(340.0).auto_shrink([false, true]).show(ui, |ui| {
+            let list_height = if passwords { 300.0 } else { 340.0 };
+            ScrollArea::vertical().max_height(list_height).auto_shrink([false, true]).show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 2.0;
                 for (position, index) in matches.iter().enumerate() {
                     let item = &items[*index];
@@ -189,6 +222,7 @@ impl Palette {
                         Target::Snippet(_) => icons::PENCIL,
                         Target::Tab(_) => icons::FOLDER_CLOSED,
                         Target::Command(_) => icons::GEAR,
+                        Target::Password(_) => icons::LOCK,
                     };
                     painter.text(rect.min + Vec2::new(16.0, 18.0), Align2::CENTER_CENTER, glyph, egui::FontId::proportional(theme::size::ICON), theme::subtext());
                     let title = painter.text(
@@ -209,10 +243,21 @@ impl Palette {
                     }
                     painter.text(rect.max - Vec2::new(10.0, 18.0), Align2::RIGHT_CENTER, item.kind, egui::FontId::proportional(theme::size::SMALL), theme::subtext());
                     if response.clicked() {
-                        outcome = Outcome::Run(*index);
+                        outcome = Outcome::Run(*index, ui.input(|i| i.modifiers.alt));
                     }
                 }
             });
+            if passwords {
+                ui.add_space(theme::space::S);
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = theme::space::XS;
+                    crate::ui::kit::keycap(ui, "Enter");
+                    ui.label(RichText::new("escribir y enviar").small().color(theme::subtext()));
+                    ui.add_space(theme::space::M);
+                    crate::ui::kit::keycap(ui, "Alt+Enter");
+                    ui.label(RichText::new("solo escribir").small().color(theme::subtext()));
+                });
+            }
         });
         if matches!(outcome, Outcome::Open) && response.backdrop_response.clicked() {
             outcome = Outcome::Close;

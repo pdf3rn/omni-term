@@ -54,6 +54,12 @@ const MIGRATIONS: &[&str] = &[
      ALTER TABLE connections ADD COLUMN encoding TEXT NOT NULL DEFAULT 'utf8';
      ALTER TABLE connections ADD COLUMN telnet_quiet INTEGER NOT NULL DEFAULT 0;",
     "ALTER TABLE connections ADD COLUMN serial_opts TEXT;",
+    // Contraseñas guardadas para escribirlas en el terminal: aquí solo el nombre; el secreto va al almacén.
+    "CREATE TABLE passwords (
+        id INTEGER PRIMARY KEY,
+        name TEXT NOT NULL,
+        user TEXT NOT NULL DEFAULT ''
+    );",
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -522,6 +528,16 @@ impl Snippet {
     }
 }
 
+/// Contraseña guardada para escribirla en el terminal (por ejemplo, la de `sudo`). El secreto no está aquí:
+/// se guarda en el almacén de secretos bajo `secrets::password_account(id)`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SavedPassword {
+    pub id: Option<i64>,
+    pub name: String,
+    /// Usuario o servidor al que corresponde, solo como recordatorio.
+    pub user: String,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ForwardKind {
     /// `-L`: escucha en este equipo y reenvía al destino a través del servidor.
@@ -824,6 +840,37 @@ impl Store {
             "INSERT INTO snippets (id, title, tag, body) VALUES (?1, ?2, ?3, ?4)",
             params![id, snippet.title, snippet.tag, snippet.body],
         )?;
+        Ok(())
+    }
+
+    pub fn list_passwords(&self) -> anyhow::Result<Vec<SavedPassword>> {
+        let mut statement = self.db.prepare("SELECT id, name, user FROM passwords ORDER BY name COLLATE NOCASE, id")?;
+        let rows = statement.query_map([], |row| Ok(SavedPassword { id: Some(row.get(0)?), name: row.get(1)?, user: row.get(2)? }))?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    pub fn save_password(&self, password: &SavedPassword) -> anyhow::Result<i64> {
+        match password.id {
+            Some(id) => {
+                self.db.execute("UPDATE passwords SET name=?1, user=?2 WHERE id=?3", params![password.name, password.user, id])?;
+                Ok(id)
+            }
+            None => {
+                self.db.execute("INSERT INTO passwords (name, user) VALUES (?1, ?2)", params![password.name, password.user])?;
+                Ok(self.db.last_insert_rowid())
+            }
+        }
+    }
+
+    pub fn delete_password(&self, id: i64) -> anyhow::Result<()> {
+        self.db.execute("DELETE FROM passwords WHERE id=?1", [id])?;
+        Ok(())
+    }
+
+    /// Vuelve a crear una contraseña borrada con su mismo id (para deshacer).
+    pub fn restore_password(&self, password: &SavedPassword) -> anyhow::Result<()> {
+        let id = password.id.context("la contraseña no tiene id")?;
+        self.db.execute("INSERT INTO passwords (id, name, user) VALUES (?1, ?2, ?3)", params![id, password.name, password.user])?;
         Ok(())
     }
 
@@ -1232,6 +1279,23 @@ mod tests {
         store.delete_connection(b).unwrap();
         assert!(store.all_forwards().unwrap().get(&b).is_none());
         assert_eq!(store.list_forwards(a).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn passwords_roundtrip_update_delete_and_restore() {
+        let store = Store::open_in_memory().unwrap();
+        let id = store.save_password(&SavedPassword { id: None, name: "sudo servidor".into(), user: "admin".into() }).unwrap();
+        store.save_password(&SavedPassword { id: None, name: "Base de datos".into(), user: String::new() }).unwrap();
+        let all = store.list_passwords().unwrap();
+        assert_eq!(all.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["Base de datos", "sudo servidor"]);
+        let mut edited = all[1].clone();
+        edited.user = "root".into();
+        store.save_password(&edited).unwrap();
+        assert_eq!(store.list_passwords().unwrap()[1].user, "root");
+        store.delete_password(id).unwrap();
+        assert_eq!(store.list_passwords().unwrap().len(), 1);
+        store.restore_password(&edited).unwrap();
+        assert_eq!(store.list_passwords().unwrap()[1], edited);
     }
 
     #[test]

@@ -21,7 +21,7 @@ impl App {
             (Outcome::Cancel, Dialog::SecretsMode(_) | Dialog::Restart) => {}
             (Outcome::Cancel, Dialog::RestoreSession(prompt)) => self.answer_restore(false, prompt.remember),
             (Outcome::Submit, Dialog::RestoreSession(prompt)) => self.answer_restore(true, prompt.remember),
-            (Outcome::Cancel, Dialog::Secret(_) | Dialog::ConfirmContainer(_) | Dialog::Unlock(_) | Dialog::Edit(_) | Dialog::Error(_) | Dialog::HostKeyChanged(_) | Dialog::About | Dialog::ConfirmClose(_) | Dialog::ConfirmPaste(_) | Dialog::TelnetWarning(_) | Dialog::Snippet(_) | Dialog::SnippetVars(_) | Dialog::ConfirmReset(_)) => {}
+            (Outcome::Cancel, Dialog::Secret(_) | Dialog::ConfirmContainer(_) | Dialog::Unlock(_) | Dialog::Edit(_) | Dialog::Error(_) | Dialog::HostKeyChanged(_) | Dialog::About | Dialog::ConfirmClose(_) | Dialog::ConfirmPaste(_) | Dialog::TelnetWarning(_) | Dialog::Snippet(_) | Dialog::SnippetVars(_) | Dialog::ConfirmReset(_) | Dialog::Password(_) | Dialog::ConfirmTypePassword(_)) => {}
             (Outcome::Cancel, dialog) => self.dialog = Some(dialog),
             (Outcome::Submit, Dialog::Prompt(request, answers)) => {
                 let _ = request.reply.send(Some(answers));
@@ -43,10 +43,28 @@ impl App {
                                 eprintln!("no se pudieron guardar los túneles: {error:#}");
                             }
                             self.refresh_connections();
-                            if !form.secret.is_empty() && connection.auth != Auth::Agent {
+                            let typed = (!form.secret.is_empty()).then(|| Zeroizing::new(std::mem::take(&mut form.secret)));
+                            let mut to_save = Vec::new();
+                            if let Some(secret) = &typed
+                                && connection.auth != Auth::Agent
+                            {
                                 let kind = if connection.auth == Auth::Password { SecretKind::Password } else { SecretKind::Passphrase };
-                                self.save_secret(account_for(id, kind), Zeroizing::new(std::mem::take(&mut form.secret)));
+                                to_save.push((account_for(id, kind), secret.clone()));
                             }
+                            if form.add_to_manager && form.ssh_like() && connection.auth == Auth::Password {
+                                match typed {
+                                    // Escrita ahora: se guarda junto con la de la conexión (un solo desbloqueo).
+                                    Some(secret) => {
+                                        if let Some(entry) = self.manager_entry_for(id) {
+                                            to_save.push((crate::data::secrets::password_account(entry), secret));
+                                        }
+                                    }
+                                    // No se reescribió: se copia la guardada, salvo que ya esté en el gestor.
+                                    None if !self.in_manager(id) => self.add_connection_to_manager(id, None),
+                                    None => {}
+                                }
+                            }
+                            self.save_secrets(to_save);
                         }
                     }
                 }
@@ -93,6 +111,10 @@ impl App {
                     }
                 }
             },
+            (Outcome::Save, Dialog::Password(form)) => self.save_password_form(form),
+            (Outcome::Submit, Dialog::ConfirmTypePassword(confirm)) => {
+                self.type_password(dialogs::TypeRequest { checked: true, ..confirm.request });
+            }
             (Outcome::Submit, Dialog::SnippetVars(prompt)) => {
                 let text = prompt.rendered();
                 self.insert_into_active(&text, prompt.run);
@@ -158,8 +180,10 @@ impl App {
                         Ok(()) => {
                             match prompt.then {
                                 Pending::Open(connection, slot, purpose) => self.continue_open(connection, slot, purpose),
-                                Pending::Save { account, secret } => self.save_secret(account, secret),
+                                Pending::Save(secrets) => self.save_secrets(secrets),
+                                Pending::AddToManager(connection) => self.add_connection_to_manager(connection, None),
                                 Pending::Migrate(from) => self.run_migration(from),
+                                Pending::TypePassword(request) => self.type_password(request),
                             }
                             return;
                         }
@@ -194,9 +218,13 @@ impl App {
         let mut choice = dialogs::SecretsChoice { master: forced || active_master, keyring_available, active_master };
         let (master_before, settings_before) = (choice.master, self.settings.clone());
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(area).layout(egui::Layout::top_down(egui::Align::Min)));
-        dialogs::settings_page(&mut child, &mut section, &mut self.settings, &mut choice, &mut self.known_hosts, &self.connections);
+        let passwords = dialogs::PasswordsPage { passwords: &self.passwords, request: &mut self.password_request };
+        dialogs::settings_page(&mut child, &mut section, &mut self.settings, &mut choice, &mut self.known_hosts, &self.connections, passwords);
         if let Some(entry) = self.known_hosts.delete.take() {
             self.forget_known_hosts(vec![entry], None);
+        }
+        if let Some(request) = self.password_request.take() {
+            self.handle_password_request(request);
         }
         if self.settings != settings_before {
             self.apply_settings();

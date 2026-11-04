@@ -20,6 +20,8 @@ A native, cross-platform terminal written in Rust, built like an IDE: local shel
 - Saved connections with a color and environment ("production", "staging") shown in the sidebar, tab, a band under the tabs and the window title, so you don't type into the wrong server.
 - Port forwarding per connection: `-L`, `-R` and `-D` (SOCKS5 proxy).
 - Snippets with search and `{{name}}` / `{{name=default}}` variables.
+- Password manager: `Ctrl+Alt+P` types a saved password into the terminal when a program asks for one (`sudo`, `su`, a key passphrase). It is sent as keystrokes, never through the clipboard. If the current line does not look like a password prompt, it asks before typing.
+- Passwords are managed in *Settings → Contraseñas (Passwords)*. In a saved SSH tab, that connection's password is offered first, and a switch in the connection form adds it to the manager.
 
 **Files**
 - Two-pane explorer (local and remote) over **SFTP**, **FTP/FTPS** and **SMB 2/3**: drag and drop, recursive background transfers with cancellation, conflict resolution, permissions (where the protocol supports them) and a local trash.
@@ -60,6 +62,7 @@ xattr -cr omni-term.app
 | `Ctrl+Shift+C` / `Ctrl+Shift+V` | Copy selection / paste |
 | `Ctrl+Shift+F` | Search history (`Enter` next, `Shift+Enter` previous, `Esc` closes) |
 | `Ctrl+Shift+P` | Command palette |
+| `Ctrl+Alt+P` | Type a saved password (`Enter` types and sends, `Alt+Enter` only types) |
 | `Ctrl+Shift+B` / `Ctrl+Shift+K` | Toggle sidebar / search connections |
 | `Ctrl+Shift+D` / `Ctrl+Shift+E` | Split right / split down |
 | `Ctrl+Shift+W` | Close the focused pane (or the tab if it is the only one) |

@@ -8,6 +8,7 @@ pub enum SettingsTab {
     General,
     Atajos,
     Hosts,
+    Passwords,
 }
 
 /// Lista de `known_hosts` de la página de ajustes, leída una vez y recargada al cambiar.
@@ -40,6 +41,12 @@ impl KnownHostsView {
     }
 }
 
+pub enum PasswordRequest {
+    New,
+    Edit(crate::data::store::SavedPassword),
+    Delete(crate::data::store::SavedPassword),
+}
+
 /// Estado del selector de almacén de secretos en Ajustes.
 pub struct SecretsChoice {
     /// Elegido: clave maestra (si no, llavero).
@@ -65,6 +72,7 @@ pub(super) const SHORTCUTS: [(&str, &[(&str, &str)]); 4] = [
         &[
             ("Ctrl+Shift+C / V", "Copiar / pegar"),
             ("Ctrl+Shift+F", "Buscar en la salida"),
+            ("Ctrl+Alt+P", "Escribir una contraseña guardada"),
             ("Ctrl+Shift+D / E", "Dividir a la derecha / hacia abajo"),
             ("Ctrl+Shift+W", "Cerrar el panel"),
             ("Alt+flechas", "Ir al panel de al lado"),
@@ -92,12 +100,22 @@ pub(super) const SHORTCUTS: [(&str, &[(&str, &str)]); 4] = [
 ];
 
 /// Lista de secciones de la página de ajustes.
-pub(super) const SETTINGS_SECTIONS: [(SettingsTab, &str); 3] = [(SettingsTab::General, "General"), (SettingsTab::Atajos, "Atajos de teclado"), (SettingsTab::Hosts, "Hosts conocidos")];
+pub(super) const SETTINGS_SECTIONS: [(SettingsTab, &str); 4] = [
+    (SettingsTab::General, "General"),
+    (SettingsTab::Atajos, "Atajos de teclado"),
+    (SettingsTab::Passwords, "Contraseñas"),
+    (SettingsTab::Hosts, "Hosts conocidos"),
+];
+
+pub struct PasswordsPage<'a> {
+    pub passwords: &'a [crate::data::store::SavedPassword],
+    pub request: &'a mut Option<PasswordRequest>,
+}
 
 pub(super) const SETTINGS_MAX_WIDTH: f32 = 720.0;
 
 /// Página de ajustes de una pestaña: lista de secciones a la izquierda y el contenido a la derecha.
-pub fn settings_page(ui: &mut egui::Ui, tab: &mut SettingsTab, settings: &mut Settings, secrets: &mut SecretsChoice, hosts: &mut KnownHostsView, connections: &[Connection]) {
+pub fn settings_page(ui: &mut egui::Ui, tab: &mut SettingsTab, settings: &mut Settings, secrets: &mut SecretsChoice, hosts: &mut KnownHostsView, connections: &[Connection], passwords: PasswordsPage<'_>) {
     ui.horizontal_top(|ui| {
         ui.spacing_mut().item_spacing = egui::vec2(8.0, 4.0);
         ui.vertical(|ui| {
@@ -130,13 +148,17 @@ pub fn settings_page(ui: &mut egui::Ui, tab: &mut SettingsTab, settings: &mut Se
             ui.set_max_width(width);
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 ui.set_max_width(width - 12.0);
-                settings_content(ui, *tab, settings, secrets, hosts, connections);
+                settings_content(ui, *tab, settings, secrets, hosts, connections, passwords);
             });
         });
     });
 }
 
-pub(super) fn settings_content(ui: &mut egui::Ui, tab: SettingsTab, settings: &mut Settings, secrets: &mut SecretsChoice, hosts: &mut KnownHostsView, connections: &[Connection]) {
+pub(super) fn settings_content(ui: &mut egui::Ui, tab: SettingsTab, settings: &mut Settings, secrets: &mut SecretsChoice, hosts: &mut KnownHostsView, connections: &[Connection], passwords: PasswordsPage<'_>) {
+    if tab == SettingsTab::Passwords {
+        passwords_body(ui, passwords);
+        return;
+    }
     if tab == SettingsTab::Hosts {
         known_hosts_body(ui, hosts, connections);
         return;
@@ -331,6 +353,53 @@ pub(super) fn font_picker(ui: &mut egui::Ui, family: &mut Option<String>) {
                 ui.label(RichText::new("No se encontró ninguna fuente monoespaciada instalada.").color(theme::subtext()));
             }
         });
+    });
+}
+
+/// Sección de contraseñas: las del gestor, para escribirlas en el terminal con Ctrl+Alt+P.
+pub(super) fn passwords_body(ui: &mut egui::Ui, page: PasswordsPage<'_>) {
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = theme::space::XS;
+        ui.label(RichText::new("Escríbelas en el terminal con").color(theme::subtext()));
+        crate::ui::kit::keycap(ui, "Ctrl+Alt+P");
+    });
+    ui.add_space(theme::space::M);
+    if crate::ui::kit::button(ui, "Nueva contraseña", crate::ui::kit::Variant::PrimaryOutline).clicked() {
+        *page.request = Some(PasswordRequest::New);
+    }
+    ui.add_space(theme::space::S);
+    if page.passwords.is_empty() {
+        ui.label(RichText::new("Aún no hay contraseñas guardadas.").color(theme::subtext()));
+        return;
+    }
+    crate::ui::kit::card_frame().inner_margin(egui::Margin::symmetric(6, 4)).show(ui, |ui| {
+        ui.spacing_mut().item_spacing.y = 0.0;
+        ui.set_width(ui.available_width());
+        for password in page.passwords {
+            let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 44.0), egui::Sense::click());
+            let over = ui.rect_contains_pointer(rect);
+            if over {
+                ui.painter().rect_filled(rect, egui::CornerRadius::same(theme::radius::CONTROL), theme::hover());
+            }
+            ui.painter().text(rect.min + egui::vec2(18.0, 22.0), egui::Align2::CENTER_CENTER, crate::ui::icons::LOCK, FontId::proportional(theme::size::ICON), theme::subtext());
+            let (title_y, has_user) = if password.user.is_empty() { (22.0, false) } else { (14.0, true) };
+            let clip = ui.painter().with_clip_rect(rect.with_max_x(rect.max.x - 72.0));
+            clip.text(rect.min + egui::vec2(36.0, title_y), egui::Align2::LEFT_CENTER, &password.name, FontId::new(theme::size::BODY, crate::ui::strong_family()), theme::text());
+            if has_user {
+                clip.text(rect.min + egui::vec2(36.0, 31.0), egui::Align2::LEFT_CENTER, &password.user, FontId::proportional(theme::size::SMALL), theme::subtext());
+            }
+            for (offset, glyph, tip) in [(52.0, crate::ui::icons::PENCIL, "Editar"), (22.0, crate::ui::icons::TRASH, "Eliminar")] {
+                let slot = egui::Rect::from_center_size(egui::pos2(rect.max.x - offset, rect.center().y), egui::vec2(26.0, 26.0));
+                let color = if glyph == crate::ui::icons::TRASH { theme::red() } else { theme::text() };
+                let clicked = crate::ui::kit::IconButton::new(glyph).color(color).show_at(ui, slot, ("password", password.id, glyph)).on_hover_text(tip).clicked();
+                if clicked {
+                    *page.request = Some(if glyph == crate::ui::icons::TRASH { PasswordRequest::Delete(password.clone()) } else { PasswordRequest::Edit(password.clone()) });
+                }
+            }
+            if response.hand().double_clicked() {
+                *page.request = Some(PasswordRequest::Edit(password.clone()));
+            }
+        }
     });
 }
 

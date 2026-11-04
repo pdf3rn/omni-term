@@ -531,6 +531,12 @@ pub(super) fn ssh_access_rows(ui: &mut egui::Ui, form: &mut ConnForm) {
             crate::ui::kit::password_field(ui, &mut form.secret, &mut form.reveal_secret, "opcional: se guarda en el almacén", width);
         });
     }
+    if form.auth == Auth::Password {
+        ui.add_space(theme::space::ROW);
+        crate::ui::kit::form_row(ui, "", |ui| {
+            crate::ui::kit::switch_labeled(ui, &mut form.add_to_manager, "Añadir al gestor de contraseñas");
+        });
+    }
 }
 
 pub(super) fn telnet_rows(ui: &mut egui::Ui, form: &mut ConnForm) {

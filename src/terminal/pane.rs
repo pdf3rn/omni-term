@@ -132,6 +132,7 @@ pub enum PaneRequest {
     SplitRight,
     SplitDown,
     Close,
+    TypePassword,
 }
 
 /// Vista de un terminal: pinta la rejilla de una sesión y le envía la entrada.
@@ -181,6 +182,26 @@ impl Pane {
         }
         self.session.term.lock().unwrap().scroll_display(Scroll::Bottom);
         self.session.write(&bytes);
+    }
+
+    /// Escribe una contraseña como si se tecleara: sin el pegado entre corchetes (que `sudo` tomaría como
+    /// parte de la contraseña) y sin pasar por el portapapeles. Con `enter`, la envía.
+    pub fn type_secret(&self, secret: &str, enter: bool) {
+        let mut bytes = zeroize::Zeroizing::new(secret.as_bytes().to_vec());
+        if enter {
+            bytes.push(b'\r');
+        }
+        self.session.term.lock().unwrap().scroll_display(Scroll::Bottom);
+        self.session.write(&bytes);
+    }
+
+    /// Texto de la línea del cursor hasta el cursor: lo que el programa acaba de escribir (por ejemplo,
+    /// «[sudo] password for pedro: »).
+    pub fn text_before_cursor(&self) -> String {
+        let term = self.session.term.lock().unwrap();
+        let cursor = term.grid().cursor.point;
+        let (text, columns) = line_text(&term, cursor.line.0);
+        text.chars().zip(columns).take_while(|(_, column)| *column < cursor.column.0).map(|(c, _)| c).collect()
     }
 
     /// Texto seleccionado con el ratón, si lo hay.
@@ -530,6 +551,10 @@ impl Pane {
         }
         if entry(ui, "Pegar", "Ctrl+Shift+V") {
             self.paste_clipboard();
+            ui.close();
+        }
+        if entry(ui, "Escribir contraseña…", "Ctrl+Alt+P") {
+            self.request = Some(PaneRequest::TypePassword);
             ui.close();
         }
         if entry(ui, "Seleccionar todo", "") {

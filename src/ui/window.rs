@@ -213,10 +213,13 @@ impl App {
                         ui.set_min_width(300.0);
                         item(ui, "Copiar", "Ctrl+Shift+C", has_selection, Command::Copy);
                         item(ui, "Pegar", "Ctrl+Shift+V", has_terminal, Command::Paste);
+                        item(ui, "Escribir contraseña…", "Ctrl+Alt+P", has_terminal, Command::TypePassword);
                         item(ui, "Seleccionar todo", "", has_terminal, Command::SelectAll);
                         ui.separator();
                         item(ui, "Buscar en la salida", "Ctrl+Shift+F", has_terminal, Command::Search);
                         item(ui, "Guardar selección como snippet", "", has_selection, Command::SaveSnippet);
+                        ui.separator();
+                        item(ui, "Contraseñas guardadas", "", true, Command::Passwords);
                     });
                     ui.menu_button("Ver", |ui| {
                         ui.set_min_width(300.0);

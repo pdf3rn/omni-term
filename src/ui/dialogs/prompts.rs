@@ -90,10 +90,68 @@ pub struct SecretPrompt {
     pub reveal: bool,
 }
 
+/// Escribir una contraseña guardada en un panel concreto (gestor de contraseñas, Ctrl+Alt+P).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TypeRequest {
+    pub source: crate::ui::palette::PasswordSource,
+    /// Pestaña y panel que tenían el foco al pedirla: se escribe ahí aunque el foco cambie después.
+    pub tab: u64,
+    pub pane: u64,
+    pub enter: bool,
+    /// Ya se comprobó que el terminal la pide (o el usuario quiso escribirla igualmente).
+    pub checked: bool,
+}
+
+/// Aviso antes de escribir una contraseña cuando el terminal no parece estar pidiéndola.
+pub struct TypePasswordConfirm {
+    pub request: TypeRequest,
+    /// Nombre de la contraseña, para el texto del aviso.
+    pub label: String,
+    /// Lo que hay escrito en la línea del cursor.
+    pub line: String,
+}
+
+/// Formulario de una contraseña del gestor.
+pub struct PasswordForm {
+    pub id: Option<i64>,
+    pub name: String,
+    pub user: String,
+    /// Vacío al editar: se conserva la que hay guardada. Se borra de memoria al descartar el formulario.
+    pub secret: Zeroizing<String>,
+    pub reveal: bool,
+    pub error: Option<String>,
+    pub focus: bool,
+}
+
+impl PasswordForm {
+    pub fn new() -> Self {
+        Self { id: None, name: String::new(), user: String::new(), secret: Zeroizing::new(String::new()), reveal: false, error: None, focus: true }
+    }
+
+    pub fn from_saved(password: &crate::data::store::SavedPassword) -> Self {
+        Self { id: password.id, name: password.name.clone(), user: password.user.clone(), ..Self::new() }
+    }
+
+    pub fn to_saved(&self) -> Result<crate::data::store::SavedPassword, String> {
+        let name = self.name.trim();
+        if name.is_empty() {
+            return Err("El nombre es obligatorio".into());
+        }
+        if self.id.is_none() && self.secret.is_empty() {
+            return Err("Escribe la contraseña".into());
+        }
+        Ok(crate::data::store::SavedPassword { id: self.id, name: name.into(), user: self.user.trim().into() })
+    }
+}
+
 /// Qué hacer cuando el almacén de secretos queda desbloqueado.
 pub enum Pending {
     Open(Connection, Option<u64>, Purpose),
-    Save { account: String, secret: Zeroizing<String> },
+    TypePassword(TypeRequest),
+    /// Secretos por guardar: cuenta y valor.
+    Save(Vec<(String, Zeroizing<String>)>),
+    /// Copiar la contraseña guardada de una conexión al gestor de contraseñas.
+    AddToManager(i64),
     Migrate(crate::data::secrets::MigrateFrom),
 }
 
@@ -223,6 +281,30 @@ pub(super) fn snippet_body(ui: &mut egui::Ui, form: &mut SnippetForm) -> bool {
     );
     error_label(ui, &form.error);
     false
+}
+
+pub(super) fn password_body(ui: &mut egui::Ui, form: &mut PasswordForm) -> bool {
+    let mut submitted = false;
+    egui::Grid::new("password_form").num_columns(2).spacing([10.0, 8.0]).show(ui, |ui| {
+        ui.label("Nombre");
+        let name = ui.add(TextEdit::singleline(&mut form.name).desired_width(f32::INFINITY));
+        if std::mem::take(&mut form.focus) {
+            name.request_focus();
+        }
+        submitted |= entered(ui, &name);
+        ui.end_row();
+        ui.label("Usuario");
+        let user = ui.add(TextEdit::singleline(&mut form.user).hint_text("opcional").desired_width(f32::INFINITY));
+        submitted |= entered(ui, &user);
+        ui.end_row();
+        ui.label("Contraseña");
+        let hint = if form.id.is_some() { "vacía: no se cambia" } else { "" };
+        let field = secret_field(ui, &mut form.secret, &mut form.reveal, hint);
+        submitted |= entered(ui, &field);
+        ui.end_row();
+    });
+    error_label(ui, &form.error);
+    submitted
 }
 
 pub(super) fn vars_body(ui: &mut egui::Ui, prompt: &mut VarsPrompt) -> bool {
