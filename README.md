@@ -21,7 +21,7 @@ A native, cross-platform terminal written in Rust, built like an IDE: local shel
 - Port forwarding per connection: `-L`, `-R` and `-D` (SOCKS5 proxy).
 - Snippets with search and `{{name}}` / `{{name=default}}` variables.
 - Password manager: `Ctrl+Alt+P` types a saved password into the terminal when a program asks for one (`sudo`, `su`, a key passphrase). It is sent as keystrokes, never through the clipboard. If the current line does not look like a password prompt, it asks before typing.
-- Passwords are managed in *Settings → Contraseñas (Passwords)*. In a saved SSH tab, that connection's password is offered first, and a switch in the connection form adds it to the manager.
+- Passwords are managed in *Settings → Contraseñas (Passwords)*. In a saved SSH tab, that connection's password is offered first.
 
 **Files**
 - Two-pane explorer (local and remote) over **SFTP**, **FTP/FTPS** and **SMB 2/3**: drag and drop, recursive background transfers with cancellation, conflict resolution, permissions (where the protocol supports them) and a local trash.

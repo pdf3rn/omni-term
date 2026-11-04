@@ -98,27 +98,10 @@ impl App {
     }
 
     pub(super) fn save_secret(&mut self, account: String, secret: Zeroizing<String>) {
-        self.save_secrets(vec![(account, secret)]);
-    }
-
-    /// Guarda varios secretos. Si el almacén está bloqueado, pide la clave maestra una sola vez y guarda
-    /// todos los que faltan al desbloquear (con un diálogo por secreto, el segundo pisaría al primero).
-    pub(super) fn save_secrets(&mut self, mut secrets: Vec<(String, Zeroizing<String>)>) {
-        while !secrets.is_empty() {
-            let (account, secret) = &secrets[0];
-            match self.secrets.set(account, secret) {
-                Ok(()) => {
-                    secrets.remove(0);
-                }
-                Err(SecretError::Locked) => {
-                    self.ask_unlock(Pending::Save(secrets));
-                    return;
-                }
-                Err(error) => {
-                    self.dialog = Some(Dialog::failure("No se pudo guardar el secreto", error));
-                    return;
-                }
-            }
+        match self.secrets.set(&account, &secret) {
+            Ok(()) => {}
+            Err(SecretError::Locked) => self.ask_unlock(Pending::Save { account, secret }),
+            Err(error) => self.dialog = Some(Dialog::failure("No se pudo guardar el secreto", error)),
         }
     }
 }

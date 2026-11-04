@@ -148,10 +148,7 @@ impl PasswordForm {
 pub enum Pending {
     Open(Connection, Option<u64>, Purpose),
     TypePassword(TypeRequest),
-    /// Secretos por guardar: cuenta y valor.
-    Save(Vec<(String, Zeroizing<String>)>),
-    /// Copiar la contraseña guardada de una conexión al gestor de contraseñas.
-    AddToManager(i64),
+    Save { account: String, secret: Zeroizing<String> },
     Migrate(crate::data::secrets::MigrateFrom),
 }
 

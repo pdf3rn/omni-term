@@ -43,28 +43,10 @@ impl App {
                                 eprintln!("no se pudieron guardar los túneles: {error:#}");
                             }
                             self.refresh_connections();
-                            let typed = (!form.secret.is_empty()).then(|| Zeroizing::new(std::mem::take(&mut form.secret)));
-                            let mut to_save = Vec::new();
-                            if let Some(secret) = &typed
-                                && connection.auth != Auth::Agent
-                            {
+                            if !form.secret.is_empty() && connection.auth != Auth::Agent {
                                 let kind = if connection.auth == Auth::Password { SecretKind::Password } else { SecretKind::Passphrase };
-                                to_save.push((account_for(id, kind), secret.clone()));
+                                self.save_secret(account_for(id, kind), Zeroizing::new(std::mem::take(&mut form.secret)));
                             }
-                            if form.add_to_manager && form.ssh_like() && connection.auth == Auth::Password {
-                                match typed {
-                                    // Escrita ahora: se guarda junto con la de la conexión (un solo desbloqueo).
-                                    Some(secret) => {
-                                        if let Some(entry) = self.manager_entry_for(id) {
-                                            to_save.push((crate::data::secrets::password_account(entry), secret));
-                                        }
-                                    }
-                                    // No se reescribió: se copia la guardada, salvo que ya esté en el gestor.
-                                    None if !self.in_manager(id) => self.add_connection_to_manager(id, None),
-                                    None => {}
-                                }
-                            }
-                            self.save_secrets(to_save);
                         }
                     }
                 }
@@ -180,8 +162,7 @@ impl App {
                         Ok(()) => {
                             match prompt.then {
                                 Pending::Open(connection, slot, purpose) => self.continue_open(connection, slot, purpose),
-                                Pending::Save(secrets) => self.save_secrets(secrets),
-                                Pending::AddToManager(connection) => self.add_connection_to_manager(connection, None),
+                                Pending::Save { account, secret } => self.save_secret(account, secret),
                                 Pending::Migrate(from) => self.run_migration(from),
                                 Pending::TypePassword(request) => self.type_password(request),
                             }

@@ -173,8 +173,6 @@ pub struct ConnForm {
     pub init_command: String,
     pub secret: String,
     pub reveal_secret: bool,
-    /// Al guardar, añadir la contraseña también al gestor de contraseñas (solo autenticación por contraseña).
-    pub add_to_manager: bool,
 }
 
 impl ConnForm {
@@ -219,7 +217,6 @@ impl ConnForm {
             init_command: String::new(),
             secret: String::new(),
             reveal_secret: false,
-            add_to_manager: true,
             focus: true,
             custom_env: false,
             advanced_open: false,
@@ -305,7 +302,6 @@ impl ConnForm {
             init_command: connection.init_command.clone().unwrap_or_default(),
             secret: String::new(),
             reveal_secret: false,
-            add_to_manager: true,
             advanced_open: connection.jump.is_some(),
             errors: FormErrors::default(),
             test: None,
