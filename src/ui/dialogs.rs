@@ -40,6 +40,8 @@ pub enum Dialog {
     Edit(ConnForm),
     Snippet(SnippetForm),
     SnippetVars(VarsPrompt),
+    Password(PasswordForm),
+    ConfirmTypePassword(TypePasswordConfirm),
     Secret(SecretPrompt),
     Unlock(UnlockPrompt),
     HostKey(HostKeyRequest),
@@ -180,6 +182,30 @@ pub fn show(
             let title = if form.id.is_some() { "Editar snippet" } else { "Nuevo snippet" };
             let action = shell(ctx, Spec::new(title).accept("Guardar").ctrl_enter(), |ui| snippet_body(ui, form));
             plain(action, Outcome::Save)
+        }
+        Dialog::Password(form) => {
+            let title = if form.id.is_some() { "Editar contraseña" } else { "Nueva contraseña" };
+            let action = shell(ctx, Spec::new(title).width(440.0).accept("Guardar"), |ui| password_body(ui, form));
+            plain(action, Outcome::Save)
+        }
+        Dialog::ConfirmTypePassword(confirm) => {
+            // Solo con clic: un Enter de más (el de la contraseña que se iba a escribir) no debe aceptarlo.
+            let spec = Spec::new("¿Escribir la contraseña?").width(460.0).accept("Escribir").icon(DialogIcon::Warning).click_only();
+            let action = shell(ctx, spec, |ui| {
+                ui.label(format!("El terminal no parece pedir una contraseña. ¿Escribir {} igualmente?", confirm.label));
+                let line = confirm.line.trim();
+                if !line.is_empty() {
+                    ui.add_space(theme::space::XS);
+                    ui.label(RichText::new("Línea actual").small().color(theme::subtext()));
+                    egui::Frame::new().fill(theme::surface()).corner_radius(theme::radius::SMALL).inner_margin(theme::space::S).show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        let shown: String = line.chars().rev().take(120).collect::<Vec<_>>().into_iter().rev().collect();
+                        ui.label(RichText::new(shown).monospace());
+                    });
+                }
+                false
+            });
+            plain(action, Outcome::Submit)
         }
         Dialog::SnippetVars(prompt) => {
             let accept = if prompt.run { "Insertar y ejecutar" } else { "Insertar" };

@@ -57,6 +57,11 @@ pub fn account_for(connection_id: i64, kind: SecretKind) -> String {
     }
 }
 
+/// Cuenta bajo la que se guarda una contraseña del gestor (`store::SavedPassword`).
+pub fn password_account(password_id: i64) -> String {
+    format!("password:{password_id}")
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SecretKind {
     Password,

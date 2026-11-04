@@ -20,9 +20,15 @@ impl App {
 
     /// Aplica la limpieza pendiente de un aviso que se cierra sin deshacer.
     pub(super) fn finish_toast(&mut self, toast: Toast) {
-        if let Some(Cleanup::Secrets(id)) = &toast.cleanup {
-            let _ = self.secrets.delete(&account_for(*id, SecretKind::Password));
-            let _ = self.secrets.delete(&account_for(*id, SecretKind::Passphrase));
+        match &toast.cleanup {
+            Some(Cleanup::Secrets(id)) => {
+                let _ = self.secrets.delete(&account_for(*id, SecretKind::Password));
+                let _ = self.secrets.delete(&account_for(*id, SecretKind::Passphrase));
+            }
+            Some(Cleanup::Password(id)) => {
+                let _ = self.secrets.delete(&crate::data::secrets::password_account(*id));
+            }
+            None => {}
         }
     }
 
@@ -90,6 +96,7 @@ impl App {
                     .and_then(|_| store.replace_forwards(connection.id.unwrap_or_default(), forwards))
                     .and_then(|_| dependents.iter().try_for_each(|id| store.set_jump(*id, connection.id))),
                 Undo::Snippet(snippet) => store.restore_snippet(snippet),
+                Undo::Password(password) => store.restore_password(password),
                 Undo::KnownHosts(lines) => {
                     let path = ssh::default_known_hosts();
                     lines.iter().try_for_each(|(index, raw)| known_hosts::insert(&path, *index, raw)).map_err(Into::into)
@@ -107,7 +114,8 @@ impl App {
         match result {
             Ok(()) => {
                 self.known_hosts.loaded = false;
-                self.refresh_connections()
+                self.refresh_connections();
+                self.refresh_passwords();
             }
             Err(error) => self.dialog = Some(Dialog::failure("No se pudo deshacer", format!("{error:#}"))),
         }
@@ -118,6 +126,7 @@ impl App {
 pub(super) enum Undo {
     Connection { connection: Connection, forwards: Vec<Forward>, dependents: Vec<i64> },
     Snippet(Snippet),
+    Password(store::SavedPassword),
     /// Entorno y color anteriores de una conexión movida de grupo.
     Environment { id: i64, env: Option<String>, color: Option<u8> },
     /// Líneas de `known_hosts` borradas: posición y texto.
@@ -126,7 +135,10 @@ pub(super) enum Undo {
 
 /// Limpieza que solo se hace si el aviso caduca sin deshacer.
 pub(super) enum Cleanup {
+    /// Secretos de una conexión borrada.
     Secrets(i64),
+    /// Secreto de una contraseña del gestor borrada.
+    Password(i64),
 }
 
 pub(super) struct Toast {

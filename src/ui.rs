@@ -15,6 +15,7 @@ mod dialog_flow;
 mod empty;
 mod library;
 mod pane_drag;
+mod passwords;
 mod secrets_flow;
 mod sessions;
 mod sidebar;
@@ -114,6 +115,10 @@ pub struct App {
     connections: Vec<Connection>,
     forwards: HashMap<i64, Vec<Forward>>,
     snippets: Vec<Snippet>,
+    /// Contraseñas del gestor (solo nombres: los secretos están en el almacén).
+    passwords: Vec<store::SavedPassword>,
+    /// Sección de contraseñas de Ajustes: lo que pidió el usuario.
+    password_request: Option<dialogs::PasswordRequest>,
     sidebar_view: SidebarView,
     /// Búsqueda de la barra lateral; filtra conexiones o snippets según la vista.
     sidebar_query: String,
@@ -189,6 +194,7 @@ impl App {
         let connections = store.list_connections().unwrap_or_default();
         let forwards = store.all_forwards().unwrap_or_default();
         let snippets = store.list_snippets().unwrap_or_default();
+        let passwords = store.list_passwords().unwrap_or_default();
         let store = Arc::new(Mutex::new(store));
         let store_meta_flag = matches!(store.lock().unwrap().meta("window_maximized"), Ok(Some(v)) if v == b"1");
         let secrets = Secrets::select(store.clone());
@@ -272,6 +278,8 @@ impl App {
             connections,
             forwards,
             snippets,
+            passwords,
+            password_request: None,
             sidebar_view,
             sidebar_query: String::new(),
             sidebar_collapsed,
@@ -435,13 +443,21 @@ impl eframe::App for App {
         self.central_area(ui, &ctx);
 
         if let Some(mut palette) = self.palette.take() {
-            let items = self.palette_items();
+            let items = match palette.mode {
+                palette::Mode::All => self.palette_items(),
+                palette::Mode::Passwords { tab, .. } => self.password_items(tab),
+            };
             match palette.show(&ctx, &items) {
                 palette::Outcome::Open => self.palette = Some(palette),
                 palette::Outcome::Close => {}
-                palette::Outcome::Run(index) => {
+                palette::Outcome::Run(index, alternate) => {
                     if let Some(item) = items.into_iter().nth(index) {
-                        self.run_palette(item.target);
+                        match (item.target, palette.mode) {
+                            (Target::Password(source), palette::Mode::Passwords { tab, pane }) => {
+                                self.type_password(dialogs::TypeRequest { source, tab, pane, enter: !alternate, checked: false });
+                            }
+                            (target, _) => self.run_palette(target),
+                        }
                     }
                 }
             }

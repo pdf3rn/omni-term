@@ -219,6 +219,7 @@ impl App {
                 Some(PaneRequest::SplitRight) => self.split_active(Dir::Horizontal),
                 Some(PaneRequest::SplitDown) => self.split_active(Dir::Vertical),
                 Some(PaneRequest::Close) => self.request_close_focused_pane(),
+                Some(PaneRequest::TypePassword) => self.open_password_picker(),
                 None => {}
             }
             if let Some(pane) = close_pane {

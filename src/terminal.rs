@@ -4,6 +4,7 @@ pub mod keys;
 pub mod layout;
 pub mod mouse;
 pub mod pane;
+pub mod password_prompt;
 pub mod search;
 pub mod snippet_vars;
 pub mod term;

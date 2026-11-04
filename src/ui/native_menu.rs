@@ -72,10 +72,13 @@ const FILE: &[Row] = &[
 const EDIT: &[Row] = &[
     Item("Copiar", Command::Copy, Selection),
     Item("Pegar", Command::Paste, Terminal),
+    Item("Escribir contraseña…", Command::TypePassword, Terminal),
     Item("Seleccionar todo", Command::SelectAll, Terminal),
     Separator,
     Item("Buscar en la salida", Command::Search, Terminal),
     Item("Guardar selección como snippet", Command::SaveSnippet, Selection),
+    Separator,
+    Item("Contraseñas guardadas", Command::Passwords, Always),
 ];
 
 const VIEW: &[Row] = &[

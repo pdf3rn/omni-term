@@ -8,13 +8,12 @@ impl App {
         self.secrets.master().cloned().or_else(|| self.migration_master.clone())
     }
 
-    /// Cuentas bajo las que puede haber contraseñas o passphrases guardadas.
+    /// Cuentas bajo las que puede haber contraseñas o passphrases guardadas: las de las conexiones y las
+    /// del gestor de contraseñas.
     pub(super) fn secret_accounts(&self) -> Vec<String> {
-        self.connections
-            .iter()
-            .filter_map(|c| c.id)
-            .flat_map(|id| [account_for(id, SecretKind::Password), account_for(id, SecretKind::Passphrase)])
-            .collect()
+        let connections = self.connections.iter().filter_map(|c| c.id).flat_map(|id| [account_for(id, SecretKind::Password), account_for(id, SecretKind::Passphrase)]);
+        let passwords = self.passwords.iter().filter_map(|p| p.id).map(crate::data::secrets::password_account);
+        connections.chain(passwords).collect()
     }
 
     /// Cuántos secretos guardados hay en el almacén activo.
@@ -99,10 +98,27 @@ impl App {
     }
 
     pub(super) fn save_secret(&mut self, account: String, secret: Zeroizing<String>) {
-        match self.secrets.set(&account, &secret) {
-            Ok(()) => {}
-            Err(SecretError::Locked) => self.ask_unlock(Pending::Save { account, secret }),
-            Err(error) => self.dialog = Some(Dialog::failure("No se pudo guardar el secreto", error)),
+        self.save_secrets(vec![(account, secret)]);
+    }
+
+    /// Guarda varios secretos. Si el almacén está bloqueado, pide la clave maestra una sola vez y guarda
+    /// todos los que faltan al desbloquear (con un diálogo por secreto, el segundo pisaría al primero).
+    pub(super) fn save_secrets(&mut self, mut secrets: Vec<(String, Zeroizing<String>)>) {
+        while !secrets.is_empty() {
+            let (account, secret) = &secrets[0];
+            match self.secrets.set(account, secret) {
+                Ok(()) => {
+                    secrets.remove(0);
+                }
+                Err(SecretError::Locked) => {
+                    self.ask_unlock(Pending::Save(secrets));
+                    return;
+                }
+                Err(error) => {
+                    self.dialog = Some(Dialog::failure("No se pudo guardar el secreto", error));
+                    return;
+                }
+            }
         }
     }
 }

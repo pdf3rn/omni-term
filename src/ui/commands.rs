@@ -37,6 +37,8 @@ impl App {
             Target::Snippet(snippet) => self.insert_snippet(&snippet, false),
             Target::Tab(index) => self.active = index.min(self.tabs.len().saturating_sub(1)),
             Target::Command(command) => self.run_command(command),
+            // Solo aparecen en el selector de contraseñas, que las atiende aparte.
+            Target::Password(_) => {}
         }
     }
 
@@ -48,6 +50,8 @@ impl App {
             Command::Settings => self.open_settings(dialogs::SettingsTab::General),
             Command::KnownHosts => self.open_settings(dialogs::SettingsTab::Hosts),
             Command::Containers => self.open_containers(),
+            Command::TypePassword => self.open_password_picker(),
+            Command::Passwords => self.open_settings(dialogs::SettingsTab::Passwords),
             Command::Shortcuts => self.open_settings(dialogs::SettingsTab::Atajos),
             Command::About => self.dialog = Some(Dialog::About),
             Command::Palette => self.palette = Some(Palette::default()),
@@ -135,6 +139,23 @@ impl App {
         }
         if ctx.input_mut(|i| i.consume_key(Modifiers::CTRL | Modifiers::SHIFT, Key::P)) && self.dialog.is_none() {
             self.palette = if self.palette.is_some() { None } else { Some(Palette::default()) };
+        }
+        // Gestor de contraseñas: escribir una guardada en el terminal (por ejemplo, cuando sudo la pide).
+        // Con distribuciones de teclado donde Ctrl+Alt equivale a AltGr, la P también puede llegar como texto:
+        // se descarta para que no se escriba en el terminal.
+        let password_key = ctx.input_mut(|i| {
+            let pressed = i.consume_key(Modifiers::CTRL | Modifiers::ALT, Key::P);
+            if pressed {
+                i.events.retain(|e| !matches!(e, egui::Event::Text(_)));
+            }
+            pressed
+        });
+        if password_key && self.dialog.is_none() {
+            if matches!(self.palette.as_ref().map(|p| p.mode), Some(palette::Mode::Passwords { .. })) {
+                self.palette = None;
+            } else {
+                self.open_password_picker();
+            }
         }
         if ctx.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::Comma)) {
             self.open_settings(dialogs::SettingsTab::General);
