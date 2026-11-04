@@ -129,22 +129,29 @@ impl App {
     }
 
     pub(super) fn global_shortcuts(&mut self, ctx: &egui::Context) {
-        // Con Ctrl solo (B, K) chocarían con tmux y readline.
-        let (toggle_sidebar, search_sidebar) = ctx.input_mut(|i| {
-            let both = Modifiers::CTRL | Modifiers::SHIFT;
-            (i.consume_key(both, Key::B), i.consume_key(both, Key::K))
-        });
+        // Con Ctrl solo (B, K) chocarían con tmux y readline; por eso Ctrl+Shift (Cmd en macOS).
+        let app = shortcuts::app();
+        let (toggle_sidebar, search_sidebar, new_connection, close) =
+            ctx.input_mut(|i| (i.consume_key(app, Key::B), i.consume_key(app, Key::K), i.consume_key(app, Key::N), i.consume_key(app, Key::W)));
+        if new_connection && self.dialog.is_none() {
+            self.run_command(Command::NewConnection);
+        }
+        // Aquí y no en el panel: cierra también pestañas que no son de terminal (Ajustes, explorador) y
+        // funciona con la búsqueda abierta o con el foco en otro campo.
+        if close && self.dialog.is_none() && self.palette.is_none() {
+            self.request_close_focused_pane();
+        }
         if toggle_sidebar {
             self.set_sidebar_collapsed(!self.sidebar_collapsed);
         }
-        if ctx.input_mut(|i| i.consume_key(Modifiers::CTRL | Modifiers::SHIFT, Key::P)) && self.dialog.is_none() {
+        if ctx.input_mut(|i| i.consume_key(app, Key::P)) && self.dialog.is_none() {
             self.palette = if self.palette.is_some() { None } else { Some(Palette::default()) };
         }
         // Gestor de contraseñas: escribir una guardada en el terminal (por ejemplo, cuando sudo la pide).
         // Con distribuciones de teclado donde Ctrl+Alt equivale a AltGr, la P también puede llegar como texto:
         // se descarta para que no se escriba en el terminal.
         let password_key = ctx.input_mut(|i| {
-            let pressed = i.consume_key(Modifiers::CTRL | Modifiers::ALT, Key::P);
+            let pressed = i.consume_key(shortcuts::password(), Key::P);
             if pressed {
                 i.events.retain(|e| !matches!(e, egui::Event::Text(_)));
             }
@@ -157,19 +164,19 @@ impl App {
                 self.open_password_picker();
             }
         }
-        if ctx.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::Comma)) {
+        if ctx.input_mut(|i| i.consume_key(shortcuts::primary(), Key::Comma)) {
             self.open_settings(dialogs::SettingsTab::General);
         }
         if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F11)) {
             self.run_command(Command::Fullscreen);
         }
-        if ctx.input_mut(|i| i.consume_key(Modifiers::CTRL | Modifiers::SHIFT, Key::T)) && self.dialog.is_none() {
+        if ctx.input_mut(|i| i.consume_key(app, Key::T)) && self.dialog.is_none() {
             self.open_plus_menu = true;
         }
-        // Alt+1…9 salta a esa pestaña (Alt+9, a la última); Ctrl+Tab y Ctrl+Mayús+Tab recorren.
+        // Alt+1…9 (Cmd en macOS) salta a esa pestaña (la 9, a la última); Ctrl+Tab y Ctrl+Shift+Tab recorren.
         let (jump, step) = ctx.input_mut(|i| {
             let digits = [Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5, Key::Num6, Key::Num7, Key::Num8, Key::Num9];
-            let jump = digits.iter().position(|k| i.consume_key(Modifiers::ALT, *k));
+            let jump = digits.iter().position(|k| i.consume_key(shortcuts::tab_digit(), *k));
             if jump.is_some() {
                 // El dígito también llega como texto: no debe escribirse en el terminal.
                 i.events.retain(|e| !matches!(e, egui::Event::Text(_)));

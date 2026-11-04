@@ -65,13 +65,16 @@ xattr -cr omni-term.app
 | `Ctrl+Alt+P` | Type a saved password (`Enter` types and sends, `Alt+Enter` only types) |
 | `Ctrl+Shift+B` / `Ctrl+Shift+K` | Toggle sidebar / search connections |
 | `Ctrl+Shift+D` / `Ctrl+Shift+E` | Split right / split down |
-| `Ctrl+Shift+W` | Close the focused pane (or the tab if it is the only one) |
+| `Ctrl+Shift+N` | New connection |
+| `Ctrl+Shift+W` | Close the focused pane, or the tab if it has only one (works in any tab) |
 | `Ctrl+=` / `Ctrl+-` / `Ctrl+0` | Increase, decrease and reset the font |
 | `F11` | Fullscreen |
 | `Ctrl` + click | Open the link under the pointer |
 | `Shift` + drag | Select text even when the application uses the mouse |
 
 `Ctrl+C` always goes to the application (it interrupts the process).
+
+On macOS the app shortcuts use `Cmd` instead of `Ctrl+Shift` (`Cmd+C`, `Cmd+V`, `Cmd+P`, `Cmd+W`…), so `Control` keeps reaching the terminal. The others: `Cmd+,` settings, `Cmd+=` / `Cmd+-` / `Cmd+0` font, `Cmd+1…9` tabs, `Cmd+Option+P` passwords, `Cmd+Option+arrows` move between panes, `Cmd+Ctrl+arrows` resize them and `Cmd+Shift+Enter` zooms a pane. The menus and *Settings → Atajos de teclado* show the keys for your system.
 
 ## Data
 

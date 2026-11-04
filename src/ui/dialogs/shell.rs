@@ -253,7 +253,7 @@ pub fn shell(ctx: &egui::Context, spec: Spec, body: impl FnOnce(&mut egui::Ui) -
             match &spec.accept {
                 Some(label) => {
                     let accept = ui.add_enabled_ui(spec.accept_enabled, |ui| crate::ui::kit::button_with(ui, primary(label), variant)).inner;
-                    let accept = if spec.submit == Submit::CtrlEnter { accept.on_hover_text("Ctrl+Enter") } else { accept };
+                    let accept = if spec.submit == Submit::CtrlEnter { accept.on_hover_text(crate::ui::shortcuts::label("Ctrl+Enter")) } else { accept };
                     if accept.clicked() {
                         action = Action::Accept;
                     }

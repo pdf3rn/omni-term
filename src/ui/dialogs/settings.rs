@@ -62,8 +62,9 @@ pub(super) const SHORTCUTS: [(&str, &[(&str, &str)]); 4] = [
         &[
             ("Ctrl+Shift+P", "Paleta de comandos"),
             ("Ctrl+,", "Abrir los ajustes"),
+            ("Ctrl+Shift+N", "Nueva conexión"),
             ("Alt+1 … 9", "Ir a la pestaña 1 … 9 (Alt+9, la última)"),
-            ("Ctrl+Tab / Ctrl+Mayús+Tab", "Pestaña siguiente / anterior"),
+            ("Ctrl+Tab / Ctrl+Shift+Tab", "Pestaña siguiente / anterior"),
             ("Doble clic en la pestaña", "Renombrarla"),
         ],
     ),
@@ -74,9 +75,9 @@ pub(super) const SHORTCUTS: [(&str, &[(&str, &str)]); 4] = [
             ("Ctrl+Shift+F", "Buscar en la salida"),
             ("Ctrl+Alt+P", "Escribir una contraseña guardada"),
             ("Ctrl+Shift+D / E", "Dividir a la derecha / hacia abajo"),
-            ("Ctrl+Shift+W", "Cerrar el panel"),
+            ("Ctrl+Shift+W", "Cerrar el panel o la pestaña"),
             ("Alt+flechas", "Ir al panel de al lado"),
-            ("Alt+Mayús+flechas", "Mover el borde del panel"),
+            ("Alt+Shift+flechas", "Mover el borde del panel"),
             ("Ctrl+Shift+Z", "Ampliar o restaurar el panel"),
             ("Ctrl+= / Ctrl+− / Ctrl+0", "Aumentar / reducir / restablecer la letra"),
         ],
@@ -167,7 +168,7 @@ pub(super) fn settings_content(ui: &mut egui::Ui, tab: SettingsTab, settings: &m
         for (group, entries) in SHORTCUTS {
             crate::ui::kit::card(ui, group, |ui| {
                 for (index, (keys, what)) in entries.iter().enumerate() {
-                    crate::ui::kit::setting_row(ui, what, None, index + 1 < entries.len(), |ui| {
+                    crate::ui::kit::setting_row(ui, &crate::ui::shortcuts::label(what), None, index + 1 < entries.len(), |ui| {
                         for (n, combo) in keys.split(" / ").enumerate() {
                             if n > 0 {
                                 ui.label(RichText::new("/").color(theme::subtext()));
@@ -229,7 +230,7 @@ pub(super) fn settings_content(ui: &mut egui::Ui, tab: SettingsTab, settings: &m
     });
 
     crate::ui::kit::card(ui, "Terminal", |ui| {
-        crate::ui::kit::setting_row(ui, "Terminal local predeterminado", Some("Para el botón + y Ctrl+Shift+T"), true, |ui| {
+        crate::ui::kit::setting_row(ui, "Terminal local predeterminado", Some(&crate::ui::shortcuts::label("Para el botón + y Ctrl+Shift+T")), true, |ui| {
             let profiles: Vec<&Connection> = connections.iter().filter(|c| c.is_local()).collect();
             let current = settings.local_profile.and_then(|id| profiles.iter().find(|c| c.id == Some(id)));
             egui::ComboBox::from_id_salt("local-profile")

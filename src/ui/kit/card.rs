@@ -113,13 +113,15 @@ pub fn toggle(ui: &mut Ui, value: &mut bool) -> egui::Response {
     switch(ui, value)
 }
 
-/// Combinación de teclas con aspecto de tecla.
+/// Combinación de teclas con aspecto de tecla. `text` va con la forma de Linux y Windows: en macOS se
+/// muestra con Cmd (ver `shortcuts::label`).
 pub fn keycap(ui: &mut Ui, text: &str) {
+    let text = crate::ui::shortcuts::label(text);
     egui::Frame::new()
         .fill(theme::surface())
         .corner_radius(egui::CornerRadius::same(theme::radius::SMALL))
         .inner_margin(Margin::symmetric(8, 3))
         .show(ui, |ui| {
-            ui.label(RichText::new(text).font(FontId::new(theme::size::SECTION, egui::FontFamily::Monospace)).color(theme::text()));
+            ui.label(RichText::new(&text).font(FontId::new(theme::size::SECTION, egui::FontFamily::Monospace)).color(theme::text()));
         });
 }

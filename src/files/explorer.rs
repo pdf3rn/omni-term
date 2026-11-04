@@ -560,10 +560,10 @@ impl Explorer {
                 if i.consume_key(Modifiers::NONE, Key::F5) {
                     found.push(PaneAction::Refresh);
                 }
-                if i.consume_key(Modifiers::CTRL, Key::A) {
+                if i.consume_key(crate::ui::shortcuts::primary(), Key::A) {
                     found.push(PaneAction::SelectAll);
                 }
-                if i.consume_key(Modifiers::CTRL, Key::L) {
+                if i.consume_key(crate::ui::shortcuts::primary(), Key::L) {
                     found.push(PaneAction::EditPath);
                 }
                 found
@@ -1051,7 +1051,7 @@ fn breadcrumb(ui: &mut egui::Ui, side: Side, state: &mut PaneState, actions: &mu
         return;
     }
 
-    if background.on_hover_text("Doble clic para escribir una ruta (Ctrl+L)").hand().double_clicked() {
+    if background.on_hover_text(crate::ui::shortcuts::label("Doble clic para escribir una ruta (Ctrl+L)")).hand().double_clicked() {
         actions.push(PaneAction::EditPath);
     }
 

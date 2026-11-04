@@ -131,7 +131,6 @@ fn is_openable(url: &str) -> bool {
 pub enum PaneRequest {
     SplitRight,
     SplitDown,
-    Close,
     TypePassword,
 }
 
@@ -526,7 +525,7 @@ impl Pane {
         let entry = |ui: &mut egui::Ui, label: &str, shortcut: &str| -> bool {
             let mut button = egui::Button::new(label);
             if !shortcut.is_empty() {
-                button = button.shortcut_text(shortcut);
+                button = button.shortcut_text(crate::ui::shortcuts::label(shortcut));
             }
             ui.add(button).clicked()
         };
@@ -881,14 +880,12 @@ impl Pane {
                         }
                         continue;
                     }
-                    let reserved = modifiers.ctrl && modifiers.shift && matches!(key, Key::C | Key::V | Key::F | Key::D | Key::E | Key::W);
+                    // Atajos de la app (Ctrl+Shift; Cmd en macOS): no se envían al programa. Ctrl+Shift+W lo atiende
+                    // la aplicación antes de llegar aquí, para que funcione en cualquier pestaña.
+                    let reserved = crate::ui::shortcuts::is_app(*modifiers) && matches!(key, Key::C | Key::V | Key::F | Key::D | Key::E);
                     if reserved {
-                        if *pressed && matches!(key, Key::D | Key::E | Key::W) {
-                            self.request = Some(match key {
-                                Key::D => PaneRequest::SplitRight,
-                                Key::E => PaneRequest::SplitDown,
-                                _ => PaneRequest::Close,
-                            });
+                        if *pressed && matches!(key, Key::D | Key::E) {
+                            self.request = Some(if *key == Key::D { PaneRequest::SplitRight } else { PaneRequest::SplitDown });
                         } else if *pressed && *key == Key::F {
                             self.toggle_search();
                         } else if *pressed && *key == Key::C {

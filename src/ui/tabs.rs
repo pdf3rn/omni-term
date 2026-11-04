@@ -310,7 +310,7 @@ pub(super) fn plus_menu(ui: &mut egui::Ui, recents: &[Connection], selected: &mu
     let (rect, clicked) = row(ui, index, selected);
     ui.painter().text(rect.min + Vec2::new(20.0, 20.0), Align2::CENTER_CENTER, icons::SEARCH, FontId::proportional(theme::size::ICON), theme::subtext());
     ui.painter().text(rect.min + Vec2::new(42.0, 20.0), Align2::LEFT_CENTER, "Ver todas…", FontId::new(theme::size::BODY, FontFamily::Proportional), theme::text());
-    ui.painter().text(rect.max - Vec2::new(10.0, 20.0), Align2::RIGHT_CENTER, "Ctrl+Shift+P", FontId::new(theme::size::SMALL, FontFamily::Proportional), theme::subtext());
+    ui.painter().text(rect.max - Vec2::new(10.0, 20.0), Align2::RIGHT_CENTER, shortcuts::label("Ctrl+Shift+P"), FontId::new(theme::size::SMALL, FontFamily::Proportional), theme::subtext());
     if clicked {
         picked = Some(index);
     }
@@ -402,7 +402,7 @@ impl App {
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 2.0;
-                    let hint = if self.sidebar_collapsed { "Mostrar la barra lateral (Ctrl+Shift+B)" } else { "Ocultar la barra lateral (Ctrl+Shift+B)" };
+                    let hint = shortcuts::label(if self.sidebar_collapsed { "Mostrar la barra lateral (Ctrl+Shift+B)" } else { "Ocultar la barra lateral (Ctrl+Shift+B)" });
                     let toggle = crate::ui::kit::icon_button(ui, icons::SIDEBAR, theme::size::ICON_LG, theme::subtext());
                     if toggle.on_hover_text(hint).clicked() {
                         toggle_sidebar_button = true;
@@ -469,7 +469,7 @@ impl App {
                         });
                     ui.add_space(theme::space::S);
                     let plus = crate::ui::kit::icon_button(ui, icons::PLUS, theme::size::ICON, theme::text());
-                    let plus = plus.on_hover_text("Nueva pestaña (Ctrl+Shift+T)");
+                    let plus = plus.on_hover_text(shortcuts::label("Nueva pestaña (Ctrl+Shift+T)"));
                     let popup_id = egui::Popup::default_response_id(&plus);
                     if std::mem::take(&mut open_plus_menu) {
                         egui::Popup::open_id(ui.ctx(), popup_id);
@@ -501,7 +501,7 @@ impl App {
                             let menu_open = ui.data(|d| d.get_temp::<bool>(egui::Id::NULL.with("split-menu-open"))).unwrap_or(false);
                             let split_button = crate::ui::kit::IconButton::new(icons::SPLIT).size(theme::size::ICON_LG).color(theme::subtext()).active(menu_open).show(ui);
                             let popup = egui::Popup::menu(&split_button).show(|ui| {
-                                let entry = |ui: &mut egui::Ui, label: &str, shortcut: &str| ui.add(Button::new(label).shortcut_text(shortcut)).clicked();
+                                let entry = |ui: &mut egui::Ui, label: &str, shortcut: &str| ui.add(Button::new(label).shortcut_text(shortcuts::label(shortcut))).clicked();
                                 if entry(ui, "A la derecha", "Ctrl+Shift+D") {
                                     split = Some(Dir::Horizontal);
                                 }

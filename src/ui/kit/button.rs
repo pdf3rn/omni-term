@@ -180,7 +180,7 @@ impl IconButton {
 /// Opción destructiva de un menú: separada de las demás por una línea y con el texto en rojo.
 pub fn danger_item(ui: &mut Ui, label: &str, shortcut: &str) -> egui::Response {
     ui.separator();
-    ui.add(egui::Button::new(RichText::new(label).color(theme::red())).shortcut_text(shortcut))
+    ui.add(egui::Button::new(RichText::new(label).color(theme::red())).shortcut_text(crate::ui::shortcuts::label(shortcut)))
 }
 
 /// Botón de icono sencillo: glifo, tamaño y color.

@@ -14,19 +14,18 @@ impl App {
             ui.painter().rect_filled(Rect::from_min_size(area.min, Vec2::new(area.width(), 3.0)), CornerRadius::ZERO, color);
         }
 
-        // Zoom del terminal: Ctrl+= / Ctrl+- / Ctrl+0, reservados y no enviados a la aplicación.
+        // Zoom del terminal: Ctrl+= / Ctrl+- / Ctrl+0 (Cmd en macOS), reservados y no enviados a la aplicación.
         let zoom = ctx.input_mut(|i| {
             let mut next = self.settings.font_size;
-            if i.consume_key(Modifiers::CTRL, Key::Equals)
-                || i.consume_key(Modifiers::CTRL, Key::Plus)
-                || i.consume_key(Modifiers::CTRL | Modifiers::SHIFT, Key::Equals)
-            {
+            let primary = shortcuts::primary();
+            // `consume_key` ignora un Shift de más: Ctrl+Shift+= (el + de muchos teclados) también entra.
+            if i.consume_key(primary, Key::Equals) || i.consume_key(primary, Key::Plus) {
                 next += 1.0;
             }
-            if i.consume_key(Modifiers::CTRL, Key::Minus) {
+            if i.consume_key(primary, Key::Minus) {
                 next -= 1.0;
             }
-            if i.consume_key(Modifiers::CTRL, Key::Num0) {
+            if i.consume_key(primary, Key::Num0) {
                 next = DEFAULT_FONT_SIZE;
             }
             next
@@ -159,7 +158,7 @@ impl App {
                             }
                             if panes.len() > 1 {
                                 let close = crate::ui::kit::IconButton::new(icons::X).color(theme::subtext()).show_at(ui, corner, ("pane-close", active, *id));
-                                if close.on_hover_text("Cerrar panel  (Ctrl+Shift+W)").clicked() {
+                                if close.on_hover_text(shortcuts::label("Cerrar panel (Ctrl+Shift+W)")).clicked() {
                                     close_pane = Some(*id);
                                 }
                             }
@@ -218,7 +217,6 @@ impl App {
             match request {
                 Some(PaneRequest::SplitRight) => self.split_active(Dir::Horizontal),
                 Some(PaneRequest::SplitDown) => self.split_active(Dir::Vertical),
-                Some(PaneRequest::Close) => self.request_close_focused_pane(),
                 Some(PaneRequest::TypePassword) => self.open_password_picker(),
                 None => {}
             }
@@ -267,26 +265,28 @@ impl App {
 
 /// Lado del botón de cerrar de cada panel.
 const PANE_BUTTON: f32 = 30.0;
-/// Cuánto mueve el borde cada pulsación de Alt+Mayús+flecha.
+/// Cuánto mueve el borde cada pulsación de Alt+Shift+flecha.
 const NUDGE_STEP: f32 = 0.05;
 
 /// Atajos de paneles, reservados solo con la pestaña dividida (con un panel llegan a la aplicación):
-/// Alt+flechas cambia de panel, Alt+Mayús+flechas mueve su borde y Ctrl+Mayús+Z amplía o restaura.
+/// Alt+flechas cambia de panel, Alt+Shift+flechas mueve su borde y Ctrl+Shift+Z amplía o restaura
+/// (en macOS: Cmd+Option+flechas, Cmd+Ctrl+flechas y Cmd+Shift+Enter; ver `shortcuts`).
 fn pane_keys(ctx: &egui::Context, panes: &mut Tree<Pane>, focused: &mut u64, zoomed: &mut Option<u64>) {
     const ARROWS: [(Key, Side); 4] = [(Key::ArrowLeft, Side::Left), (Key::ArrowRight, Side::Right), (Key::ArrowUp, Side::Up), (Key::ArrowDown, Side::Down)];
     ctx.input_mut(|i| {
-        if i.consume_key(Modifiers::CTRL | Modifiers::SHIFT, Key::Z) {
+        let (zoom_mods, zoom_key) = shortcuts::pane_zoom();
+        if i.consume_key(zoom_mods, zoom_key) {
             *zoomed = if zoomed.is_some() { None } else { Some(*focused) };
         }
         for (key, side) in ARROWS {
-            // Primero con Mayús: `consume_key` ignora un Mayús de más, y Alt+flecha se lo llevaría.
-            let nudges = i.count_and_consume_key(Modifiers::ALT | Modifiers::SHIFT, key);
+            // Primero el de mover el borde: `consume_key` ignora un Shift de más, y Alt+flecha se lo llevaría.
+            let nudges = i.count_and_consume_key(shortcuts::pane_nudge(), key);
             if nudges > 0 && zoomed.is_none() {
                 for _ in 0..nudges {
                     panes.nudge(*focused, side, NUDGE_STEP);
                 }
             }
-            if i.consume_key(Modifiers::ALT, key) {
+            if i.consume_key(shortcuts::pane_move(), key) {
                 *zoomed = None;
                 if let Some(next) = panes.neighbor(*focused, side) {
                     *focused = next;

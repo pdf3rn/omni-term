@@ -189,7 +189,7 @@ impl App {
                 let mut item = |ui: &mut egui::Ui, label: &str, shortcut: &str, enabled: bool, command: Command| {
                     let mut button = Button::new(label);
                     if !shortcut.is_empty() {
-                        button = button.shortcut_text(shortcut);
+                        button = button.shortcut_text(shortcuts::label(shortcut));
                     }
                     if ui.add_enabled(enabled, button).clicked() {
                         chosen = Some(command);
@@ -200,10 +200,10 @@ impl App {
                     ui.menu_button("Archivo", |ui| {
                         ui.set_min_width(300.0);
                         item(ui, "Nueva pestaña local", "Ctrl+Shift+T", true, Command::NewTab);
-                        item(ui, "Nueva conexión…", "", true, Command::NewConnection);
+                        item(ui, "Nueva conexión…", "Ctrl+Shift+N", true, Command::NewConnection);
                         item(ui, "Importar de ~/.ssh/config", "", true, Command::ImportConfig);
                         ui.separator();
-                        item(ui, "Cerrar pestaña", "", !self.tabs.is_empty(), Command::CloseTab);
+                        item(ui, "Cerrar pestaña", "Ctrl+Shift+W", !self.tabs.is_empty(), Command::CloseTab);
                         item(ui, "Ajustes", "Ctrl+,", true, Command::Settings);
                         item(ui, "Hosts conocidos", "", true, Command::KnownHosts);
                         ui.separator();
@@ -244,7 +244,7 @@ impl App {
                         item(ui, "Paleta de comandos", "Ctrl+Shift+P", true, Command::Palette);
                         ui.separator();
                         item(ui, "Pestaña siguiente", "Ctrl+Tab", several, Command::NextTab);
-                        item(ui, "Pestaña anterior", "Ctrl+Mayús+Tab", several, Command::PrevTab);
+                        item(ui, "Pestaña anterior", "Ctrl+Shift+Tab", several, Command::PrevTab);
                         item(ui, "Explorador de archivos de esta conexión", "", on_connection, Command::Files);
                         item(ui, "Contenedores", "", true, Command::Containers);
                         ui.separator();
@@ -303,7 +303,7 @@ impl App {
                         theme::subtext(),
                     );
                     let gear_slot = Rect::from_center_size(Pos2::new(bar.max.x - controls - 18.0, bar.center().y), Vec2::splat(1.0));
-                    if crate::ui::kit::IconButton::new(icons::GEAR).size(theme::size::ICON).show_at(ui, gear_slot, "titlebar-settings").on_hover_text("Ajustes (Ctrl+,)").clicked() {
+                    if crate::ui::kit::IconButton::new(icons::GEAR).size(theme::size::ICON).show_at(ui, gear_slot, "titlebar-settings").on_hover_text(shortcuts::label("Ajustes (Ctrl+,)")).clicked() {
                         open_settings = true;
                     }
                     let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));

@@ -4,6 +4,7 @@ pub mod fonts;
 pub mod icons;
 pub mod kit;
 pub mod palette;
+pub mod shortcuts;
 pub mod theme;
 
 mod appearance;

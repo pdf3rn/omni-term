@@ -695,7 +695,7 @@ impl App {
                     ui.painter().text(rect.center(), Align2::CENTER_CENTER, glyph, FontId::proportional(theme::size::ICON_LG), theme::text());
                     response.on_hover_text(tip).clicked()
                 };
-                if icon(ui, icons::SEARCH, "Buscar (Ctrl+Shift+P)") {
+                if icon(ui, icons::SEARCH, &shortcuts::label("Buscar (Ctrl+Shift+P)")) {
                     palette = true;
                 }
                 ui.add_space(theme::space::XS);
