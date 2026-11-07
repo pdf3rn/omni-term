@@ -7,6 +7,9 @@ pub struct TermTheme {
     /// Clave que se guarda en los ajustes: cambiarla dejaría sin su elección a quien ya la tenga guardada.
     pub key: &'static str,
     pub name: &'static str,
+    /// `false`: fondo, texto y cursor son los de la interfaz (los tres valores siguientes no se usan) y el tema solo
+    /// aporta su paleta de 16 colores.
+    pub own_surface: bool,
     pub bg: u32,
     pub fg: u32,
     pub cursor: u32,
@@ -24,9 +27,11 @@ pub const THEMES: [TermTheme; 12] = [
     TermTheme {
         key: "gnome",
         name: "GNOME",
-        bg: 0x171421,
-        fg: 0xd0cfcc,
-        cursor: 0xd0cfcc,
+        // Solo la paleta de GNOME: el fondo y el texto son los de la interfaz, como antes de que hubiera más temas.
+        own_surface: false,
+        bg: 0,
+        fg: 0,
+        cursor: 0,
         selection: None,
         ansi: [
             0x171421, 0xc01c28, 0x26a269, 0xa2734c, 0x12488b, 0xa347ba, 0x2aa1b3, 0xd0cfcc,
@@ -34,10 +39,11 @@ pub const THEMES: [TermTheme; 12] = [
         ],
     },
     // Los colores de la interfaz; la clave «pastel» es la de antes de que existieran más temas.
-    TermTheme { key: "pastel", name: "Interfaz", bg: 0, fg: 0, cursor: 0, selection: None, ansi: [0; 16] },
+    TermTheme { key: "pastel", name: "Interfaz", own_surface: false, bg: 0, fg: 0, cursor: 0, selection: None, ansi: [0; 16] },
     TermTheme {
         key: "tango",
         name: "Tango",
+        own_surface: true,
         bg: 0x2e3436,
         fg: 0xd3d7cf,
         cursor: 0xd3d7cf,
@@ -50,6 +56,7 @@ pub const THEMES: [TermTheme; 12] = [
     TermTheme {
         key: "solarized-dark",
         name: "Solarized Dark",
+        own_surface: true,
         bg: 0x002b36,
         fg: 0x839496,
         cursor: 0x93a1a1,
@@ -63,6 +70,7 @@ pub const THEMES: [TermTheme; 12] = [
     TermTheme {
         key: "solarized-light",
         name: "Solarized Light",
+        own_surface: true,
         bg: 0xfdf6e3,
         fg: 0x657b83,
         cursor: 0x586e75,
@@ -75,6 +83,7 @@ pub const THEMES: [TermTheme; 12] = [
     TermTheme {
         key: "dracula",
         name: "Dracula",
+        own_surface: true,
         bg: 0x282a36,
         fg: 0xf8f8f2,
         cursor: 0xf8f8f2,
@@ -87,6 +96,7 @@ pub const THEMES: [TermTheme; 12] = [
     TermTheme {
         key: "nord",
         name: "Nord",
+        own_surface: true,
         bg: 0x2e3440,
         fg: 0xd8dee9,
         cursor: 0xd8dee9,
@@ -99,6 +109,7 @@ pub const THEMES: [TermTheme; 12] = [
     TermTheme {
         key: "one-dark",
         name: "One Dark",
+        own_surface: true,
         bg: 0x282c34,
         fg: 0xabb2bf,
         cursor: 0x528bff,
@@ -111,6 +122,7 @@ pub const THEMES: [TermTheme; 12] = [
     TermTheme {
         key: "gruvbox-dark",
         name: "Gruvbox Dark",
+        own_surface: true,
         bg: 0x282828,
         fg: 0xebdbb2,
         cursor: 0xebdbb2,
@@ -123,6 +135,7 @@ pub const THEMES: [TermTheme; 12] = [
     TermTheme {
         key: "tokyo-night",
         name: "Tokyo Night",
+        own_surface: true,
         bg: 0x1a1b26,
         fg: 0xc0caf5,
         cursor: 0xc0caf5,
@@ -135,6 +148,7 @@ pub const THEMES: [TermTheme; 12] = [
     TermTheme {
         key: "catppuccin-mocha",
         name: "Catppuccin Mocha",
+        own_surface: true,
         bg: 0x1e1e2e,
         fg: 0xcdd6f4,
         cursor: 0xf5e0dc,
@@ -147,6 +161,7 @@ pub const THEMES: [TermTheme; 12] = [
     TermTheme {
         key: "claude",
         name: "Claude",
+        own_surface: true,
         bg: 0x141413,
         fg: 0xe8e6dc,
         cursor: 0xd97757,

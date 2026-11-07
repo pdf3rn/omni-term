@@ -32,7 +32,6 @@ impl App {
         let mut delete: Option<Connection> = None;
         let mut files: Option<Connection> = None;
         let mut new_snippet = false;
-        let mut snippet_from_selection = false;
         let mut insert: Option<(Snippet, bool)> = None;
         let mut copy: Option<String> = None;
         let mut edit_snippet: Option<Snippet> = None;
@@ -482,12 +481,6 @@ impl App {
                         });
                         remember_overflow(ui, "connections", &list);
                     } else {
-                        if !self.snippets.is_empty() {
-                            if crate::ui::kit::button_with(ui, Button::new(RichText::new("Guardar selección").small().color(theme::subtext())), crate::ui::kit::Variant::Secondary).clicked() {
-                                snippet_from_selection = true;
-                            }
-                            ui.add_space(theme::space::XS);
-                        }
 
                         let query = self.sidebar_query.clone();
                         let visible: Vec<&Snippet> = self.snippets.iter().filter(|s| s.matches(&query)).collect();
@@ -513,6 +506,9 @@ impl App {
                             let key = format!("snip:{}", label.to_lowercase());
                             let folded = grouped && !searching && self.collapsed_groups.contains(&key);
                             if grouped {
+                                if label != &tags[0].0 {
+                                    ui.add_space(theme::space::XS);
+                                }
                                 let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 26.0), Sense::click());
                                 let color = if response.hovered() { theme::text() } else { theme::subtext() };
                                 ui.painter().text(
@@ -549,10 +545,12 @@ impl App {
                                 let title_font = FontId::new(theme::size::BODY, strong_family());
                                 let preview_font = FontId::new(theme::size::SMALL, FontFamily::Monospace);
                                 let (title_top, preview_top, _) = two_line_block(ui.painter(), rect, &title_font, &preview_font);
-                                let painter = ui.painter().with_clip_rect(rect.shrink2(Vec2::new(4.0, 0.0)).with_max_x(rect.max.x - if over { 34.0 } else { 4.0 }));
-                                painter.text(Pos2::new(left, title_top), Align2::LEFT_TOP, &snippet.title, title_font, theme::text());
+                                let right_limit = rect.max.x - if over { 34.0 } else { 4.0 };
+                                let painter = ui.painter().with_clip_rect(Rect::from_min_max(rect.min, Pos2::new(right_limit, rect.max.y)));
+                                let title = crate::ui::kit::fit_text(&painter, &snippet.title, &title_font, right_limit - left);
+                                painter.text(Pos2::new(left, title_top), Align2::LEFT_TOP, title, title_font, theme::text());
                                 let preview = snippet.body.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
-                                let preview: String = preview.chars().take(80).collect();
+                                let preview = crate::ui::kit::fit_text(&painter, preview.trim(), &preview_font, right_limit - left);
                                 painter.text(Pos2::new(left, preview_top), Align2::LEFT_TOP, preview, preview_font, theme::subtext());
 
                                 let run_slot = Rect::from_center_size(Pos2::new(rect.max.x - 18.0, rect.center().y), Vec2::splat(26.0));
@@ -565,7 +563,6 @@ impl App {
                                     ui.set_max_width(420.0);
                                     let body: String = snippet.body.chars().take(600).collect();
                                     ui.label(RichText::new(body).monospace().color(theme::text()));
-                                    ui.label(RichText::new("Clic para insertar en el terminal activo. Clic derecho: más opciones").small().color(theme::subtext()));
                                 });
                                 if response.clicked() && !run_clicked {
                                     insert = Some((Snippet::clone(snippet), false));
@@ -592,6 +589,7 @@ impl App {
                                         ui.close();
                                     }
                                 });
+                                ui.add_space(theme::space::XS);
                             }
                         }
                         });
@@ -683,13 +681,6 @@ impl App {
         }
         if new_snippet {
             self.dialog = Some(Dialog::Snippet(SnippetForm::new(String::new())));
-        }
-        if snippet_from_selection {
-            let selected = self.tabs.get(self.active).and_then(|t| t.pane()).and_then(|p| p.selection_text());
-            match selected {
-                Some(text) => self.dialog = Some(Dialog::Snippet(SnippetForm::new(text))),
-                None => self.notify("Selecciona texto en el terminal para guardarlo como snippet"),
-            }
         }
         if let Some(snippet) = edit_snippet {
             self.dialog = Some(Dialog::Snippet(SnippetForm::from_snippet(&snippet)));

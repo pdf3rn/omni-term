@@ -244,19 +244,24 @@ fn ansi(index: usize) -> Color32 {
     }
 }
 
+/// El tema del terminal si trae su propio fondo, texto y cursor; con «Interfaz» y con GNOME esos salen de la interfaz.
+fn own_surface() -> Option<&'static TermTheme> {
+    term_theme::custom().filter(|t| t.own_surface)
+}
+
 /// Fondo del terminal.
 pub fn term_bg() -> Color32 {
-    term_theme::custom().map_or_else(base, |t| from_hex(t.bg))
+    own_surface().map_or_else(base, |t| from_hex(t.bg))
 }
 
 /// Color del texto del terminal.
 pub fn term_fg() -> Color32 {
-    term_theme::custom().map_or_else(text, |t| from_hex(t.fg))
+    own_surface().map_or_else(text, |t| from_hex(t.fg))
 }
 
 /// Color del cursor del terminal.
 pub fn term_cursor() -> Color32 {
-    term_theme::custom().map_or_else(cursor, |t| from_hex(t.cursor))
+    own_surface().map_or_else(cursor, |t| from_hex(t.cursor))
 }
 
 /// Fondo del texto seleccionado en el terminal: el del tema, o el acento mezclado con el fondo (opaco, para que
@@ -281,7 +286,8 @@ pub fn term_theme_preview(index: u8) -> (Color32, Color32, [Color32; 6]) {
     }
     let theme = &term_theme::THEMES[index as usize];
     let pick = |i: usize| from_hex(theme.ansi[i]);
-    (from_hex(theme.bg), from_hex(theme.fg), [pick(1), pick(2), pick(3), pick(4), pick(5), pick(6)])
+    let (bg, fg) = if theme.own_surface { (from_hex(theme.bg), from_hex(theme.fg)) } else { (base(), text()) };
+    (bg, fg, [pick(1), pick(2), pick(3), pick(4), pick(5), pick(6)])
 }
 
 /// La negrita aclara los colores ANSI 0-7 (compatibilidad con terminales antiguos).
@@ -444,16 +450,23 @@ mod tests {
             if index as u8 == term_theme::INTERFACE {
                 continue;
             }
-            let (bg, fg) = (rgb(theme.bg), rgb(theme.fg));
-            // Solarized Light es así de suave (4,1:1); el resto supera 7:1.
-            assert!(contrast(fg, bg) >= 4.0, "{}: texto sobre el fondo", theme.name);
-            assert!(contrast(rgb(theme.cursor), bg) >= 3.0, "{}: cursor sobre el fondo", theme.name);
-            if let Some(selection) = theme.selection {
-                assert!(contrast(fg, rgb(selection)) >= 3.0, "{}: texto sobre la selección", theme.name);
-            }
-            // Los seis colores de texto (rojo a cian, normales y brillantes); los negros y los blancos suelen hacer de fondo.
-            for ansi in (1..7).chain(9..15) {
-                assert!(contrast(rgb(theme.ansi[ansi]), bg) >= 1.8, "{}: ANSI {ansi} sobre el fondo", theme.name);
+            // Sin superficie propia (GNOME) el fondo es el de la interfaz; se comprueba sobre la oscura. Con la interfaz
+            // clara sus verdes y amarillos brillantes leen poco, como siempre: quien lo use así tiene «Interfaz» y los temas claros.
+            let backgrounds = if theme.own_surface { vec![rgb(theme.bg)] } else { vec![DARK.base] };
+            for bg in backgrounds {
+                if theme.own_surface {
+                    let fg = rgb(theme.fg);
+                    // Solarized Light es así de suave (4,1:1); el resto supera 7:1.
+                    assert!(contrast(fg, bg) >= 4.0, "{}: texto sobre el fondo", theme.name);
+                    assert!(contrast(rgb(theme.cursor), bg) >= 3.0, "{}: cursor sobre el fondo", theme.name);
+                    if let Some(selection) = theme.selection {
+                        assert!(contrast(fg, rgb(selection)) >= 3.0, "{}: texto sobre la selección", theme.name);
+                    }
+                }
+                // Los seis colores de texto (rojo a cian, normales y brillantes); los negros y los blancos suelen hacer de fondo.
+                for ansi in (1..7).chain(9..15) {
+                    assert!(contrast(rgb(theme.ansi[ansi]), bg) >= 1.8, "{}: ANSI {ansi} sobre el fondo", theme.name);
+                }
             }
         }
     }
@@ -506,13 +519,17 @@ mod tests {
 
     #[test]
     fn the_terminal_theme_sets_background_text_and_cursor() {
-        set_term_theme(0);
-        assert_eq!(term_bg(), Color32::from_rgb(0x17, 0x14, 0x21));
-        assert_eq!(term_fg(), Color32::from_rgb(0xd0, 0xcf, 0xcc));
+        // Tango trae su propia superficie; GNOME e «Interfaz» usan la de la interfaz.
+        set_term_theme(2);
+        assert_eq!(term_bg(), Color32::from_rgb(0x2e, 0x34, 0x36));
+        assert_eq!(term_fg(), Color32::from_rgb(0xd3, 0xd7, 0xcf));
         assert_eq!(resolve(Color::Named(alacritty_terminal::vte::ansi::NamedColor::Background)), term_bg());
-        set_term_theme(term_theme::INTERFACE);
-        assert_eq!(term_bg(), base());
-        assert_eq!(term_fg(), text());
+        for index in [0, term_theme::INTERFACE] {
+            set_term_theme(index);
+            assert_eq!(term_bg(), base());
+            assert_eq!(term_fg(), text());
+            assert_eq!(term_cursor(), cursor());
+        }
         set_term_theme(0);
     }
 
