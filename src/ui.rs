@@ -65,7 +65,7 @@ use crate::terminal::term::{self, Session, TermOptions};
 pub const WHEEL_NOTCH: f32 = 70.0;
 
 const SIDEBAR_WIDTH: f32 = 240.0;
-const SIDEBAR_MIN: f32 = 200.0;
+const SIDEBAR_MIN: f32 = 208.0;
 const SIDEBAR_MAX: f32 = 360.0;
 /// Ancho mínimo de una pestaña antes de que la tira empiece a desplazarse.
 const MIN_TAB_WIDTH: f32 = 110.0;

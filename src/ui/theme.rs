@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use alacritty_terminal::vte::ansi::{Color, Rgb};
-use eframe::egui::Color32;
+use eframe::egui::{Color32, Stroke};
 
 use crate::data::term_theme::{self, TermTheme};
 
@@ -80,6 +80,11 @@ pub mod size {
     pub const ICON: f32 = 16.0;
     pub const ICON_LG: f32 = 17.0;
     pub const ICON_XL: f32 = 22.0;
+}
+
+/// Contorno de lo que tiene el foco del teclado: acento translúcido y fino, el mismo en campos, botones y filas.
+pub fn focus_stroke() -> Stroke {
+    Stroke::new(stroke::HAIRLINE, accent().gamma_multiply(0.6))
 }
 
 /// Grosor de los bordes.

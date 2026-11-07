@@ -68,7 +68,7 @@ impl App {
             return;
         }
         let painter = ctx.layer_painter(response.layer_id);
-        painter.rect_stroke(rect, CornerRadius::same(theme::radius::CONTROL), Stroke::new(theme::stroke::HAIRLINE, theme::accent().gamma_multiply(0.6)), egui::StrokeKind::Inside);
+        painter.rect_stroke(rect, CornerRadius::same(theme::radius::CONTROL), theme::focus_stroke(), egui::StrokeKind::Inside);
     }
 }
 

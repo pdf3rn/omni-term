@@ -5,6 +5,11 @@ use super::*;
 /// Sangría de las conexiones bajo su cabecera (el icono alinea con el nombre del grupo) y de los snippets.
 const GROUP_INDENT: f32 = 17.0;
 const SNIPPET_INDENT: f32 = 8.0;
+/// Ancho mínimo del nombre de una conexión antes de quitar la hora de su fila.
+const MIN_NAME_WIDTH: f32 = 84.0;
+/// Lado de los botones de la fila de pestañas de la lista y hueco entre ellos.
+const TAB_BUTTON: f32 = 26.0;
+const TAB_BUTTON_GAP: f32 = 4.0;
 
 /// Alto que se deja bajo las listas para el pie: solo el aviso de llavero, y nada si no hay aviso.
 fn footer_height(keyring_fallback: bool) -> f32 {
@@ -140,12 +145,11 @@ impl App {
                         self.sidebar_query.clear();
                         search.surrender_focus();
                     }
-                    ui.add_space(theme::space::M);
-
-                    ui.add_space(theme::space::L);
+                    let list_empty = if connections_view { self.connections.is_empty() } else { self.snippets.is_empty() };
+                    ui.add_space(theme::space::XS);
                     ui.horizontal(|ui| {
                         ui.spacing_mut().button_padding.x = 0.0;
-                        ui.spacing_mut().item_spacing.x = 18.0;
+                        ui.spacing_mut().item_spacing.x = 12.0;
                         for (view, label) in [(SidebarView::Connections, "Conexiones"), (SidebarView::Snippets, "Snippets")] {
                             let selected = self.sidebar_view == view;
                             // Pestañas de texto: sin caja al pasar el ratón (con el relleno de un botón quedaba un bloque
@@ -169,6 +173,39 @@ impl App {
                                 let value: &[u8] = if view == SidebarView::Snippets { b"snippets" } else { b"connections" };
                                 let _ = self.store.lock().unwrap().set_meta("sidebar_view", value);
                             }
+                        }
+                        if !list_empty {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.spacing_mut().item_spacing.x = TAB_BUTTON_GAP;
+                            // Con la barra estrecha no caben las pestañas y los dos botones: el «+» tiene prioridad y plegar solo se muestra si sobra sitio.
+                            let room = ui.available_width();
+                            if room >= TAB_BUTTON {
+                                if connections_view {
+                                    if crate::ui::kit::icon_button(ui, icons::PLUS, theme::size::ICON, theme::text()).on_hover_text("Nueva conexión").clicked() {
+                                        new_connection = true;
+                                    }
+                                } else if crate::ui::kit::icon_button(ui, icons::PLUS, theme::size::ICON, theme::text()).on_hover_text("Nuevo snippet").clicked() {
+                                    new_snippet = true;
+                                }
+                            }
+                            // Plegar o desplegar todos los grupos de la lista; solo con dos o más y sin búsqueda (al buscar se ven todos).
+                            let group_keys: Vec<String> = if connections_view {
+                                groups.iter().map(|(label, _)| label.to_lowercase()).collect()
+                            } else {
+                                let mut keys: Vec<String> = self.snippets.iter().map(|s| format!("snip:{}", if s.tag.trim().is_empty() { "sin etiqueta".to_string() } else { s.tag.trim().to_lowercase() })).collect();
+                                keys.sort();
+                                keys.dedup();
+                                keys
+                            };
+                            if group_keys.len() >= 2 && room >= 2.0 * TAB_BUTTON + TAB_BUTTON_GAP {
+                                let all_folded = group_keys.iter().all(|k| self.collapsed_groups.contains(k));
+                                let (icon, tip) = if all_folded { (icons::PLUS_SQUARE, "Desplegar todos los grupos") } else { (icons::MINUS_SQUARE, "Plegar todos los grupos") };
+                                let button = crate::ui::kit::IconButton::new(icon).size(theme::size::ICON).color(theme::subtext()).enabled(!searching).show(ui);
+                                if button.on_hover_text(if searching { "Con una búsqueda activa se ven todos los grupos" } else { tip }).clicked() {
+                                    fold_all = Some((!all_folded, group_keys));
+                                }
+                            }
+                        });
                         }
                     });
                     ui.add_space(theme::space::M);
@@ -215,40 +252,6 @@ impl App {
                         ui.add_space(theme::space::M);
                         ui.spacing_mut().item_spacing.y = 8.0;
                     }
-                    let list_empty = if connections_view { self.connections.is_empty() } else { self.snippets.is_empty() };
-                    if !list_empty {
-                    ui.horizontal(|ui| {
-                        let title = if connections_view { "Guardadas" } else { "Guardados" };
-                        ui.label(RichText::new(title).small().color(theme::subtext()));
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if connections_view {
-                                if crate::ui::kit::icon_button(ui, icons::PLUS, theme::size::ICON, theme::text()).on_hover_text("Nueva conexión").clicked() {
-                                    new_connection = true;
-                                }
-                            } else if crate::ui::kit::icon_button(ui, icons::PLUS, theme::size::ICON, theme::text()).on_hover_text("Nuevo snippet").clicked() {
-                                new_snippet = true;
-                            }
-                            // Plegar o desplegar todos los grupos de la lista; solo con dos o más y sin búsqueda (al buscar se ven todos).
-                            let group_keys: Vec<String> = if connections_view {
-                                groups.iter().map(|(label, _)| label.to_lowercase()).collect()
-                            } else {
-                                let mut keys: Vec<String> = self.snippets.iter().map(|s| format!("snip:{}", if s.tag.trim().is_empty() { "sin etiqueta".to_string() } else { s.tag.trim().to_lowercase() })).collect();
-                                keys.sort();
-                                keys.dedup();
-                                keys
-                            };
-                            if group_keys.len() >= 2 {
-                                let all_folded = group_keys.iter().all(|k| self.collapsed_groups.contains(k));
-                                let (icon, tip) = if all_folded { (icons::PLUS_SQUARE, "Desplegar todos los grupos") } else { (icons::MINUS_SQUARE, "Plegar todos los grupos") };
-                                let button = crate::ui::kit::IconButton::new(icon).size(theme::size::ICON).color(theme::subtext()).enabled(!searching).show(ui);
-                                if button.on_hover_text(if searching { "Con una búsqueda activa se ven todos los grupos" } else { tip }).clicked() {
-                                    fold_all = Some((!all_folded, group_keys));
-                                }
-                            }
-                        });
-                    });
-                    ui.add_space(-theme::space::XXS);
-                    }
 
                     if connections_view {
                         if self.connections.is_empty() {
@@ -272,7 +275,7 @@ impl App {
                                     drop_move = Some((*payload, label.clone()));
                                 }
                                 if self.sidebar_nav && row_pos == self.nav_index {
-                                    ui.painter().rect_stroke(rect.expand2(Vec2::new(6.0, 0.0)), CornerRadius::same(theme::radius::CONTROL), Stroke::new(theme::stroke::MEDIUM, theme::text()), egui::StrokeKind::Inside);
+                                    ui.painter().rect_stroke(rect.expand2(Vec2::new(6.0, 0.0)), CornerRadius::same(theme::radius::CONTROL), theme::focus_stroke(), egui::StrokeKind::Inside);
                                     if nav_moved {
                                         ui.scroll_to_rect(rect, None);
                                     }
@@ -344,7 +347,7 @@ impl App {
                                     }
                                 }
                                 if self.sidebar_nav && this_pos == self.nav_index {
-                                    ui.painter().rect_stroke(rect.expand2(Vec2::new(6.0, 0.0)), CornerRadius::same(theme::radius::CONTROL), Stroke::new(theme::stroke::MEDIUM, theme::text()), egui::StrokeKind::Inside);
+                                    ui.painter().rect_stroke(rect.expand2(Vec2::new(6.0, 0.0)), CornerRadius::same(theme::radius::CONTROL), theme::focus_stroke(), egui::StrokeKind::Inside);
                                     if nav_moved {
                                         ui.scroll_to_rect(rect, None);
                                     }
@@ -401,16 +404,19 @@ impl App {
 
                                 let text_x = rect.min.x + 28.0;
                                 let ago_font = FontId::new(theme::size::CAPTION, FontFamily::Proportional);
-                                let ago_width = if ago.is_empty() || actions { 0.0 } else { ui.painter().layout_no_wrap(ago.clone(), ago_font.clone(), Color32::PLACEHOLDER).size().x + 10.0 };
                                 let right_limit = if actions { rect.max.x - 56.0 } else { rect.max.x - 4.0 };
-                                let first_line = ui.painter().with_clip_rect(Rect::from_min_max(rect.min, Pos2::new(right_limit - ago_width, rect.max.y)));
                                 let name_font = FontId::new(theme::size::BODY, strong_family());
                                 let pill_font = FontId::new(theme::size::CAPTION, strong_family());
-                                let env = connection.env.as_ref().filter(|_| !headed || searching);
-                                let pill_size = env.map(|env| first_line.layout_no_wrap(env.clone(), pill_font.clone(), Color32::PLACEHOLDER).size() + Vec2::new(10.0, 3.0));
+                                // En «Fijadas» el grupo no dice el entorno: la pastilla sí.
+                                let env = connection.env.as_ref().filter(|_| !headed || searching || label.as_str() == PINNED_LABEL);
+                                let pill_size = env.map(|env| ui.painter().layout_no_wrap(env.clone(), pill_font.clone(), Color32::PLACEHOLDER).size() + Vec2::new(10.0, 3.0));
                                 let lock_width = if connection.insecure_protocol().is_some() { 18.0 } else { 0.0 };
-                                // El nombre cede sitio al candado y a la pastilla, que siempre se ven.
-                                let room = right_limit - ago_width - text_x - lock_width - pill_size.map_or(0.0, |s| s.x + 8.0);
+                                // El candado y la pastilla siempre se ven; el nombre cede sitio, y la hora cede antes que el nombre.
+                                let fixed_width = lock_width + pill_size.map_or(0.0, |s| s.x + 8.0);
+                                let ago_full = if ago.is_empty() || actions { 0.0 } else { ui.painter().layout_no_wrap(ago.clone(), ago_font.clone(), Color32::PLACEHOLDER).size().x + 10.0 };
+                                let ago_width = if right_limit - ago_full - text_x - fixed_width < MIN_NAME_WIDTH { 0.0 } else { ago_full };
+                                let first_line = ui.painter().with_clip_rect(Rect::from_min_max(rect.min, Pos2::new(right_limit - ago_width, rect.max.y)));
+                                let room = right_limit - ago_width - text_x - fixed_width;
                                 let name = crate::ui::kit::fit_text(&first_line, &connection.name, &name_font, room);
                                 let name_width = first_line.layout_no_wrap(name.clone(), name_font.clone(), Color32::PLACEHOLDER).size().x;
                                 first_line.text(Pos2::new(text_x, rect.min.y + 9.0 + dy), Align2::LEFT_TOP, name, name_font, theme::text());
