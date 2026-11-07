@@ -135,6 +135,9 @@ pub enum PaneRequest {
 }
 
 /// Vista de un terminal: pinta la rejilla de una sesión y le envía la entrada.
+/// Líneas que desplaza el terminal por cada muesca de la rueda.
+const LINES_PER_NOTCH: f32 = 3.0;
+
 pub struct Pane {
     id: u64,
     request: Option<PaneRequest>,
@@ -150,6 +153,8 @@ pub struct Pane {
     epoch: Instant,
     /// Pulsaciones seguidas del botón izquierdo (1 simple, 2 palabra, 3 línea) y cuándo y dónde fue la última.
     click_count: u8,
+    /// Fracción de línea que la rueda ha desplazado y aún no se ha aplicado.
+    scroll_remainder: f32,
     last_press: Option<(Instant, Pos2)>,
     /// Enlace bajo el puntero cuando se abrió el menú contextual.
     menu_link: Option<String>,
@@ -168,7 +173,7 @@ pub struct Pane {
 
 impl Pane {
     pub fn new(session: Session, debug_keys: bool, id: u64) -> Self {
-        Self { id, request: None, session, debug_keys, input_enabled: true, held: None, last_cell: None, hover_cell: (0, 0), window_focused: true, search: None, link: None, epoch: Instant::now(), click_count: 0, last_press: None, menu_link: None, selecting: false, anchor: None, extending: false, last_autoscroll: None, snippet_request: None, paste_request: None }
+        Self { id, request: None, session, debug_keys, input_enabled: true, held: None, last_cell: None, hover_cell: (0, 0), window_focused: true, search: None, link: None, epoch: Instant::now(), click_count: 0, scroll_remainder: 0.0, last_press: None, menu_link: None, selecting: false, anchor: None, extending: false, last_autoscroll: None, snippet_request: None, paste_request: None }
     }
 
     /// Escribe `text` como un pegado (con pegado entre corchetes si la aplicación lo pidió).
@@ -450,7 +455,7 @@ impl Pane {
 
         let searching = self.search.is_some();
         if self.input_enabled {
-            self.handle_scroll(ui, cell_h, reporting);
+            self.handle_scroll(ui, reporting, response.hovered());
             let typing_elsewhere = ui.memory(|m| m.focused().is_some_and(|f| f != id));
             if !searching && !typing_elsewhere {
                 self.handle_input(ui);
@@ -827,9 +832,18 @@ impl Pane {
         }
     }
 
-    fn handle_scroll(&mut self, ui: &egui::Ui, cell_h: f32, reporting: bool) {
+    fn handle_scroll(&mut self, ui: &egui::Ui, reporting: bool, hovered: bool) {
+        // La rueda es del terminal solo con el puntero encima: el desplazamiento llega a todos los widgets del fotograma.
+        if !hovered {
+            self.scroll_remainder = 0.0;
+            return;
+        }
+        // Una muesca de rueda son `WHEEL_NOTCH` px para egui; el terminal las convierte a líneas y guarda la fracción
+        // de cada fotograma: redondear sin acumular descarta el movimiento suavizado.
         let dy = ui.input(|i| i.smooth_scroll_delta.y);
-        let lines = (dy / cell_h).round() as i32;
+        self.scroll_remainder += dy / crate::ui::WHEEL_NOTCH * LINES_PER_NOTCH;
+        let lines = self.scroll_remainder.trunc() as i32;
+        self.scroll_remainder -= lines as f32;
         if lines == 0 {
             return;
         }

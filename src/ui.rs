@@ -61,6 +61,9 @@ use crate::data::store::{self, Auth, Connection, Forward, Protocol, SavedTab, Sn
 use crate::connect::telnet;
 use crate::terminal::term::{self, Session, TermOptions};
 
+/// Píxeles que desplaza una muesca de la rueda del ratón en listas y paneles (egui trae 40, menos que una fila de la barra lateral).
+pub const WHEEL_NOTCH: f32 = 70.0;
+
 const SIDEBAR_WIDTH: f32 = 240.0;
 const SIDEBAR_MIN: f32 = 200.0;
 const SIDEBAR_MAX: f32 = 360.0;
@@ -241,7 +244,10 @@ impl App {
             };
             (collapsed, width.clamp(SIDEBAR_MIN, SIDEBAR_MAX), groups)
         };
-        cc.egui_ctx.options_mut(|options| options.zoom_with_keyboard = false);
+        cc.egui_ctx.options_mut(|options| {
+            options.zoom_with_keyboard = false;
+            options.input_options.line_scroll_speed = WHEEL_NOTCH;
+        });
         let (events_tx, events_rx) = mpsc::channel();
 
         let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build()?;
