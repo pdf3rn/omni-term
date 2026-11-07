@@ -64,8 +64,6 @@ use crate::terminal::term::{self, Session, TermOptions};
 const SIDEBAR_WIDTH: f32 = 240.0;
 const SIDEBAR_MIN: f32 = 200.0;
 const SIDEBAR_MAX: f32 = 360.0;
-/// Grupos con encabezado a partir de este número de conexiones.
-const GROUP_THRESHOLD: usize = 5;
 /// Ancho mínimo de una pestaña antes de que la tira empiece a desplazarse.
 const MIN_TAB_WIDTH: f32 = 110.0;
 /// Por debajo de este ancho de ventana la barra lateral se reduce a una tira de iconos.

@@ -2,15 +2,22 @@
 
 use super::*;
 
+/// Sangría de las conexiones bajo su cabecera (el icono alinea con el nombre del grupo) y de los snippets.
+const GROUP_INDENT: f32 = 17.0;
+const SNIPPET_INDENT: f32 = 8.0;
+
+/// Alto que se deja bajo las listas para el pie: solo el aviso de llavero, y nada si no hay aviso.
+fn footer_height(keyring_fallback: bool) -> f32 {
+    if keyring_fallback { 24.0 } else { 0.0 }
+}
+
 impl App {
     pub(super) fn sidebar(&mut self, ui: &mut egui::Ui) {
-        let system_bar = self.settings.system_titlebar;
         let mut new_connection = false;
         let mut connect: Option<Connection> = None;
         let mut edit: Option<Connection> = None;
         let mut delete: Option<Connection> = None;
         let mut files: Option<Connection> = None;
-        let mut open_settings = false;
         let mut new_snippet = false;
         let mut snippet_from_selection = false;
         let mut insert: Option<(Snippet, bool)> = None;
@@ -19,8 +26,9 @@ impl App {
         let mut delete_snippet: Option<Snippet> = None;
         let mut row_action: Option<(RowAction, Connection)> = None;
         let mut toggle_group: Option<String> = None;
+        let mut fold_all: Option<(bool, Vec<String>)> = None;
         let searching = !self.sidebar_query.trim().is_empty();
-        let headed = self.connections.len() >= GROUP_THRESHOLD || !self.pinned.is_empty();
+        let headed = true;
         let groups = sidebar_groups(&self.connections, &self.sidebar_query, &self.pinned);
         let now = now_secs();
         let mut open_tab: Option<usize> = None;
@@ -96,7 +104,7 @@ impl App {
         let keyring_fallback = self.secrets.master().is_some() && !Secrets::is_master_forced(&self.store.lock().unwrap());
         let narrow_window = ctx_width(&self.ctx) < NARROW_WINDOW;
         if !self.sidebar_collapsed && narrow_window {
-            self.sidebar_strip(ui, &mut connect, &mut open_settings, &mut new_connection);
+            self.sidebar_strip(ui, &mut connect, &mut new_connection);
         } else if !self.sidebar_collapsed {
             let panel = Panel::left(egui::Id::NULL.with(("sidebar", self.sidebar_epoch)))
                 .default_size(self.sidebar_width)
@@ -213,12 +221,29 @@ impl App {
                         let title = if connections_view { "Guardadas" } else { "Guardados" };
                         ui.label(RichText::new(title).small().color(theme::subtext()));
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                                        if connections_view {
+                            if connections_view {
                                 if crate::ui::kit::icon_button(ui, icons::PLUS, theme::size::ICON, theme::text()).on_hover_text("Nueva conexión").clicked() {
                                     new_connection = true;
                                 }
                             } else if crate::ui::kit::icon_button(ui, icons::PLUS, theme::size::ICON, theme::text()).on_hover_text("Nuevo snippet").clicked() {
                                 new_snippet = true;
+                            }
+                            // Plegar o desplegar todos los grupos de la lista; solo con dos o más y sin búsqueda (al buscar se ven todos).
+                            let group_keys: Vec<String> = if connections_view {
+                                groups.iter().map(|(label, _)| label.to_lowercase()).collect()
+                            } else {
+                                let mut keys: Vec<String> = self.snippets.iter().map(|s| format!("snip:{}", if s.tag.trim().is_empty() { "sin etiqueta".to_string() } else { s.tag.trim().to_lowercase() })).collect();
+                                keys.sort();
+                                keys.dedup();
+                                keys
+                            };
+                            if group_keys.len() >= 2 {
+                                let all_folded = group_keys.iter().all(|k| self.collapsed_groups.contains(k));
+                                let (icon, tip) = if all_folded { (icons::PLUS_SQUARE, "Desplegar todos los grupos") } else { (icons::MINUS_SQUARE, "Plegar todos los grupos") };
+                                let button = crate::ui::kit::IconButton::new(icon).size(theme::size::ICON).color(theme::subtext()).enabled(!searching).show(ui);
+                                if button.on_hover_text(if searching { "Con una búsqueda activa se ven todos los grupos" } else { tip }).clicked() {
+                                    fold_all = Some((!all_folded, group_keys));
+                                }
                             }
                         });
                     });
@@ -232,7 +257,7 @@ impl App {
                             ui.label(RichText::new("Ninguna conexión coincide con la búsqueda.").color(theme::subtext()));
                         }
                         ui.spacing_mut().item_spacing.y = 2.0;
-                        let list = egui::ScrollArea::vertical().id_salt("connections").auto_shrink([false, false]).max_height(ui.available_height() - 64.0).show(ui, |ui| {
+                        let list = egui::ScrollArea::vertical().id_salt("connections").auto_shrink([false, false]).max_height(ui.available_height() - footer_height(keyring_fallback)).show(ui, |ui| {
                         reserve_scrollbar(ui, "connections");
                         let mut row_pos = 0usize;
                         for (label, indices) in &groups {
@@ -290,7 +315,9 @@ impl App {
                                         })
                                 });
                                 let identity = connection.color.map(theme::identity);
-                                let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), theme::row(ROW_HEIGHT)), Sense::click_and_drag());
+                                let (full_rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), theme::row(ROW_HEIGHT)), Sense::click_and_drag());
+                                // Las conexiones van sangradas bajo la cabecera de su grupo: su icono queda alineado con el nombre del grupo.
+                                let rect = Rect::from_min_max(Pos2::new(full_rect.min.x + GROUP_INDENT, full_rect.min.y), full_rect.max);
                                 let over = ui.rect_contains_pointer(rect);
                                 let this_pos = row_pos;
                                 row_pos += 1;
@@ -466,7 +493,7 @@ impl App {
                             ui.label(RichText::new("Ningún snippet coincide con la búsqueda.").color(theme::subtext()));
                         }
                         ui.spacing_mut().item_spacing.y = 2.0;
-                        let list = egui::ScrollArea::vertical().id_salt("snippets").auto_shrink([false, false]).max_height(ui.available_height() - 64.0).show(ui, |ui| {
+                        let list = egui::ScrollArea::vertical().id_salt("snippets").auto_shrink([false, false]).max_height(ui.available_height() - footer_height(keyring_fallback)).show(ui, |ui| {
                         reserve_scrollbar(ui, "snippets");
                         let mut tags: Vec<(String, Vec<&Snippet>)> = Vec::new();
                         for snippet in visible {
@@ -506,7 +533,10 @@ impl App {
                                 continue;
                             }
                             for snippet in members {
-                                let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), theme::row(ROW_HEIGHT)), Sense::click());
+                                let (full_rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), theme::row(ROW_HEIGHT)), Sense::click());
+                                // Con cabecera, el texto del snippet queda alineado con el nombre del grupo.
+                                let indent = if grouped { SNIPPET_INDENT } else { 0.0 };
+                                let rect = Rect::from_min_max(Pos2::new(full_rect.min.x + indent, full_rect.min.y), full_rect.max);
                                 let over = ui.rect_contains_pointer(rect);
                                 if response.hovered() || over {
                                     ui.painter().rect_filled(rect, CornerRadius::same(theme::radius::CONTROL), theme::hover());
@@ -564,9 +594,6 @@ impl App {
 
                     // Pie: solo avisos; el estado normal de los secretos no hace falta mostrarlo.
                     ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
-                        if system_bar && crate::ui::kit::button_with(ui, Button::new(format!("{}  Ajustes", icons::GEAR)), crate::ui::kit::Variant::Secondary).clicked() {
-                            open_settings = true;
-                        }
                         if keyring_fallback {
                             ui.label(RichText::new("Sin keyring: las contraseñas usan la clave maestra").small().color(theme::subtext()));
                         }
@@ -603,9 +630,17 @@ impl App {
             if !self.collapsed_groups.remove(&key) {
                 self.collapsed_groups.insert(key);
             }
-            let mut keys: Vec<&str> = self.collapsed_groups.iter().map(String::as_str).collect();
-            keys.sort_unstable();
-            let _ = self.store.lock().unwrap().set_meta("collapsed_groups", keys.join("\n").as_bytes());
+            self.save_collapsed_groups();
+        }
+        if let Some((fold, keys)) = fold_all {
+            for key in keys {
+                if fold {
+                    self.collapsed_groups.insert(key);
+                } else {
+                    self.collapsed_groups.remove(&key);
+                }
+            }
+            self.save_collapsed_groups();
         }
         if let Some((action, connection)) = row_action {
             match action {
@@ -634,9 +669,6 @@ impl App {
             }
         }
 
-        if open_settings {
-            self.open_settings(dialogs::SettingsTab::General);
-        }
         if let Some((snippet, run)) = insert {
             self.insert_snippet(&snippet, run);
         }
@@ -677,8 +709,7 @@ impl App {
     }
 
     /// Barra lateral reducida a iconos: terminal local, una insignia por conexión, buscar, nueva y ajustes.
-    pub(super) fn sidebar_strip(&mut self, ui: &mut egui::Ui, connect: &mut Option<Connection>, open_settings: &mut bool, new_connection: &mut bool) {
-        let system_bar = self.settings.system_titlebar;
+    pub(super) fn sidebar_strip(&mut self, ui: &mut egui::Ui, connect: &mut Option<Connection>, new_connection: &mut bool) {
         let mut palette = false;
         Panel::left("sidebar-strip")
             .exact_size(STRIP_WIDTH)
@@ -717,9 +748,6 @@ impl App {
                     }
                 }
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
-                    if system_bar && icon(ui, icons::GEAR, "Ajustes") {
-                        *open_settings = true;
-                    }
                     if icon(ui, icons::PLUS, "Nueva conexión") {
                         *new_connection = true;
                     }
@@ -728,6 +756,12 @@ impl App {
         if palette && self.dialog.is_none() {
             self.palette = Some(Palette::default());
         }
+    }
+
+    fn save_collapsed_groups(&self) {
+        let mut keys: Vec<&str> = self.collapsed_groups.iter().map(String::as_str).collect();
+        keys.sort_unstable();
+        let _ = self.store.lock().unwrap().set_meta("collapsed_groups", keys.join("\n").as_bytes());
     }
 
     pub(super) fn set_sidebar_collapsed(&mut self, collapsed: bool) {

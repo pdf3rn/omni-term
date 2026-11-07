@@ -39,3 +39,5 @@ pub const HARD_DRIVES: &str = "\u{E2A0}";
 pub const PHONE: &str = "\u{E1E0}";
 pub const DESKTOP: &str = "\u{E560}";
 pub const CUBE: &str = "\u{E1DA}";
+pub const MINUS_SQUARE: &str = "\u{ED4C}";
+pub const PLUS_SQUARE: &str = "\u{ED4A}";

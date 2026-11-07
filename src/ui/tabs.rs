@@ -372,6 +372,7 @@ impl App {
         let mut activate = None;
         let mut close = None;
         let mut toggle_sidebar_button = false;
+        let mut open_settings_button = false;
         let mut files_tab: Option<i64> = None;
         let mut split: Option<Dir> = None;
         let mut close_pane = false;
@@ -496,6 +497,10 @@ impl App {
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.spacing_mut().item_spacing.x = 4.0;
+                        // Con la barra de título integrada el engranaje ya está en ella; con la del sistema va aquí, arriba a la derecha.
+                        if self.settings.system_titlebar && crate::ui::kit::IconButton::new(icons::GEAR).size(theme::size::ICON_LG).color(theme::subtext()).show(ui).on_hover_text(shortcuts::label("Ajustes (Ctrl+,)")).clicked() {
+                            open_settings_button = true;
+                        }
                         if self.tabs.get(self.active).is_some_and(|t| matches!(t.body, Body::Terminal { .. })) {
                             // Botón de icono como los demás de la barra; el menú se abre debajo, con los atajos a la derecha.
                             let menu_open = ui.data(|d| d.get_temp::<bool>(egui::Id::NULL.with("split-menu-open"))).unwrap_or(false);
@@ -623,6 +628,9 @@ impl App {
         }
         if toggle_sidebar_button {
             self.set_sidebar_collapsed(!self.sidebar_collapsed);
+        }
+        if open_settings_button {
+            self.run_command(Command::Settings);
         }
         if let Some(i) = activate {
             self.active = i;
