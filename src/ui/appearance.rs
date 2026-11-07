@@ -16,7 +16,7 @@ impl App {
     /// Guarda los ajustes y los aplica a las sesiones abiertas.
     pub(super) fn apply_settings(&mut self) {
         theme::set_bold_bright(self.settings.bold_bright);
-        theme::set_ansi_scheme(self.settings.ansi.index());
+        theme::set_term_theme(self.settings.ansi.index());
         if self.settings.font_family != self.loaded_font {
             if let Some(problem) = install_fonts(&self.ctx, self.settings.font_family.as_deref()) {
                 self.settings.font_family = None;

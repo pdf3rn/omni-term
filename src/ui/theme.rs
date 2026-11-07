@@ -3,6 +3,8 @@ use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use alacritty_terminal::vte::ansi::{Color, Rgb};
 use eframe::egui::Color32;
 
+use crate::data::term_theme::{self, TermTheme};
+
 /// Colores de la interfaz (grises neutros) y del terminal (paleta ANSI basada en Catppuccin Mocha y Latte).
 pub struct Palette {
     base: Color32,
@@ -132,7 +134,6 @@ static USE_LIGHT: AtomicBool = AtomicBool::new(false);
 static ACCENT: AtomicU8 = AtomicU8::new(0);
 static COMPACT: AtomicBool = AtomicBool::new(false);
 static BOLD_BRIGHT: AtomicBool = AtomicBool::new(false);
-static ANSI_SCHEME: AtomicU8 = AtomicU8::new(0);
 
 /// Colores de acento elegibles: azul, gris, verde y malva (oscuro, claro).
 const ACCENTS: [(u32, u32); 4] = [(0x89b4fa, 0x1e66f5), (0xb9bbc6, 0x5c5c5c), (0xa6e3a1, 0x2d7a1c), (0xcba6f7, 0x8839ef)];
@@ -197,11 +198,6 @@ pub fn selection() -> Color32 {
 pub fn hover() -> Color32 {
     palette().hover
 }
-/// Fondo del texto seleccionado en el terminal: el acento mezclado con el fondo, opaco, para que
-/// cualquier color de texto siga leyéndose encima.
-pub fn term_selection() -> Color32 {
-    base().lerp_to_gamma(accent(), if is_light() { 0.22 } else { 0.3 })
-}
 /// Rojo del botón de cerrar la ventana al pasar el ratón: lleva una X blanca en los dos temas.
 pub fn close_hover() -> Color32 {
     rgb(0xc42b1c)
@@ -238,35 +234,63 @@ pub fn identity(index: u8) -> Color32 {
     rgb(set[(index as usize).min(5)])
 }
 
-/// Paletas ANSI alternativas, iguales en tema claro y oscuro (la 0, «Catppuccin», sale del tema).
-const ANSI_SCHEMES: [[(u8, u8, u8); 16]; 2] = [
-    // GNOME
-    [
-        triple(0x171421), triple(0xc01c28), triple(0x26a269), triple(0xa2734c),
-        triple(0x12488b), triple(0xa347ba), triple(0x2aa1b3), triple(0xd0cfcc),
-        triple(0x5e5c64), triple(0xf66151), triple(0x33da7a), triple(0xe9ad0c),
-        triple(0x2a7bde), triple(0xc061cb), triple(0x33c7de), triple(0xffffff),
-    ],
-    // Tango
-    [
-        triple(0x2e3436), triple(0xcc0000), triple(0x4e9a06), triple(0xc4a000),
-        triple(0x3465a4), triple(0x75507b), triple(0x06989a), triple(0xd3d7cf),
-        triple(0x555753), triple(0xef2929), triple(0x8ae234), triple(0xfce94f),
-        triple(0x729fcf), triple(0xad7fa8), triple(0x34e2e2), triple(0xeeeeec),
-    ],
-];
+/// Elige el tema de color del terminal (posición en `term_theme::THEMES`).
+pub fn set_term_theme(index: u8) {
+    term_theme::set(index);
+}
 
-/// Elige la paleta de los 16 colores ANSI: 0 Catppuccin (la del tema), 1 GNOME, 2 Tango.
-pub fn set_ansi_scheme(index: u8) {
-    ANSI_SCHEME.store(index, Ordering::Relaxed);
+fn from_hex(hex: u32) -> Color32 {
+    rgb(hex)
 }
 
 fn ansi(index: usize) -> Color32 {
-    let (r, g, b) = match ANSI_SCHEME.load(Ordering::Relaxed) {
-        scheme @ 1..=2 => ANSI_SCHEMES[scheme as usize - 1][index],
-        _ => palette().ansi[index],
-    };
-    Color32::from_rgb(r, g, b)
+    match term_theme::custom() {
+        Some(theme) => from_hex(theme.ansi[index]),
+        None => {
+            let (r, g, b) = palette().ansi[index];
+            Color32::from_rgb(r, g, b)
+        }
+    }
+}
+
+/// Fondo del terminal.
+pub fn term_bg() -> Color32 {
+    term_theme::custom().map_or_else(base, |t| from_hex(t.bg))
+}
+
+/// Color del texto del terminal.
+pub fn term_fg() -> Color32 {
+    term_theme::custom().map_or_else(text, |t| from_hex(t.fg))
+}
+
+/// Color del cursor del terminal.
+pub fn term_cursor() -> Color32 {
+    term_theme::custom().map_or_else(cursor, |t| from_hex(t.cursor))
+}
+
+/// Fondo del texto seleccionado en el terminal: el del tema, o el acento mezclado con el fondo (opaco, para que
+/// cualquier color de texto siga leyéndose encima).
+pub fn term_selection() -> Color32 {
+    match term_theme::custom() {
+        Some(TermTheme { selection: Some(hex), .. }) => from_hex(*hex),
+        _ => {
+            let bg = term_bg();
+            let light_bg = bg.r() as u32 + bg.g() as u32 + bg.b() as u32 > 3 * 140;
+            bg.lerp_to_gamma(accent(), if light_bg { 0.22 } else { 0.3 })
+        }
+    }
+}
+
+/// Fondo, texto y los seis colores de la vista previa (rojo, verde, amarillo, azul, magenta, cian) del tema `index`.
+pub fn term_theme_preview(index: u8) -> (Color32, Color32, [Color32; 6]) {
+    if index == term_theme::INTERFACE {
+        let ansi = palette().ansi;
+        let pick = |i: usize| Color32::from_rgb(ansi[i].0, ansi[i].1, ansi[i].2);
+        return (base(), text(), [pick(1), pick(2), pick(3), pick(4), pick(5), pick(6)]);
+    }
+    let theme = &term_theme::THEMES[index as usize];
+    let pick = |i: usize| from_hex(theme.ansi[i]);
+    (from_hex(theme.bg), from_hex(theme.fg), [pick(1), pick(2), pick(3), pick(4), pick(5), pick(6)])
 }
 
 /// La negrita aclara los colores ANSI 0-7 (compatibilidad con terminales antiguos).
@@ -276,7 +300,7 @@ pub fn set_bold_bright(on: bool) {
 
 /// Texto atenuado (SGR 2): se acerca al fondo, así baja el contraste en los dos temas.
 pub fn dim(color: Color32) -> Color32 {
-    color.lerp_to_gamma(base(), 0.4)
+    color.lerp_to_gamma(term_bg(), 0.4)
 }
 
 fn indexed(index: u8) -> Color32 {
@@ -310,9 +334,9 @@ pub fn resolve_styled(color: Color, bold: bool) -> Color32 {
 pub fn query_color(index: usize) -> Rgb {
     let color = match index {
         0..=255 => indexed(index as u8),
-        256 => text(),
-        257 => base(),
-        _ => cursor(),
+        256 => term_fg(),
+        257 => term_bg(),
+        _ => term_cursor(),
     };
     Rgb { r: color.r(), g: color.g(), b: color.b() }
 }
@@ -323,11 +347,11 @@ pub fn resolve(color: Color) -> Color32 {
         Color::Indexed(i) => indexed(i),
         Color::Named(named) => match named as usize {
             i @ 0..=15 => ansi(i),
-            256 | 267 => text(),
-            257 => base(),
-            258 => cursor(),
+            256 | 267 => term_fg(),
+            257 => term_bg(),
+            258 => term_cursor(),
             i @ 259..=266 => dim(ansi(i - 259)),
-            _ => dim(text()),
+            _ => dim(term_fg()),
         },
     }
 }
@@ -394,6 +418,7 @@ mod tests {
 
     #[test]
     fn selected_text_stays_readable() {
+        term_theme::set(term_theme::INTERFACE);
         for light in [false, true] {
             set_light(light);
             for accent in 0..ACCENTS.len() as u8 {
@@ -407,16 +432,39 @@ mod tests {
         }
         set_light(false);
         set_accent(0);
+        term_theme::set(0);
     }
 
     #[test]
     fn dim_text_has_less_contrast_in_both_themes() {
+        term_theme::set(term_theme::INTERFACE);
         for light in [false, true] {
             set_light(light);
             assert!(contrast(dim(text()), base()) < contrast(text(), base()), "claro: {light}");
             assert!(contrast(dim(text()), base()) >= 3.0, "claro: {light}");
         }
         set_light(false);
+        term_theme::set(0);
+    }
+
+    #[test]
+    fn every_terminal_theme_is_readable() {
+        for (index, theme) in term_theme::THEMES.iter().enumerate() {
+            if index as u8 == term_theme::INTERFACE {
+                continue;
+            }
+            let (bg, fg) = (rgb(theme.bg), rgb(theme.fg));
+            // Solarized Light es así de suave (4,1:1); el resto supera 7:1.
+            assert!(contrast(fg, bg) >= 4.0, "{}: texto sobre el fondo", theme.name);
+            assert!(contrast(rgb(theme.cursor), bg) >= 3.0, "{}: cursor sobre el fondo", theme.name);
+            if let Some(selection) = theme.selection {
+                assert!(contrast(fg, rgb(selection)) >= 3.0, "{}: texto sobre la selección", theme.name);
+            }
+            // Los seis colores de texto (rojo a cian, normales y brillantes); los negros y los blancos suelen hacer de fondo.
+            for ansi in (1..7).chain(9..15) {
+                assert!(contrast(rgb(theme.ansi[ansi]), bg) >= 1.8, "{}: ANSI {ansi} sobre el fondo", theme.name);
+            }
+        }
     }
 
     #[test]
@@ -453,19 +501,33 @@ mod tests {
     }
 
     #[test]
-    fn the_ansi_scheme_changes_the_sixteen_colours() {
-        set_ansi_scheme(0);
-        let pastel = ansi(3);
-        set_ansi_scheme(1);
+    fn the_terminal_theme_changes_the_sixteen_colours() {
+        set_term_theme(term_theme::INTERFACE);
+        let interface = ansi(3);
+        set_term_theme(0);
         assert_eq!(ansi(3), Color32::from_rgb(0xa2, 0x73, 0x4c));
-        set_ansi_scheme(2);
+        set_term_theme(2);
         assert_eq!(ansi(4), Color32::from_rgb(0x34, 0x65, 0xa4));
-        set_ansi_scheme(0);
-        assert_eq!(ansi(3), pastel);
+        set_term_theme(term_theme::INTERFACE);
+        assert_eq!(ansi(3), interface);
+        set_term_theme(0);
+    }
+
+    #[test]
+    fn the_terminal_theme_sets_background_text_and_cursor() {
+        set_term_theme(0);
+        assert_eq!(term_bg(), Color32::from_rgb(0x17, 0x14, 0x21));
+        assert_eq!(term_fg(), Color32::from_rgb(0xd0, 0xcf, 0xcc));
+        assert_eq!(resolve(Color::Named(alacritty_terminal::vte::ansi::NamedColor::Background)), term_bg());
+        set_term_theme(term_theme::INTERFACE);
+        assert_eq!(term_bg(), base());
+        assert_eq!(term_fg(), text());
+        set_term_theme(0);
     }
 
     #[test]
     fn colour_queries_answer_with_the_theme_colours() {
+        set_term_theme(term_theme::INTERFACE);
         set_light(false);
         let background = query_color(257);
         assert_eq!((background.r, background.g, background.b), (base().r(), base().g(), base().b()));

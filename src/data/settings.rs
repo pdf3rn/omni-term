@@ -1,6 +1,7 @@
 //! Ajustes del usuario, guardados en la tabla `meta` de la base de datos.
 
 use crate::data::store::Store;
+use crate::data::term_theme;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ThemeChoice {
@@ -51,31 +52,32 @@ impl AccentChoice {
 }
 
 /// Paleta de los 16 colores ANSI que usan los programas del terminal.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AnsiChoice {
-    Catppuccin,
-    Gnome,
-    Tango,
-}
+/// Tema de color del terminal elegido: posición en `term_theme::THEMES`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct AnsiChoice(u8);
 
 impl AnsiChoice {
-    pub const ALL: [(AnsiChoice, &'static str); 3] = [(AnsiChoice::Catppuccin, "Catppuccin"), (AnsiChoice::Gnome, "GNOME"), (AnsiChoice::Tango, "Tango")];
+    pub fn new(index: u8) -> Self {
+        Self(index.min(term_theme::THEMES.len() as u8 - 1))
+    }
 
     pub fn index(self) -> u8 {
-        self as u8
+        self.0
     }
 
     fn key(self) -> &'static str {
-        match self {
-            // La clave se queda como «pastel» para no perder lo ya guardado.
-            AnsiChoice::Catppuccin => "pastel",
-            AnsiChoice::Gnome => "gnome",
-            AnsiChoice::Tango => "tango",
-        }
+        term_theme::THEMES[self.0 as usize].key
     }
 
     fn from_key(key: &str) -> Option<Self> {
-        Self::ALL.iter().map(|(choice, _)| *choice).find(|c| c.key() == key)
+        term_theme::index_of_key(key).map(Self)
+    }
+}
+
+impl Default for AnsiChoice {
+    /// GNOME, el primero de la lista.
+    fn default() -> Self {
+        Self(0)
     }
 }
 
@@ -151,7 +153,7 @@ impl Default for Settings {
             on_start: StartupChoice::Ask,
             local_profile: None,
             accent: AccentChoice::Blue,
-            ansi: AnsiChoice::Catppuccin,
+            ansi: AnsiChoice::default(),
             menu_bar: true,
             system_titlebar: false,
             titlebar_menu: true,
@@ -269,7 +271,7 @@ mod tests {
             on_start: StartupChoice::Restore,
             local_profile: Some(7),
             accent: AccentChoice::Mauve,
-            ansi: AnsiChoice::Gnome,
+            ansi: AnsiChoice::new(5),
             menu_bar: false,
             system_titlebar: !NATIVE_CHROME,
             titlebar_menu: false,

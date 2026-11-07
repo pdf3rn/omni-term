@@ -255,10 +255,17 @@ pub(super) fn settings_content(ui: &mut egui::Ui, tab: SettingsTab, settings: &m
         crate::ui::kit::setting_row(ui, "Cursor parpadeante", None, true, |ui| {
             crate::ui::kit::toggle(ui, &mut settings.blink);
         });
-        crate::ui::kit::setting_row(ui, "Paleta de colores", Some("Los 16 colores ANSI de los programas"), true, |ui| {
-            for (choice, label) in AnsiChoice::ALL {
-                ui.selectable_value(&mut settings.ansi, choice, label);
-            }
+        crate::ui::kit::setting_row(ui, "Tema del terminal", Some("Fondo, texto, cursor y los 16 colores ANSI"), true, |ui| {
+            let themes = &crate::data::term_theme::THEMES;
+            let current = settings.ansi.index() as usize;
+            crate::ui::kit::select(ui, "terminal-theme", 250.0, themes[current].name, |options| {
+                for (index, theme) in themes.iter().enumerate() {
+                    let preview = |painter: &egui::Painter, rect: egui::Rect| paint_theme_preview(painter, rect, index as u8);
+                    if options.option_decorated(index == current, theme.name, preview) {
+                        settings.ansi = AnsiChoice::new(index as u8);
+                    }
+                }
+            });
         });
         crate::ui::kit::setting_row(ui, "Negrita brillante", Some("La negrita aclara los colores ANSI 0-7"), true, |ui| {
             crate::ui::kit::toggle(ui, &mut settings.bold_bright);
@@ -304,6 +311,18 @@ pub(super) fn settings_content(ui: &mut egui::Ui, tab: SettingsTab, settings: &m
 
 pub(super) fn name_of(master: bool) -> &'static str {
     if master { "clave maestra" } else { "llavero del sistema" }
+}
+
+/// Vista previa de un tema en su fila: un recuadro con su fondo y texto, y los seis colores principales.
+fn paint_theme_preview(painter: &egui::Painter, rect: egui::Rect, index: u8) {
+    let (bg, fg, colors) = theme::term_theme_preview(index);
+    let chip = egui::Rect::from_center_size(egui::pos2(rect.max.x - 8.0 - 6.0 * 11.0 - 14.0, rect.center().y), egui::vec2(26.0, 16.0));
+    painter.rect_filled(chip, egui::CornerRadius::same(theme::radius::SMALL), bg);
+    painter.rect_stroke(chip, egui::CornerRadius::same(theme::radius::SMALL), egui::Stroke::new(theme::stroke::HAIRLINE, theme::subtext()), egui::StrokeKind::Inside);
+    painter.text(chip.center(), egui::Align2::CENTER_CENTER, "Aa", egui::FontId::new(theme::size::CAPTION, egui::FontFamily::Proportional), fg);
+    for (i, color) in colors.iter().enumerate() {
+        painter.circle_filled(egui::pos2(rect.max.x - 8.0 - 6.0 * 11.0 + 5.5 + i as f32 * 11.0, rect.center().y), 4.0, *color);
+    }
 }
 
 pub(super) const DEFAULT_FONT: &str = "JetBrains Mono (incluida)";

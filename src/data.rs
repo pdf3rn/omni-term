@@ -3,3 +3,4 @@
 pub mod secrets;
 pub mod settings;
 pub mod store;
+pub mod term_theme;

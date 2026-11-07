@@ -18,6 +18,7 @@ pub struct SelectOptions<'u> {
     selected: Option<usize>,
     seen: Id,
     tab: Option<bool>,
+    last_rect: Option<egui::Rect>,
 }
 
 impl SelectOptions<'_> {
@@ -29,6 +30,7 @@ impl SelectOptions<'_> {
     /// Como `option`, atenuada y sin poder elegirse si `enabled` es `false`.
     pub fn option_enabled(&mut self, selected: bool, label: &str, enabled: bool) -> bool {
         let response = self.ui.add_enabled(enabled, Button::selectable(selected, label)).hand();
+        self.last_rect = Some(response.rect);
         if selected {
             self.selected = Some(self.items.len());
         }
@@ -40,6 +42,15 @@ impl SelectOptions<'_> {
             self.ui.close();
         }
         clicked
+    }
+
+    /// Como `option`, y `decorate` pinta algo más sobre la fila (una vista previa a la derecha, por ejemplo).
+    pub fn option_decorated(&mut self, selected: bool, label: &str, decorate: impl FnOnce(&egui::Painter, egui::Rect)) -> bool {
+        let chosen = self.option(selected, label);
+        if let Some(rect) = self.last_rect {
+            decorate(self.ui.painter(), rect);
+        }
+        chosen
     }
 
     /// Opción que fija `current` a `value`, como `ui.selectable_value`.
@@ -107,7 +118,7 @@ pub fn select(ui: &mut Ui, salt: impl Hash + std::fmt::Debug + Copy, width: f32,
     let was_open = ctx.data(|d| d.get_temp::<bool>(was_open_id)).unwrap_or(false);
     let mut tab = None;
     let inner = ComboBox::from_id_salt(salt).width(width).selected_text(text.into()).show_ui(ui, |ui| {
-        let mut opts = SelectOptions { ui, items: Vec::new(), selected: None, seen, tab: None };
+        let mut opts = SelectOptions { ui, items: Vec::new(), selected: None, seen, tab: None, last_rect: None };
         options(&mut opts);
         opts.finish();
         tab = opts.tab;

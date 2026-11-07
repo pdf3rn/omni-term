@@ -5,7 +5,9 @@ use super::*;
 impl App {
     pub(super) fn central_area(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         let area = ui.available_rect_before_wrap();
-        ui.painter().rect_filled(area, CornerRadius::ZERO, theme::base());
+        // El terminal lleva el fondo de su tema; el resto de pestañas, el de la interfaz.
+        let terminal_active = self.tabs.get(self.active).is_some_and(|t| matches!(t.body, Body::Terminal { .. }));
+        ui.painter().rect_filled(area, CornerRadius::ZERO, if terminal_active { theme::term_bg() } else { theme::base() });
         let text_area = area.shrink(PADDING);
         let active_kind = self.tabs.get(self.active).map(|t| t.kind);
         let identity = active_kind.and_then(|kind| self.identity_for(kind));

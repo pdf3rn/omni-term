@@ -1030,23 +1030,23 @@ impl Pane {
             });
 
             let fill = if at_cursor {
-                fg = theme::base();
-                Some(theme::cursor())
+                fg = theme::term_bg();
+                Some(theme::term_cursor())
             } else if let Some(current) = found {
                 if current {
-                    fg = theme::base();
+                    fg = theme::term_bg();
                     Some(theme::accent())
                 } else {
                     Some(theme::accent().gamma_multiply(0.35))
                 }
             } else if selected {
                 Some(theme::term_selection())
-            } else if bg != theme::base() {
+            } else if bg != theme::term_bg() {
                 Some(bg)
             } else {
                 None
             };
-            let shown_bg = fill.unwrap_or(theme::base());
+            let shown_bg = fill.unwrap_or(theme::term_bg());
 
             if let Some(color) = fill {
                 let span = if wide { 2 } else { 1 };
@@ -1124,7 +1124,7 @@ impl Pane {
                 } else {
                     Rect::from_min_max(rect.min, Pos2::new(rect.min.x + thickness, rect.max.y))
                 };
-                painter.rect_filled(bar, CornerRadius::ZERO, theme::cursor());
+                painter.rect_filled(bar, CornerRadius::ZERO, theme::term_cursor());
             }
         }
 
@@ -1133,7 +1133,7 @@ impl Pane {
                 painter.rect_stroke(
                     cell_rect(vp.line, vp.column.0, 1),
                     CornerRadius::ZERO,
-                    Stroke::new(theme::stroke::HAIRLINE, theme::cursor()),
+                    Stroke::new(theme::stroke::HAIRLINE, theme::term_cursor()),
                     StrokeKind::Inside,
                 );
             }

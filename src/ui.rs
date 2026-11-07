@@ -216,7 +216,7 @@ impl App {
         theme::set_accent(settings.accent.index());
         theme::set_compact(settings.compact);
         theme::set_bold_bright(settings.bold_bright);
-        theme::set_ansi_scheme(settings.ansi.index());
+        theme::set_term_theme(settings.ansi.index());
         let light = match settings.theme {
             ThemeChoice::Light => true,
             ThemeChoice::Dark => false,
