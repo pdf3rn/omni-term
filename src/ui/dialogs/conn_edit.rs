@@ -199,6 +199,7 @@ pub(super) fn adb_rows(ui: &mut egui::Ui, form: &mut ConnForm) {
                     }
                 }
             });
+            crate::ui::kit::return_focus_after_menu(ui.ctx(), &detect);
         });
         crate::ui::kit::error_line(ui, &form.errors.host);
         ui.label(RichText::new("Para un móvil por Wi-Fi escribe ip:puerto (por ejemplo 192.168.1.5:5555).").small().color(theme::subtext()));
@@ -228,6 +229,7 @@ pub(super) fn serial_rows(ui: &mut egui::Ui, form: &mut ConnForm) {
                     }
                 }
             });
+            crate::ui::kit::return_focus_after_menu(ui.ctx(), &detect);
         });
         crate::ui::kit::error_line(ui, &form.errors.host);
     });
@@ -245,6 +247,7 @@ pub(super) fn serial_rows(ui: &mut egui::Ui, form: &mut ConnForm) {
                     }
                 }
             });
+            crate::ui::kit::return_focus_after_menu(ui.ctx(), &speeds);
         });
         crate::ui::kit::error_line(ui, &form.errors.port);
     });
@@ -429,17 +432,12 @@ pub(super) fn engine_rows(ui: &mut egui::Ui, form: &mut ConnForm, connections: &
     let servers: Vec<&Connection> = connections.iter().filter(|c| c.id != form.id && c.is_ssh()).collect();
     crate::ui::kit::form_row(ui, "Ubicación", |ui| {
         let current = form.jump.and_then(|id| servers.iter().find(|c| c.id == Some(id))).map_or("Este equipo".to_string(), |c| format!("{} ({})", c.name, c.destination()));
-        ComboBox::from_id_salt("engine-place")
-            .width(ui.available_width())
-            .selected_text(current)
-            .show_ui(ui, |ui| {
-                ui.selectable_value(&mut form.jump, None, "Este equipo");
-                for server in &servers {
-                    ui.selectable_value(&mut form.jump, server.id, format!("{} ({})", server.name, server.destination()));
-                }
-            })
-            .response
-            .hand();
+        crate::ui::kit::select(ui, "engine-place", ui.available_width(), current, |options| {
+            options.value(&mut form.jump, None, "Este equipo");
+            for server in &servers {
+                options.value(&mut form.jump, server.id, &format!("{} ({})", server.name, server.destination()));
+            }
+        });
         let hint = if servers.is_empty() {
             "Para un servidor, crea antes su conexión SSH: el motor usa su usuario, llave y saltos."
         } else {
@@ -472,30 +470,25 @@ pub(super) fn local_rows(ui: &mut egui::Ui, form: &mut ConnForm) {
         } else {
             "Predeterminado del sistema".to_string()
         };
-        ComboBox::from_id_salt("local-shell")
-            .width(ui.available_width())
-            .selected_text(selected)
-            .show_ui(ui, |ui| {
-                if ui.selectable_label(!custom && program.is_empty(), "Predeterminado del sistema").clicked() {
-                    form.host.clear();
+        crate::ui::kit::select(ui, "local-shell", ui.available_width(), selected, |options| {
+            if options.option(!custom && program.is_empty(), "Predeterminado del sistema") {
+                form.host.clear();
+                form.local_other = false;
+            }
+            for option in shells.iter() {
+                let chosen = !custom && matching.is_some_and(|m| m == option);
+                if options.option(chosen, option.label.as_str()) {
+                    form.host = option.program.clone();
+                    if !option.args.is_empty() {
+                        form.local_args = option.args.clone();
+                    }
                     form.local_other = false;
                 }
-                for option in shells.iter() {
-                    let chosen = !custom && matching.is_some_and(|m| m == option);
-                    if ui.selectable_label(chosen, option.label.as_str()).clicked() {
-                        form.host = option.program.clone();
-                        if !option.args.is_empty() {
-                            form.local_args = option.args.clone();
-                        }
-                        form.local_other = false;
-                    }
-                }
-                if ui.selectable_label(custom, "Otro…").clicked() {
-                    form.local_other = true;
-                }
-            })
-            .response
-            .hand();
+            }
+            if options.option(custom, "Otro…") {
+                form.local_other = true;
+            }
+        });
         if custom {
             ui.add_space(theme::space::XS);
             let width = ui.available_width();
@@ -542,22 +535,18 @@ pub(super) fn ssh_access_rows(ui: &mut egui::Ui, form: &mut ConnForm) {
     });
     ui.add_space(theme::space::ROW);
     crate::ui::kit::form_row(ui, "Autenticación", |ui| {
-        ComboBox::from_id_salt("auth")
-            .width(ui.available_width())
-            .selected_text(match form.auth {
-                Auth::Password => "Contraseña",
-                Auth::Key => "Llave privada",
-                Auth::Agent => "ssh-agent",
-                Auth::Interactive => "Interactivo (2FA)",
-            })
-            .show_ui(ui, |ui| {
-                ui.selectable_value(&mut form.auth, Auth::Agent, "ssh-agent");
-                ui.selectable_value(&mut form.auth, Auth::Key, "Llave privada");
-                ui.selectable_value(&mut form.auth, Auth::Password, "Contraseña");
-                ui.selectable_value(&mut form.auth, Auth::Interactive, "Interactivo (2FA)");
-            })
-            .response
-            .hand();
+        let current = match form.auth {
+            Auth::Password => "Contraseña",
+            Auth::Key => "Llave privada",
+            Auth::Agent => "ssh-agent",
+            Auth::Interactive => "Interactivo (2FA)",
+        };
+        crate::ui::kit::select(ui, "auth", ui.available_width(), current, |options| {
+            options.value(&mut form.auth, Auth::Agent, "ssh-agent");
+            options.value(&mut form.auth, Auth::Key, "Llave privada");
+            options.value(&mut form.auth, Auth::Password, "Contraseña");
+            options.value(&mut form.auth, Auth::Interactive, "Interactivo (2FA)");
+        });
     });
     if form.auth == Auth::Key {
         ui.add_space(theme::space::ROW);
@@ -611,17 +600,12 @@ pub(super) fn advanced_rows(ui: &mut egui::Ui, form: &mut ConnForm, connections:
                     .jump
                     .and_then(|id| connections.iter().find(|c| c.id == Some(id)))
                     .map_or("Ninguno".to_string(), |c| c.name.clone());
-                ComboBox::from_id_salt("jump")
-                    .width(ui.available_width())
-                    .selected_text(current)
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut form.jump, None, "Ninguno");
-                        for other in connections.iter().filter(|c| c.id != form.id) {
-                            ui.selectable_value(&mut form.jump, other.id, other.name.as_str());
-                        }
-                    })
-                    .response
-                    .hand();
+                crate::ui::kit::select(ui, "jump", ui.available_width(), current, |options| {
+                    options.value(&mut form.jump, None, "Ninguno");
+                    for other in connections.iter().filter(|c| c.id != form.id) {
+                        options.value(&mut form.jump, other.id, other.name.as_str());
+                    }
+                });
             });
             if !ssh {
                 return;
@@ -643,20 +627,16 @@ pub(super) fn advanced_rows(ui: &mut egui::Ui, form: &mut ConnForm, connections:
             for (index, row) in form.forwards.iter_mut().enumerate() {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 6.0;
-                    ComboBox::from_id_salt(("fwd-kind", index))
-                        .width(92.0)
-                        .selected_text(match row.kind {
-                            ForwardKind::Local => "Local -L",
-                            ForwardKind::Remote => "Remoto -R",
-                            ForwardKind::Dynamic => "SOCKS -D",
-                        })
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut row.kind, ForwardKind::Local, "Local -L");
-                            ui.selectable_value(&mut row.kind, ForwardKind::Remote, "Remoto -R");
-                            ui.selectable_value(&mut row.kind, ForwardKind::Dynamic, "SOCKS -D");
-                        })
-                        .response
-                        .hand();
+                    let kind_text = match row.kind {
+                        ForwardKind::Local => "Local -L",
+                        ForwardKind::Remote => "Remoto -R",
+                        ForwardKind::Dynamic => "SOCKS -D",
+                    };
+                    crate::ui::kit::select(ui, ("fwd-kind", index), 92.0, kind_text, |options| {
+                        options.value(&mut row.kind, ForwardKind::Local, "Local -L");
+                        options.value(&mut row.kind, ForwardKind::Remote, "Remoto -R");
+                        options.value(&mut row.kind, ForwardKind::Dynamic, "SOCKS -D");
+                    });
                     let broken = form.errors.forwards[index].is_some();
                     ui.scope(|ui| {
                         if broken {

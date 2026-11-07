@@ -233,17 +233,13 @@ pub(super) fn settings_content(ui: &mut egui::Ui, tab: SettingsTab, settings: &m
         crate::ui::kit::setting_row(ui, "Terminal local predeterminado", Some(&crate::ui::shortcuts::label("Para el botón + y Ctrl+Shift+T")), true, |ui| {
             let profiles: Vec<&Connection> = connections.iter().filter(|c| c.is_local()).collect();
             let current = settings.local_profile.and_then(|id| profiles.iter().find(|c| c.id == Some(id)));
-            egui::ComboBox::from_id_salt("local-profile")
-                .width(190.0)
-                .selected_text(current.map_or("Shell del sistema".to_string(), |c| c.name.clone()))
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut settings.local_profile, None, "Shell del sistema");
-                    for profile in &profiles {
-                        ui.selectable_value(&mut settings.local_profile, profile.id, profile.name.as_str());
-                    }
-                })
-                .response
-                .hand();
+            let current_name = current.map_or("Shell del sistema".to_string(), |c| c.name.clone());
+            crate::ui::kit::select(ui, "local-profile", 190.0, current_name, |options| {
+                options.value(&mut settings.local_profile, None, "Shell del sistema");
+                for profile in &profiles {
+                    options.value(&mut settings.local_profile, profile.id, profile.name.as_str());
+                }
+            });
         });
         crate::ui::kit::setting_row(ui, "Fuente", Some("Monoespaciada, instalada en el equipo"), true, |ui| {
             font_picker(ui, &mut settings.font_family);
@@ -289,16 +285,13 @@ pub(super) fn settings_content(ui: &mut egui::Ui, tab: SettingsTab, settings: &m
     crate::ui::kit::card(ui, "Secretos", |ui| {
         crate::ui::kit::setting_row(ui, "Modo de cifrado de credenciales", Some("Dónde se guardan las contraseñas. Se aplica al reiniciar"), false, |ui| {
             let name = |master: bool| if master { "Clave maestra" } else { "Llavero del sistema" };
-            egui::ComboBox::from_id_salt("secrets-mode")
-                .width(190.0)
-                .selected_text(name(secrets.master))
-                .show_ui(ui, |ui| {
-                    let keyring_label = if secrets.keyring_available { "Llavero del sistema" } else { "Llavero del sistema (no disponible)" };
-                    ui.add_enabled_ui(secrets.keyring_available, |ui| ui.selectable_value(&mut secrets.master, false, keyring_label));
-                    ui.selectable_value(&mut secrets.master, true, "Clave maestra");
-                })
-                .response
-                .hand();
+            let keyring_label = if secrets.keyring_available { "Llavero del sistema" } else { "Llavero del sistema (no disponible)" };
+            crate::ui::kit::select(ui, "secrets-mode", 190.0, name(secrets.master), |options| {
+                if options.option_enabled(!secrets.master, keyring_label, secrets.keyring_available) {
+                    secrets.master = false;
+                }
+                options.value(&mut secrets.master, true, "Clave maestra");
+            });
         });
         if secrets.master != secrets.active_master {
             let text = format!("En uso ahora: {}. El cambio se aplica al reiniciar.", name_of(secrets.active_master));
@@ -355,6 +348,7 @@ pub(super) fn font_picker(ui: &mut egui::Ui, family: &mut Option<String>) {
             }
         });
     });
+    crate::ui::kit::return_focus_after_menu(ui.ctx(), &button);
 }
 
 /// Sección de contraseñas: las del gestor, para escribirlas en el terminal con Ctrl+Alt+P.

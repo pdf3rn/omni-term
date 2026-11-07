@@ -1,6 +1,6 @@
 //! Diálogos modales: edición de conexión, contraseñas, clave maestra y confianza de host.
 
-use eframe::egui::{self, CollapsingHeader, Color32, ComboBox, FontId, Id, Modal, RichText, ScrollArea, TextEdit};
+use eframe::egui::{self, CollapsingHeader, Color32, FontId, Id, Modal, RichText, ScrollArea, TextEdit};
 use zeroize::Zeroizing;
 
 use crate::ui::cursor::HandExt;

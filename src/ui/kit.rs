@@ -6,9 +6,11 @@ pub mod card;
 pub mod choice;
 pub mod form;
 pub mod list;
+pub mod select;
 
 pub use button::{button, button_rich, button_with, danger_item, icon_button, IconButton, Variant};
 pub use choice::Roving;
+pub use select::{return_focus_after_menu, select};
 pub use card::{card, card_frame, keycap, section_title, setting_row, toggle, switch, switch_labeled};
 pub use list::{connection_glyph, empty_hint, fit_text, row_content, row_frame, Leading, RowContent};
 pub use form::{chip, error_line, form_row, password_field, request_reveal_error, search_field, take_reveal_error, text_input};

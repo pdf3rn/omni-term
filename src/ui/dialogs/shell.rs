@@ -152,6 +152,8 @@ pub enum Action {
 /// cuando se pulsó Enter en uno de sus campos de una línea.
 pub fn shell(ctx: &egui::Context, spec: Spec, body: impl FnOnce(&mut egui::Ui) -> bool) -> Action {
     let mut action = Action::None;
+    // Esc cierra primero una lista abierta (un desplegable, un menú): el diálogo solo se cancela si no había ninguna.
+    let popup_open = egui::Popup::is_any_open(ctx);
     // En el fotograma en que aparece, el Enter que lo abrió (p. ej. en la barra lateral) no lo confirma.
     // Se guarda (abierto en, visto por última vez en): un hueco de fotogramas significa que es un diálogo nuevo.
     let now = ctx.cumulative_frame_nr();
@@ -290,7 +292,7 @@ pub fn shell(ctx: &egui::Context, spec: Spec, body: impl FnOnce(&mut egui::Ui) -
         }
     });
     if matches!(action, Action::None) {
-        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        if !popup_open && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             action = Action::Cancel;
         } else if spec.backdrop_cancels && response.backdrop_response.clicked() {
             action = Action::Cancel;
