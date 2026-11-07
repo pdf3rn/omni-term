@@ -466,5 +466,6 @@ impl eframe::App for App {
         self.handle_dialog(&ctx);
         self.toasts_ui(&ctx);
         self.persist_layout();
+        self.paint_focus_ring(&ctx);
     }
 }

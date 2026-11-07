@@ -7,11 +7,32 @@ pub(super) fn environment_row(ui: &mut egui::Ui, form: &mut ConnForm) {
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = egui::vec2(3.0, 6.0);
             let none = form.env.trim().is_empty() && form.color.is_none();
-            for (name, env, color) in ENVIRONMENTS {
-                let selected = !form.custom_env && form.env.eq_ignore_ascii_case(env) && form.color == Some(color);
-                if crate::ui::kit::chip(ui, name, Some(theme::identity(color)), selected).on_hover_text(if selected { "Clic para quitarlo" } else { "Pone la etiqueta y el color" }).clicked() {
-                    // Pulsar el elegido lo quita: sin entorno ni color.
-                    if selected {
+            let selected_at = |form: &ConnForm, index: usize| !form.custom_env && form.env.eq_ignore_ascii_case(ENVIRONMENTS[index].1) && form.color == Some(ENVIRONMENTS[index].2);
+            let custom_selected = form.custom_env || (!none && !(0..ENVIRONMENTS.len()).any(|i| selected_at(form, i)));
+            let current = (0..ENVIRONMENTS.len()).find(|&i| selected_at(form, i)).or(custom_selected.then_some(ENVIRONMENTS.len()));
+            // Una sola parada de Tab: ←/→ mueven la marca y Espacio elige.
+            let mut nav = crate::ui::kit::Roving::begin(ui, "environment", ENVIRONMENTS.len() + 1, current, false, false);
+            let mut pick = None;
+            for (index, (name, _, color)) in ENVIRONMENTS.iter().enumerate() {
+                let selected = selected_at(form, index);
+                let response = crate::ui::kit::chip(ui, name, Some(theme::identity(*color)), selected).on_hover_text(if selected { "Clic para quitarlo" } else { "Pone la etiqueta y el color" });
+                nav.item(ui, index, &response);
+                if response.clicked() {
+                    pick = Some(index);
+                }
+            }
+            let response = crate::ui::kit::chip(ui, "Otro…", None, custom_selected).on_hover_text("Elegir la etiqueta y el color a mano");
+            nav.item(ui, ENVIRONMENTS.len(), &response);
+            if response.clicked() {
+                pick = Some(ENVIRONMENTS.len());
+            }
+            pick = nav.activated().or(pick);
+            nav.finish(ui);
+            match pick {
+                // Pulsar el elegido lo quita: sin entorno ni color.
+                Some(index) if index < ENVIRONMENTS.len() => {
+                    let (_, env, color) = ENVIRONMENTS[index];
+                    if selected_at(form, index) {
                         form.env.clear();
                         form.color = None;
                     } else {
@@ -20,10 +41,8 @@ pub(super) fn environment_row(ui: &mut egui::Ui, form: &mut ConnForm) {
                     }
                     form.custom_env = false;
                 }
-            }
-            let custom_selected = form.custom_env || (!none && !ENVIRONMENTS.iter().any(|(_, e, c)| form.env.eq_ignore_ascii_case(e) && form.color == Some(*c)));
-            if crate::ui::kit::chip(ui, "Otro…", None, custom_selected).on_hover_text("Elegir la etiqueta y el color a mano").clicked() {
-                form.custom_env = true;
+                Some(_) => form.custom_env = true,
+                None => {}
             }
         });
     });
@@ -36,20 +55,31 @@ pub(super) fn environment_row(ui: &mut egui::Ui, form: &mut ConnForm) {
         ui.add_space(theme::space::ROW);
         crate::ui::kit::form_row(ui, "Color", |ui| {
             ui.horizontal(|ui| {
-                for choice in std::iter::once(None).chain((0..6).map(Some)) {
-                    let (rect, response) = ui.allocate_exact_size(egui::vec2(24.0, 24.0), egui::Sense::click());
+                let choices: Vec<Option<u8>> = std::iter::once(None).chain((0..6).map(Some)).collect();
+                let current = choices.iter().position(|c| *c == form.color);
+                let mut nav = crate::ui::kit::Roving::begin(ui, "color", choices.len(), current, false, false);
+                let mut pick = None;
+                for (index, choice) in choices.iter().enumerate() {
+                    let (rect, response) = ui.allocate_exact_size(egui::vec2(24.0, 24.0), egui::Sense::CLICK);
                     let response = response.hand();
                     match choice.map(theme::identity) {
                         Some(color) => ui.painter().circle_filled(rect.center(), 8.0, color),
                         None => ui.painter().circle_stroke(rect.center(), 8.0, egui::Stroke::new(theme::stroke::MEDIUM, theme::subtext())),
                     };
-                    if form.color == choice {
+                    if form.color == *choice {
                         ui.painter().circle_stroke(rect.center(), 11.0, egui::Stroke::new(theme::stroke::THICK, theme::text()));
                     }
                     let name = choice.map_or("Sin color", |i| theme::IDENTITY_NAMES[i as usize]);
-                    if response.on_hover_text(name).clicked() {
-                        form.color = choice;
+                    let response = response.on_hover_text(name);
+                    nav.item(ui, index, &response);
+                    if response.clicked() {
+                        pick = Some(index);
                     }
+                }
+                pick = nav.activated().or(pick);
+                nav.finish(ui);
+                if let Some(index) = pick {
+                    form.color = choices[index];
                 }
             });
         });
@@ -345,8 +375,12 @@ pub(super) fn kind_list(ui: &mut egui::Ui, form: &mut ConnForm) {
         ui.set_width(KIND_LIST_WIDTH);
         egui::Frame::NONE.inner_margin(egui::Margin::same(theme::space::L as i8)).show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 2.0;
+            // Una sola parada de Tab: ↑/↓ cambian de tipo.
+            let position = ConnKind::ALL.iter().position(|(kind, ..)| *kind == current);
+            let mut nav = crate::ui::kit::Roving::begin(ui, "kind", ConnKind::ALL.len(), position, true, true);
+            let mut pick = None;
             let mut group = "";
-            for (kind, name, kind_group) in ConnKind::ALL {
+            for (index, (kind, name, kind_group)) in ConnKind::ALL.into_iter().enumerate() {
                 if kind_group != group {
                     if !group.is_empty() {
                         ui.add_space(theme::space::S);
@@ -355,7 +389,7 @@ pub(super) fn kind_list(ui: &mut egui::Ui, form: &mut ConnForm) {
                     group = kind_group;
                 }
                 let selected = kind == current;
-                let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), KIND_ROW_HEIGHT), egui::Sense::click());
+                let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), KIND_ROW_HEIGHT), egui::Sense::CLICK);
                 let response = response.hand();
                 let radius = egui::CornerRadius::same(theme::radius::CONTROL);
                 if selected {
@@ -367,7 +401,16 @@ pub(super) fn kind_list(ui: &mut egui::Ui, form: &mut ConnForm) {
                 ui.painter().text(rect.min + egui::vec2(14.0, KIND_ROW_HEIGHT / 2.0), egui::Align2::CENTER_CENTER, kind.icon(), FontId::proportional(theme::size::ICON), ink);
                 let font = FontId::new(theme::size::BODY, if selected { crate::ui::strong_family() } else { egui::FontFamily::Proportional });
                 ui.painter().text(rect.min + egui::vec2(32.0, KIND_ROW_HEIGHT / 2.0), egui::Align2::LEFT_CENTER, name, font, ink);
-                if response.clicked() && !selected {
+                nav.item(ui, index, &response);
+                if response.clicked() {
+                    pick = Some(index);
+                }
+            }
+            pick = nav.activated().or(pick);
+            nav.finish(ui);
+            if let Some(index) = pick {
+                let kind = ConnKind::ALL[index].0;
+                if kind != current {
                     kind.apply(form);
                 }
             }

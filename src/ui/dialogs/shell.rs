@@ -184,7 +184,7 @@ pub fn shell(ctx: &egui::Context, spec: Spec, body: impl FnOnce(&mut egui::Ui) -
         ui.painter().line_segment([title_rect.left_bottom(), title_rect.right_bottom()], egui::Stroke::new(theme::stroke::HAIRLINE, theme::surface()));
         ui.painter().text(title_rect.center(), egui::Align2::CENTER_CENTER, &spec.title, FontId::new(theme::size::BODY, crate::ui::strong_family()), theme::text());
         let close_slot = egui::Rect::from_center_size(egui::pos2(title_rect.max.x - 22.0, title_rect.center().y), egui::vec2(26.0, 26.0));
-        let close = crate::ui::kit::IconButton::new(crate::ui::icons::X).size(theme::size::ICON_SM).show_at(ui, close_slot, "dialog-close");
+        let close = crate::ui::kit::IconButton::new(crate::ui::icons::X).size(theme::size::ICON_SM).skip_focus().show_at(ui, close_slot, "dialog-close");
         if close.on_hover_text("Cerrar").clicked() {
             action = Action::Cancel;
         }

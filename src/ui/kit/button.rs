@@ -97,11 +97,13 @@ pub struct IconButton {
     enabled: bool,
     active: bool,
     small: bool,
+    /// Fuera del orden de Tab (la X de un diálogo, el ojo de una contraseña): se alcanzan con el ratón o con su atajo.
+    skip_focus: bool,
 }
 
 impl IconButton {
     pub fn new(glyph: &'static str) -> Self {
-        Self { glyph: IconGlyph::Text(glyph), size: theme::size::ICON, color: theme::text(), enabled: true, active: false, small: false }
+        Self { glyph: IconGlyph::Text(glyph), size: theme::size::ICON, color: theme::text(), enabled: true, active: false, small: false, skip_focus: false }
     }
 
     pub fn stop() -> Self {
@@ -131,6 +133,12 @@ impl IconButton {
         self
     }
 
+    /// Quita el botón del orden de Tab.
+    pub fn skip_focus(mut self) -> Self {
+        self.skip_focus = true;
+        self
+    }
+
     fn side(&self) -> f32 {
         if self.small { ICON_BUTTON_SMALL } else { ICON_BUTTON }
     }
@@ -142,7 +150,7 @@ impl IconButton {
     }
 
     pub fn show(self, ui: &mut Ui) -> egui::Response {
-        let (rect, response) = ui.allocate_exact_size(Vec2::splat(self.side()), if self.enabled { Sense::click() } else { Sense::hover() });
+        let (rect, response) = ui.allocate_exact_size(Vec2::splat(self.side()), if !self.enabled { Sense::hover() } else if self.skip_focus { Sense::CLICK } else { Sense::click() });
         self.paint(ui, rect, response)
     }
 

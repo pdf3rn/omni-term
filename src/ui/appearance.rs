@@ -56,6 +56,20 @@ impl App {
             let _ = self.settings.save(&self.store.lock().unwrap());
         }
     }
+
+    /// Borde de acento alrededor del widget con foco: sin él no se ve qué campo recibirá lo que se escriba.
+    /// Los widgets grandes (el terminal, listas) no lo llevan.
+    pub(super) fn paint_focus_ring(&self, ctx: &egui::Context) {
+        let Some(id) = ctx.memory(|m| m.focused()) else { return };
+        let Some(response) = ctx.read_response(id) else { return };
+        let rect = response.rect;
+        // Sin tamaño es el ancla de un grupo de opciones: la marca de la opción la pinta el propio grupo.
+        if rect.width() < 4.0 || rect.height() < 4.0 || rect.width() > 720.0 || rect.height() > 80.0 || !rect.is_finite() {
+            return;
+        }
+        let painter = ctx.layer_painter(response.layer_id);
+        painter.rect_stroke(rect, CornerRadius::same(theme::radius::CONTROL), Stroke::new(theme::stroke::HAIRLINE, theme::accent().gamma_multiply(0.6)), egui::StrokeKind::Inside);
+    }
 }
 
 /// Instala las fuentes; con `family` (una familia instalada en el equipo) el terminal usa esa en lugar de JetBrains Mono.

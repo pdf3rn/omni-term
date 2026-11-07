@@ -76,7 +76,7 @@ pub fn password_field(ui: &mut Ui, value: &mut String, reveal: &mut bool, hint: 
     );
     let slot = egui::Rect::from_center_size(egui::pos2(field.rect.max.x - 17.0, field.rect.center().y), egui::Vec2::splat(1.0));
     let (glyph, tip) = if *reveal { (crate::ui::icons::EYE_OFF, "Ocultar") } else { (crate::ui::icons::EYE, "Mostrar") };
-    if super::IconButton::new(glyph).size(theme::size::ICON_SM).show_at(ui, slot, ("reveal", field.id)).on_hover_text(tip).clicked() {
+    if super::IconButton::new(glyph).size(theme::size::ICON_SM).skip_focus().show_at(ui, slot, ("reveal", field.id)).on_hover_text(tip).clicked() {
         *reveal = !*reveal;
     }
     field
@@ -94,7 +94,8 @@ pub fn chip(ui: &mut Ui, label: &str, color: Option<Color32>, selected: bool) ->
     let galley = ui.painter().layout_no_wrap(label.to_string(), FontId::new(theme::size::LABEL, egui::FontFamily::Proportional), Color32::PLACEHOLDER);
     let dot = if color.is_some() { 14.0 } else { 0.0 };
     let size = egui::vec2(galley.size().x + dot + 18.0, 28.0);
-    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+    // Sense::CLICK (no `click()`): una ficha no es parada de Tab; el orden de foco sigue los campos de texto.
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::CLICK);
     let response = response.hand();
     let fill = if selected {
         theme::selection()
