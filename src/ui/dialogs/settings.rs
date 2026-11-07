@@ -192,10 +192,6 @@ pub(super) fn settings_content(ui: &mut egui::Ui, tab: SettingsTab, settings: &m
                 ui.selectable_value(&mut settings.accent, choice, label);
             }
         });
-        crate::ui::kit::setting_row(ui, "Densidad", Some("Altura de las filas de las listas"), true, |ui| {
-            ui.selectable_value(&mut settings.compact, false, "Cómoda");
-            ui.selectable_value(&mut settings.compact, true, "Compacta");
-        });
         if !crate::data::settings::NATIVE_CHROME {
             crate::ui::kit::setting_row(ui, "Usar barra de título del sistema", Some("Se aplica al reiniciar"), true, |ui| {
                 crate::ui::kit::toggle(ui, &mut settings.system_titlebar);

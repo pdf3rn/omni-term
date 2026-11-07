@@ -40,11 +40,10 @@ impl App {
             ThemeChoice::Dark => false,
             ThemeChoice::System => ctx.system_theme() == Some(egui::Theme::Light),
         };
-        let (accent, compact) = (self.settings.accent.index(), self.settings.compact);
-        if light != theme::is_light() || accent != theme::accent_index() || compact != theme::is_compact() {
+        let accent = self.settings.accent.index();
+        if light != theme::is_light() || accent != theme::accent_index() {
             theme::set_light(light);
             theme::set_accent(accent);
-            theme::set_compact(compact);
             install_visuals(ctx);
         }
     }

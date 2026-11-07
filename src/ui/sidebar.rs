@@ -5,11 +5,19 @@ use super::*;
 /// Sangría de las conexiones bajo su cabecera (el icono alinea con el nombre del grupo) y de los snippets.
 const GROUP_INDENT: f32 = 17.0;
 const SNIPPET_INDENT: f32 = 8.0;
-/// Ancho mínimo del nombre de una conexión antes de quitar la hora de su fila.
-const MIN_NAME_WIDTH: f32 = 84.0;
 /// Lado de los botones de la fila de pestañas de la lista y hueco entre ellos.
 const TAB_BUTTON: f32 = 26.0;
 const TAB_BUTTON_GAP: f32 = 4.0;
+
+/// Posiciones del texto de una fila de dos líneas, como bloque centrado en `rect`: arriba de cada línea y centro de la primera.
+fn two_line_block(painter: &egui::Painter, rect: Rect, first: &FontId, second: &FontId) -> (f32, f32, f32) {
+    const GAP: f32 = 1.0;
+    let height = |font: &FontId| painter.layout_no_wrap("Ág".to_string(), font.clone(), Color32::PLACEHOLDER).size().y;
+    let (first_height, second_height) = (height(first), height(second));
+    // Un píxel arriba: la altura de línea de la fuente deja más aire debajo de los caracteres que encima.
+    let top = (rect.center().y - (first_height + GAP + second_height) / 2.0).round() - 1.0;
+    (top, top + first_height + GAP, top + first_height / 2.0)
+}
 
 /// Alto que se deja bajo las listas para el pie: solo el aviso de llavero, y nada si no hay aviso.
 fn footer_height(keyring_fallback: bool) -> f32 {
@@ -318,7 +326,7 @@ impl App {
                                         })
                                 });
                                 let identity = connection.color.map(theme::identity);
-                                let (full_rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), theme::row(ROW_HEIGHT)), Sense::click_and_drag());
+                                let (full_rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_HEIGHT), Sense::click_and_drag());
                                 // Las conexiones van sangradas bajo la cabecera de su grupo: su icono queda alineado con el nombre del grupo.
                                 let rect = Rect::from_min_max(Pos2::new(full_rect.min.x + GROUP_INDENT, full_rect.min.y), full_rect.max);
                                 let over = ui.rect_contains_pointer(rect);
@@ -361,14 +369,6 @@ impl App {
                                 if response.hovered() || over {
                                     ui.painter().rect_filled(rect.expand2(Vec2::new(8.0, 0.0)), CornerRadius::same(theme::radius::CONTROL), theme::hover());
                                 }
-                                // En el modo compacto la fila es más baja: todo el contenido sube lo mismo y sigue centrado.
-                                let dy = (rect.height() - ROW_HEIGHT) / 2.0;
-                                if let Some(color) = identity {
-                                    // Marca de identidad: informa de qué servidor es, no decora. Va dentro del fondo
-                                    // de hover (que empieza 8 px antes), no sobre su esquina redondeada.
-                                    let bar = Rect::from_min_size(Pos2::new(rect.min.x - 4.0, rect.min.y + 7.0), Vec2::new(3.0, rect.height() - 14.0));
-                                    ui.painter().rect_filled(bar, CornerRadius::same(theme::radius::TINY), color);
-                                }
                                 // Acciones al pasar el ratón: sustituyen a la hora, que vuelve a verse sin ratón encima.
                                 let more_slot = Rect::from_center_size(Pos2::new(rect.max.x - 12.0, rect.center().y), Vec2::splat(26.0));
                                 let edit_slot = Rect::from_center_size(Pos2::new(rect.max.x - 38.0, rect.center().y), Vec2::splat(26.0));
@@ -387,10 +387,10 @@ impl App {
                                     ui.data_mut(|d| d.insert_temp(menu_state, false));
                                 }
 
-                                // Icono de tipo con la insignia del estado de la sesión en su esquina.
+                                // El icono dice el tipo y, con su color, el servidor; la insignia de su esquina, el estado de la sesión.
                                 let icon_center = Pos2::new(rect.min.x + 9.0, rect.center().y);
                                 let kind_icon = crate::ui::kit::connection_glyph(connection);
-                                ui.painter().text(icon_center, Align2::CENTER_CENTER, kind_icon, FontId::proportional(theme::size::ICON_LG), theme::subtext());
+                                ui.painter().text(icon_center, Align2::CENTER_CENTER, kind_icon, FontId::proportional(theme::size::ICON_LG), identity.unwrap_or_else(theme::subtext));
                                 let badge = match state {
                                     LinkState::Open => Some(theme::success()),
                                     LinkState::Lost => Some(theme::red()),
@@ -403,7 +403,6 @@ impl App {
                                 }
 
                                 let text_x = rect.min.x + 28.0;
-                                let ago_font = FontId::new(theme::size::CAPTION, FontFamily::Proportional);
                                 let right_limit = if actions { rect.max.x - 56.0 } else { rect.max.x - 4.0 };
                                 let name_font = FontId::new(theme::size::BODY, strong_family());
                                 let pill_font = FontId::new(theme::size::CAPTION, strong_family());
@@ -411,40 +410,39 @@ impl App {
                                 let env = connection.env.as_ref().filter(|_| !headed || searching || label.as_str() == PINNED_LABEL);
                                 let pill_size = env.map(|env| ui.painter().layout_no_wrap(env.clone(), pill_font.clone(), Color32::PLACEHOLDER).size() + Vec2::new(10.0, 3.0));
                                 let lock_width = if connection.insecure_protocol().is_some() { 18.0 } else { 0.0 };
-                                // El candado y la pastilla siempre se ven; el nombre cede sitio, y la hora cede antes que el nombre.
+                                // El candado y la pastilla siempre se ven; el nombre cede sitio.
                                 let fixed_width = lock_width + pill_size.map_or(0.0, |s| s.x + 8.0);
-                                let ago_full = if ago.is_empty() || actions { 0.0 } else { ui.painter().layout_no_wrap(ago.clone(), ago_font.clone(), Color32::PLACEHOLDER).size().x + 10.0 };
-                                let ago_width = if right_limit - ago_full - text_x - fixed_width < MIN_NAME_WIDTH { 0.0 } else { ago_full };
-                                let first_line = ui.painter().with_clip_rect(Rect::from_min_max(rect.min, Pos2::new(right_limit - ago_width, rect.max.y)));
-                                let room = right_limit - ago_width - text_x - fixed_width;
+                                let detail_font = FontId::new(theme::size::SMALL, FontFamily::Proportional);
+                                // Las dos líneas de texto forman un bloque centrado en la altura de la fila.
+                                let (name_top, detail_top, name_center) = two_line_block(ui.painter(), rect, &name_font, &detail_font);
+                                let first_line = ui.painter().with_clip_rect(Rect::from_min_max(rect.min, Pos2::new(right_limit, rect.max.y)));
+                                let room = right_limit - text_x - fixed_width;
                                 let name = crate::ui::kit::fit_text(&first_line, &connection.name, &name_font, room);
                                 let name_width = first_line.layout_no_wrap(name.clone(), name_font.clone(), Color32::PLACEHOLDER).size().x;
-                                first_line.text(Pos2::new(text_x, rect.min.y + 9.0 + dy), Align2::LEFT_TOP, name, name_font, theme::text());
+                                first_line.text(Pos2::new(text_x, name_top), Align2::LEFT_TOP, name, name_font, theme::text());
                                 let mut after_name = text_x + name_width + 8.0;
                                 if lock_width > 0.0 {
-                                    first_line.text(Pos2::new(after_name + 5.0, rect.min.y + 19.0 + dy), Align2::CENTER_CENTER, icons::LOCK_OPEN, FontId::proportional(theme::size::LABEL), theme::red());
+                                    first_line.text(Pos2::new(after_name + 5.0, name_center), Align2::CENTER_CENTER, icons::LOCK_OPEN, FontId::proportional(theme::size::LABEL), theme::red());
                                     after_name += lock_width;
                                 }
                                 if let (Some(env), Some(size)) = (env, pill_size) {
                                     // Pastilla con el color de identidad: dice en qué entorno estás.
                                     let tint = identity.unwrap_or_else(theme::subtext);
-                                    let pill = Rect::from_min_size(Pos2::new(after_name, rect.min.y + 11.0 + dy), size);
+                                    let pill = Rect::from_center_size(Pos2::new(after_name + size.x / 2.0, name_center), size);
                                     // Cápsula: radio igual a media altura.
                                     first_line.rect_filled(pill, CornerRadius::same((size.y / 2.0).round() as u8), tint.gamma_multiply(0.2));
                                     first_line.text(pill.center(), Align2::CENTER_CENTER, env, pill_font, tint);
                                 }
-                                if ago_width > 0.0 {
-                                    ui.painter().text(Pos2::new(rect.max.x - 4.0, rect.min.y + 11.0 + dy), Align2::RIGHT_TOP, &ago, ago_font, theme::subtext());
-                                }
                                 let second_line = ui.painter().with_clip_rect(Rect::from_min_max(rect.min, Pos2::new(right_limit, rect.max.y)));
-                                let detail_font = FontId::new(theme::size::SMALL, FontFamily::Proportional);
-                                let detail = crate::ui::kit::fit_text(&second_line, &format!("{}  ·  {}", connection.kind_label(), connection.destination()), &detail_font, right_limit - text_x);
-                                second_line.text(Pos2::new(text_x, rect.min.y + 27.0 + dy), Align2::LEFT_TOP, detail, detail_font, theme::subtext());
-                                let response = response.hand().on_hover_text(match state {
+                                let detail = crate::ui::kit::fit_text(&second_line, &connection.destination(), &detail_font, right_limit - text_x);
+                                second_line.text(Pos2::new(text_x, detail_top), Align2::LEFT_TOP, detail, detail_font, theme::subtext());
+                                let hint = match state {
                                     LinkState::Closed => "Doble clic para conectar",
                                     LinkState::Open => "Sesión abierta. Doble clic para otra pestaña",
                                     LinkState::Lost => "Sesión caída: usa Reconectar en su pestaña",
-                                });
+                                };
+                                let hint = if ago.is_empty() { hint.to_string() } else { format!("{hint}\nÚltimo uso: {ago}") };
+                                let response = response.hand().on_hover_text(hint);
                                 if response.double_clicked() {
                                     self.sidebar_nav = false;
                                     connect = Some(connection.clone());
@@ -539,7 +537,7 @@ impl App {
                                 continue;
                             }
                             for snippet in members {
-                                let (full_rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), theme::row(ROW_HEIGHT)), Sense::click());
+                                let (full_rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_HEIGHT), Sense::click());
                                 // Con cabecera, el texto del snippet queda alineado con el nombre del grupo.
                                 let indent = if grouped { SNIPPET_INDENT } else { 0.0 };
                                 let rect = Rect::from_min_max(Pos2::new(full_rect.min.x + indent, full_rect.min.y), full_rect.max);
@@ -547,13 +545,15 @@ impl App {
                                 if response.hovered() || over {
                                     ui.painter().rect_filled(rect, CornerRadius::same(theme::radius::CONTROL), theme::hover());
                                 }
-                                let dy = (rect.height() - ROW_HEIGHT) / 2.0;
                                 let left = rect.min.x + 10.0;
+                                let title_font = FontId::new(theme::size::BODY, strong_family());
+                                let preview_font = FontId::new(theme::size::SMALL, FontFamily::Monospace);
+                                let (title_top, preview_top, _) = two_line_block(ui.painter(), rect, &title_font, &preview_font);
                                 let painter = ui.painter().with_clip_rect(rect.shrink2(Vec2::new(4.0, 0.0)).with_max_x(rect.max.x - if over { 34.0 } else { 4.0 }));
-                                painter.text(Pos2::new(left, rect.min.y + 9.0 + dy), Align2::LEFT_TOP, &snippet.title, FontId::new(theme::size::BODY, strong_family()), theme::text());
+                                painter.text(Pos2::new(left, title_top), Align2::LEFT_TOP, &snippet.title, title_font, theme::text());
                                 let preview = snippet.body.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
                                 let preview: String = preview.chars().take(80).collect();
-                                painter.text(Pos2::new(left, rect.min.y + 27.0 + dy), Align2::LEFT_TOP, preview, FontId::new(theme::size::SMALL, FontFamily::Monospace), theme::subtext());
+                                painter.text(Pos2::new(left, preview_top), Align2::LEFT_TOP, preview, preview_font, theme::subtext());
 
                                 let run_slot = Rect::from_center_size(Pos2::new(rect.max.x - 18.0, rect.center().y), Vec2::splat(26.0));
                                 let run_clicked = over

@@ -61,18 +61,19 @@ pub fn row_content(ui: &Ui, rect: Rect, content: RowContent<'_>) {
     painter.text(Pos2::new(text_x, top + title_h + 1.0), Align2::LEFT_TOP, subtitle, subtitle_font, theme::subtext());
 }
 
-/// Icono que representa el tipo de una conexión: terminal, carpeta (archivos) o tres puntos (otros).
+/// Icono propio de cada tipo de conexión: el tipo se reconoce de un vistazo sin escribirlo en la fila.
 pub fn connection_glyph(connection: &Connection) -> &'static str {
-    if connection.is_files() {
-        icons::FOLDER
-    } else if connection.is_adb() {
-        icons::DOTS
-    } else if connection.is_local() {
-        icons::DESKTOP
-    } else if connection.is_engine() {
-        icons::CUBE
-    } else {
-        icons::TERMINAL
+    use crate::data::store::{FilesKind, Protocol};
+    match connection.protocol {
+        Protocol::Ssh => icons::TERMINAL,
+        Protocol::Telnet(_) => icons::PROMPT,
+        Protocol::Serial(_) => icons::USB,
+        Protocol::Local => icons::DESKTOP,
+        Protocol::Files(FilesKind::Sftp) => icons::FOLDER_LOCK,
+        Protocol::Files(FilesKind::Ftp(_)) => icons::CLOUD_UP,
+        Protocol::Files(FilesKind::Smb) => icons::HARD_DRIVES,
+        Protocol::Adb => icons::PHONE,
+        Protocol::Engine => icons::CUBE,
     }
 }
 

@@ -104,8 +104,6 @@ pub struct Settings {
     pub confirm_close: bool,
     /// Preguntar antes de pegar en el terminal texto con saltos de línea.
     pub confirm_paste: bool,
-    /// Filas de las listas más bajas.
-    pub compact: bool,
     /// Segundos de actividad en una pestaña en segundo plano a partir de los cuales se avisa; 0 lo apaga.
     pub notify_after: u32,
     /// Familia instalada elegida para el terminal; sin ella, JetBrains Mono (incluida).
@@ -160,7 +158,6 @@ impl Default for Settings {
             titlebar_compact: false,
             confirm_close: true,
             confirm_paste: true,
-            compact: false,
             notify_after: 15,
             font_family: None,
             theme: ThemeChoice::Dark,
@@ -191,7 +188,6 @@ impl Settings {
             titlebar_compact: text(store, "setting.titlebar_compact").map_or(defaults.titlebar_compact, |t| t == "1"),
             confirm_close: text(store, "setting.confirm_close").map_or(defaults.confirm_close, |t| t == "1"),
             confirm_paste: text(store, "setting.confirm_paste").map_or(defaults.confirm_paste, |t| t == "1"),
-            compact: text(store, "setting.compact").map_or(defaults.compact, |t| t == "1"),
             notify_after: text(store, "setting.notify_after")
                 .and_then(|t| t.parse::<u32>().ok())
                 .map_or(defaults.notify_after, |n| n.min(3600)),
@@ -241,7 +237,6 @@ impl Settings {
         store.set_meta("setting.titlebar_compact", if self.titlebar_compact { b"1" } else { b"0" })?;
         store.set_meta("setting.confirm_close", if self.confirm_close { b"1" } else { b"0" })?;
         store.set_meta("setting.confirm_paste", if self.confirm_paste { b"1" } else { b"0" })?;
-        store.set_meta("setting.compact", if self.compact { b"1" } else { b"0" })?;
         store.set_meta("setting.notify_after", self.notify_after.to_string().as_bytes())?;
         store.set_meta("setting.font_family", self.font_family.as_deref().unwrap_or("").as_bytes())?;
         store.set_meta("setting.theme", theme.as_bytes())?;
@@ -278,7 +273,6 @@ mod tests {
             titlebar_compact: true,
             confirm_close: false,
             confirm_paste: false,
-            compact: true,
             notify_after: 45,
             font_family: Some("Fira Code".into()),
             theme: ThemeChoice::Light,

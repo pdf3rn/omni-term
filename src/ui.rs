@@ -75,7 +75,8 @@ const STRIP_WIDTH: f32 = 54.0;
 const TAB_BAR_HEIGHT: f32 = 40.0;
 
 const TAB_HEIGHT: f32 = 34.0;
-const ROW_HEIGHT: f32 = 46.0;
+/// Altura de una fila de conexión o de snippet en la barra lateral.
+const ROW_HEIGHT: f32 = 40.0;
 
 /// Estado de las sesiones de una conexión, para el punto de la barra lateral.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -217,7 +218,6 @@ impl App {
         let settings = Settings::load(&store.lock().unwrap());
         let font_error = install_fonts(&cc.egui_ctx, settings.font_family.as_deref());
         theme::set_accent(settings.accent.index());
-        theme::set_compact(settings.compact);
         theme::set_bold_bright(settings.bold_bright);
         theme::set_term_theme(settings.ansi.index());
         let light = match settings.theme {

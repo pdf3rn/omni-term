@@ -137,7 +137,6 @@ static LIGHT: Palette = Palette {
 
 static USE_LIGHT: AtomicBool = AtomicBool::new(false);
 static ACCENT: AtomicU8 = AtomicU8::new(0);
-static COMPACT: AtomicBool = AtomicBool::new(false);
 static BOLD_BRIGHT: AtomicBool = AtomicBool::new(false);
 
 /// Colores de acento elegibles: azul, gris, verde y malva (oscuro, claro).
@@ -149,19 +148,6 @@ pub fn set_accent(index: u8) {
 
 pub fn accent_index() -> u8 {
     ACCENT.load(Ordering::Relaxed)
-}
-
-pub fn set_compact(compact: bool) {
-    COMPACT.store(compact, Ordering::Relaxed);
-}
-
-pub fn is_compact() -> bool {
-    COMPACT.load(Ordering::Relaxed)
-}
-
-/// Altura de una fila de lista: la cómoda tal cual, la compacta algo más baja.
-pub fn row(height: f32) -> f32 {
-    if is_compact() { (height * 0.86).round() } else { height }
 }
 
 pub fn set_light(light: bool) {

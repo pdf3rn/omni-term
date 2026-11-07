@@ -21,7 +21,7 @@ use crate::data::store::Connection;
 use crate::ui::theme;
 use crate::files::transfer::{self, Conflict, Resolution, Transfer, TransferEvent, TransferState};
 
-const ROW_HEIGHT: f32 = 26.0;
+const ROW_HEIGHT: f32 = 22.0;
 const MIDDLE_WIDTH: f32 = 60.0;
 const COLLAPSED_TRANSFERS: f32 = 34.0;
 /// Por debajo de este ancho solo se ve un panel a la vez.
@@ -1204,7 +1204,7 @@ fn pane_ui(
                 ui.label(RichText::new("Carpeta vacía").color(theme::subtext()));
             }
             for (index, entry) in visible.iter().enumerate() {
-                let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), theme::row(ROW_HEIGHT)), Sense::click_and_drag());
+                let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_HEIGHT), Sense::click_and_drag());
                 let selected = state.selected.contains(&entry.name);
                 if selected {
                     ui.painter().rect_filled(rect, CornerRadius::same(theme::radius::SMALL), theme::accent().gamma_multiply(0.28));
