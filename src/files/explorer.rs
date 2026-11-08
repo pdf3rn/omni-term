@@ -1,5 +1,6 @@
 //! Pestaña de explorador de archivos: carpeta local a la izquierda y SFTP a la derecha.
 
+use crate::i18n::t;
 use std::collections::{BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -189,7 +190,7 @@ impl Explorer {
     }
 
     pub fn label(&self) -> String {
-        format!("Archivos · {}", self.connection.name)
+        crate::tf!("explorer-files-title", "name" => self.connection.name.to_string())
     }
 
     fn connect(&mut self) {
@@ -207,7 +208,7 @@ impl Explorer {
                     *link.lock().unwrap() = Link::Ready(client);
                     inbox.lock().unwrap().push_back(Message::Connected { home });
                 }
-                Err(error) => *link.lock().unwrap() = Link::Failed(format!("No se pudo conectar: {error:#}")),
+                Err(error) => *link.lock().unwrap() = Link::Failed(crate::tf!("explorer-connect-failed", "error" => format!("{error:#}"))),
             }
             wake();
         });
@@ -311,7 +312,7 @@ impl Explorer {
                 }
                 Message::Done { result } => {
                     if let Err(error) = result {
-                        self.dialog = Some(Dialog::Error(ErrorInfo { title: "No se pudo completar la operación".into(), detail: error, retry: None }));
+                        self.dialog = Some(Dialog::Error(ErrorInfo { title: t("explorer-no-se-pudo-completar-la").into(), detail: error, retry: None }));
                     }
                     self.refresh_remote();
                 }
@@ -411,7 +412,7 @@ impl Explorer {
         {
             let mut link = self.link.lock().unwrap();
             if matches!(&*link, Link::Ready(client) if client.is_closed()) {
-                *link = Link::Failed("Se perdió la conexión con el servidor.".into());
+                *link = Link::Failed(t("explorer-se-perdio-la-conexion-con").into());
             }
         }
 
@@ -458,7 +459,7 @@ impl Explorer {
             let mut child = ui.new_child(UiBuilder::new().max_rect(rect.shrink2(Vec2::new(4.0, 0.0))));
             let title = match side {
                 _ if narrow => String::new(),
-                Side::Local => "Este equipo".to_string(),
+                Side::Local => t("explorer-este-equipo").to_string(),
                 Side::Remote => self.connection.name.clone(),
             };
             let can_delete = side == Side::Remote;
@@ -469,7 +470,7 @@ impl Explorer {
                     let status = if let Some(reason) = &failure {
                         Some(reason.clone())
                     } else if connecting {
-                        Some("Conectando…".to_string())
+                        Some(t("explorer-conectando").to_string())
                     } else {
                         None
                     };
@@ -503,7 +504,7 @@ impl Explorer {
                 .pivot(Align2::CENTER_CENTER)
                 .fixed_pos(Pos2::new(remote_rect.center().x, remote_rect.center().y))
                 .show(&ctx, |ui| {
-                    retry = crate::ui::kit::button(ui, "Reintentar", crate::ui::kit::Variant::Primary).clicked();
+                    retry = crate::ui::kit::button(ui, t("view-reintentar"), crate::ui::kit::Variant::Primary).clicked();
                 });
             if retry {
                 self.connect();
@@ -515,8 +516,8 @@ impl Explorer {
             middle.add_space((middle_rect.height() / 2.0 - 56.0).max(40.0));
             middle.spacing_mut().item_spacing.y = 8.0;
             for (glyph, tip, from) in [
-                (icons::ARROW_RIGHT, "Subir: copia la selección local al directorio remoto actual", Side::Local),
-                (icons::ARROW_LEFT, "Bajar: copia la selección remota al directorio local actual", Side::Remote),
+                (icons::ARROW_RIGHT, t("explorer-subir-copia-la-seleccion-local"), Side::Local),
+                (icons::ARROW_LEFT, t("explorer-bajar-copia-la-seleccion-remota"), Side::Remote),
             ] {
                 let clicked = middle.vertical_centered(|ui| crate::ui::kit::IconButton::new(glyph).size(theme::size::ICON_LG).show(ui).on_hover_text(tip).clicked()).inner;
                 if clicked {
@@ -590,7 +591,7 @@ impl Explorer {
         child.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 18.0;
             ui.spacing_mut().button_padding.x = 0.0;
-            for (side, label) in [(Side::Local, "Este equipo".to_string()), (Side::Remote, self.connection.name.clone())] {
+            for (side, label) in [(Side::Local, t("explorer-este-equipo").to_string()), (Side::Remote, self.connection.name.clone())] {
                 let selected = self.narrow_side == side;
                 let color = if selected { theme::text() } else { theme::subtext() };
                 let font = FontId::new(theme::size::BODY, if selected { crate::ui::strong_family() } else { FontFamily::Proportional });
@@ -606,8 +607,8 @@ impl Explorer {
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let (glyph, tip, from) = match self.narrow_side {
-                    Side::Local => (icons::ARROW_RIGHT, "Subir la selección al directorio remoto actual", Side::Local),
-                    Side::Remote => (icons::ARROW_LEFT, "Bajar la selección al directorio local actual", Side::Remote),
+                    Side::Local => (icons::ARROW_RIGHT, t("explorer-subir-la-seleccion-al-directorio"), Side::Local),
+                    Side::Remote => (icons::ARROW_LEFT, t("explorer-bajar-la-seleccion-al-directorio"), Side::Remote),
                 };
                 if tool_button(ui, glyph, tip, true, false) {
                     self.copy_from(from);
@@ -728,12 +729,12 @@ impl Explorer {
         let running = self.transfers.iter().filter(|t| t.state() == TransferState::Running).count();
         ui.horizontal(|ui| {
             let caret = if self.transfers_open { icons::CARET_DOWN } else { icons::CARET_RIGHT };
-            let title = if running > 0 { format!("{caret}  Transferencias · {running} en curso") } else { format!("{caret}  Transferencias") };
+            let title = if running > 0 { format!("{caret}  {}", crate::tf!("explorer-transfers-running", "n" => running)) } else { format!("{caret}  {}", t("explorer-transfers")) };
             let header = crate::ui::kit::button_with(ui, Button::new(RichText::new(title).small().color(theme::subtext())), crate::ui::kit::Variant::Ghost);
-            if header.on_hover_text("Mostrar u ocultar la lista").hand().clicked() {
+            if header.on_hover_text(t("explorer-mostrar-u-ocultar-la-lista")).hand().clicked() {
                 self.transfers_open = !self.transfers_open;
             }
-            if crate::ui::kit::button_with(ui, Button::new(RichText::new("Quitar terminadas").small()), crate::ui::kit::Variant::Ghost).clicked() {
+            if crate::ui::kit::button_with(ui, Button::new(RichText::new(t("explorer-quitar-terminadas")).small()), crate::ui::kit::Variant::Ghost).clicked() {
                 self.transfers.retain(|t| t.state() == TransferState::Running);
             }
         });
@@ -753,13 +754,13 @@ impl Explorer {
                             Some((speed, left)) => format!("{} / {}  ·  {}/s  ·  {}", human_size(done), human_size(total), human_size(speed as u64), format_duration(left)),
                             None => format!("{} / {}", human_size(done), human_size(total)),
                         },
-                        TransferState::Done => "Completada".to_string(),
-                        TransferState::Cancelled => "Cancelada".to_string(),
-                        TransferState::Failed(reason) => format!("Error: {reason}"),
+                        TransferState::Done => t("explorer-completada").to_string(),
+                        TransferState::Cancelled => t("explorer-cancelada").to_string(),
+                        TransferState::Failed(reason) => crate::tf!("explorer-error", "reason" => reason.to_string()),
                     };
                     ui.add(ProgressBar::new(if state == TransferState::Done { 1.0 } else { fraction }).desired_width(180.0));
                     ui.label(RichText::new(text).small().color(theme::subtext()));
-                    if state == TransferState::Running && crate::ui::kit::button_with(ui, Button::new(icons::X), crate::ui::kit::Variant::Ghost).on_hover_text("Cancelar").clicked() {
+                    if state == TransferState::Running && crate::ui::kit::button_with(ui, Button::new(icons::X), crate::ui::kit::Variant::Ghost).on_hover_text(t("explorer-cancelar")).clicked() {
                         transfer.cancel();
                     }
                 });
@@ -781,42 +782,42 @@ impl Explorer {
             _ => Outcome::None,
         };
         let outcome = match &mut dialog {
-            Dialog::NewFolder { name, .. } => accept_or_cancel(shell(ctx, Spec::new("Nueva carpeta").width(380.0).accept("Crear"), |ui| {
+            Dialog::NewFolder { name, .. } => accept_or_cancel(shell(ctx, Spec::new(t("explorer-nueva-carpeta")).width(380.0).accept(t("explorer-crear")), |ui| {
                 let field = ui.add(TextEdit::singleline(name).desired_width(f32::INFINITY).hint_text("nombre"));
                 field.request_focus();
                 field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))
             })),
-            Dialog::Rename { new, .. } => accept_or_cancel(shell(ctx, Spec::new("Renombrar").width(380.0).accept("Renombrar"), |ui| {
+            Dialog::Rename { new, .. } => accept_or_cancel(shell(ctx, Spec::new(t("explorer-renombrar")).width(380.0).accept(t("explorer-renombrar")), |ui| {
                 let field = ui.add(TextEdit::singleline(new).desired_width(f32::INFINITY));
                 field.request_focus();
                 field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))
             })),
             Dialog::ConfirmDelete { side, names } => {
                 let local = *side == Side::Local;
-                let what = if names.len() == 1 { format!("\"{}\"", names[0]) } else { format!("{} elementos", names.len()) };
-                let spec = Spec::new(if local { "Mover a la papelera" } else { "Eliminar en el servidor" })
+                let what = if names.len() == 1 { format!("\"{}\"", names[0]) } else { crate::tf!("explorer-n-items", "n" => names.len()) };
+                let spec = Spec::new(if local { t("explorer-mover-a-la-papelera") } else { t("explorer-eliminar-en-el-servidor") })
                     .width(380.0)
-                    .accept(if local { "Mover" } else { "Eliminar" });
+                    .accept(if local { t("explorer-mover") } else { t("explorer-eliminar") });
                 let spec = if local { spec } else { spec.danger() };
                 accept_or_cancel(shell(ctx, spec, |ui| {
                     ui.label(if local {
-                        format!("¿Mover {what} a la papelera?")
+                        crate::tf!("explorer-confirm-trash", "what" => what.clone())
                     } else {
-                        format!("¿Eliminar {what}? Las carpetas se borran con todo su contenido y no se puede deshacer.")
+                        crate::tf!("explorer-confirm-delete", "what" => what.clone())
                     });
                     false
                 }))
             }
             Dialog::Permissions { name, mode } => {
-                let spec = Spec::new("Permisos").width(380.0).context(name.as_str()).accept("Aplicar");
+                let spec = Spec::new(t("explorer-permisos")).width(380.0).context(name.as_str()).accept(t("explorer-aplicar"));
                 accept_or_cancel(shell(ctx, spec, |ui| {
                     egui::Grid::new("permission-grid").num_columns(4).spacing([18.0, 6.0]).show(ui, |ui| {
                         ui.label("");
-                        for header in ["Propietario", "Grupo", "Otros"] {
+                        for header in [t("explorer-propietario"), t("explorer-grupo"), t("explorer-otros")] {
                             ui.label(RichText::new(header).small().color(theme::subtext()));
                         }
                         ui.end_row();
-                        for (label, bit) in [("Leer", 0o4), ("Escribir", 0o2), ("Ejecutar", 0o1)] {
+                        for (label, bit) in [(t("explorer-leer"), 0o4), (t("explorer-escribir"), 0o2), (t("explorer-ejecutar"), 0o1)] {
                             ui.label(label);
                             for shift in [6, 3, 0] {
                                 let mask = bit << shift;
@@ -838,16 +839,16 @@ impl Explorer {
             }
             Dialog::Conflict { conflict, apply_all } => {
                 // Reemplazar es la acción destructiva: botón rojo y nunca con Enter.
-                let spec = Spec::new("El destino ya existe")
+                let spec = Spec::new(t("explorer-el-destino-ya-existe"))
                     .width(380.0)
-                    .accept("Reemplazar")
+                    .accept(t("explorer-reemplazar"))
                     .danger()
-                    .extra("Omitir")
-                    .extra("Renombrar");
+                    .extra(t("explorer-omitir"))
+                    .extra(t("explorer-renombrar"));
                 let name = conflict.name.clone();
                 match shell(ctx, spec, |ui| {
-                    ui.label(format!("\"{name}\" ya existe. ¿Qué hacemos?"));
-                    crate::ui::kit::switch_labeled(ui, apply_all, "Aplicar a todos los conflictos de esta transferencia");
+                    ui.label(crate::tf!("explorer-already-exists", "name" => name.clone()));
+                    crate::ui::kit::switch_labeled(ui, apply_all, t("explorer-aplicar-a-todos-los-conflictos"));
                     false
                 }) {
                     Action::Accept => Outcome::Resolve(Resolution::Replace, *apply_all),
@@ -863,7 +864,7 @@ impl Explorer {
             },
             Dialog::Message(text) => accept_or_cancel(shell(
                 ctx,
-                Spec::new("Aviso").width(380.0).cancel("Aceptar").backdrop_closes(),
+                Spec::new(t("explorer-aviso")).width(380.0).cancel(t("explorer-aceptar")).backdrop_closes(),
                 |ui| {
                     ui.label(text.as_str());
                     false
@@ -880,11 +881,11 @@ impl Explorer {
                 let _ = conflict.reply.send((Resolution::Skip, false));
             }
             (Outcome::Accept, Dialog::NewFolder { side, name }) => match valid_name(&name) {
-                None => self.dialog = Some(Dialog::Message("El nombre no puede estar vacío ni contener /".into())),
+                None => self.dialog = Some(Dialog::Message(t("explorer-el-nombre-no-puede-estar").into())),
                 Some(name) => match side {
                     Side::Local => {
                         if let Err(error) = std::fs::create_dir(Path::new(&self.local.path).join(&name)) {
-                            self.dialog = Some(Dialog::Error(ErrorInfo { title: "No se pudo crear la carpeta".into(), detail: error.to_string(), retry: None }));
+                            self.dialog = Some(Dialog::Error(ErrorInfo { title: t("explorer-no-se-pudo-crear-la").into(), detail: error.to_string(), retry: None }));
                         }
                         self.refresh_local();
                     }
@@ -895,13 +896,13 @@ impl Explorer {
                 },
             },
             (Outcome::Accept, Dialog::Rename { side, old, new }) => match valid_name(&new) {
-                None => self.dialog = Some(Dialog::Message("El nombre no puede estar vacío ni contener /".into())),
+                None => self.dialog = Some(Dialog::Message(t("explorer-el-nombre-no-puede-estar").into())),
                 Some(_) if new == old => {}
                 Some(new) => match side {
                     Side::Local => {
                         let base = PathBuf::from(&self.local.path);
                         if let Err(error) = std::fs::rename(base.join(&old), base.join(&new)) {
-                            self.dialog = Some(Dialog::Error(ErrorInfo { title: "No se pudo renombrar".into(), detail: error.to_string(), retry: None }));
+                            self.dialog = Some(Dialog::Error(ErrorInfo { title: t("explorer-no-se-pudo-renombrar").into(), detail: error.to_string(), retry: None }));
                         }
                         self.refresh_local();
                     }
@@ -924,7 +925,7 @@ impl Explorer {
                 let base = PathBuf::from(&self.local.path);
                 let paths: Vec<PathBuf> = names.iter().map(|n| base.join(n)).collect();
                 if let Err(error) = trash::delete_all(paths) {
-                    self.dialog = Some(Dialog::Error(ErrorInfo { title: "No se pudo mover a la papelera".into(), detail: error.to_string(), retry: None }));
+                    self.dialog = Some(Dialog::Error(ErrorInfo { title: t("explorer-no-se-pudo-mover-a").into(), detail: error.to_string(), retry: None }));
                 }
                 self.refresh_local();
             }
@@ -1051,7 +1052,7 @@ fn breadcrumb(ui: &mut egui::Ui, side: Side, state: &mut PaneState, actions: &mu
         return;
     }
 
-    if background.on_hover_text(crate::ui::shortcuts::label("Doble clic para escribir una ruta (Ctrl+L)")).hand().double_clicked() {
+    if background.on_hover_text(crate::ui::shortcuts::label(t("explorer-doble-clic-para-escribir-una"))).hand().double_clicked() {
         actions.push(PaneAction::EditPath);
     }
 
@@ -1121,37 +1122,37 @@ fn pane_ui(
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 2.0;
         let one = state.selected.len() == 1;
-        if tool_button(ui, icons::ARROW_LEFT, "Atrás", !state.history.is_empty(), false) {
+        if tool_button(ui, icons::ARROW_LEFT, t("explorer-atras"), !state.history.is_empty(), false) {
             actions.push(PaneAction::Back);
         }
-        if tool_button(ui, icons::ARROW_UP, "Subir un nivel (Retroceso)", true, false) {
+        if tool_button(ui, icons::ARROW_UP, t("explorer-subir-un-nivel-retroceso"), true, false) {
             actions.push(PaneAction::Up);
         }
-        if tool_button(ui, icons::REFRESH, "Actualizar (F5)", true, false) {
+        if tool_button(ui, icons::REFRESH, t("explorer-actualizar-f5"), true, false) {
             actions.push(PaneAction::Refresh);
         }
         ui.add_space(theme::space::M);
-        if tool_button(ui, icons::FOLDER_PLUS, "Nueva carpeta", true, false) {
+        if tool_button(ui, icons::FOLDER_PLUS, t("explorer-nueva-carpeta"), true, false) {
             actions.push(PaneAction::NewFolder);
         }
-        if tool_button(ui, icons::PENCIL, "Renombrar (F2)", one, false) {
+        if tool_button(ui, icons::PENCIL, t("explorer-renombrar-f2"), one, false) {
             actions.push(PaneAction::Rename);
         }
-        if side == Side::Remote && tool_button(ui, icons::LOCK, if can_chmod { "Permisos" } else { "Este protocolo no admite permisos" }, one && can_chmod, false) {
+        if side == Side::Remote && tool_button(ui, icons::LOCK, if can_chmod { t("explorer-permisos") } else { t("explorer-este-protocolo-no-admite-permisos") }, one && can_chmod, false) {
             actions.push(PaneAction::Permissions);
         }
-        let delete_tip = if can_delete { "Eliminar (Supr)" } else { "Mover a la papelera (Supr)" };
+        let delete_tip = if can_delete { t("explorer-eliminar-supr") } else { t("explorer-mover-a-la-papelera-supr") };
         if tool_button(ui, icons::TRASH, delete_tip, !state.selected.is_empty(), false) {
             actions.push(PaneAction::Delete);
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
             let glyph = if state.show_hidden { icons::EYE } else { icons::EYE_OFF };
-            let tip = if state.show_hidden { "Ocultar los archivos ocultos" } else { "Mostrar los archivos ocultos" };
+            let tip = if state.show_hidden { t("explorer-ocultar-los-archivos-ocultos") } else { t("explorer-mostrar-los-archivos-ocultos") };
             if tool_button(ui, glyph, tip, true, state.show_hidden) {
                 state.show_hidden = !state.show_hidden;
             }
-            if side == Side::Local && tool_button(ui, icons::FOLDER, "Elegir otra carpeta…", true, false) {
+            if side == Side::Local && tool_button(ui, icons::FOLDER, t("explorer-elegir-otra-carpeta"), true, false) {
                 actions.push(PaneAction::PickFolder);
             }
         });
@@ -1162,9 +1163,9 @@ fn pane_ui(
 
     let (head, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 22.0), Sense::hover());
     let columns = [
-        (SortKey::Name, "Nombre", Rect::from_min_max(head.min, Pos2::new(head.max.x - 200.0, head.max.y)), Align2::LEFT_CENTER, head.min.x + 8.0),
-        (SortKey::Size, "Tamaño", Rect::from_min_max(Pos2::new(head.max.x - 200.0, head.min.y), Pos2::new(head.max.x - 110.0, head.max.y)), Align2::RIGHT_CENTER, head.max.x - 150.0),
-        (SortKey::Modified, "Modificado", Rect::from_min_max(Pos2::new(head.max.x - 110.0, head.min.y), head.max), Align2::RIGHT_CENTER, head.max.x - 8.0),
+        (SortKey::Name, t("conn-edit-nombre"), Rect::from_min_max(head.min, Pos2::new(head.max.x - 200.0, head.max.y)), Align2::LEFT_CENTER, head.min.x + 8.0),
+        (SortKey::Size, t("explorer-tamano"), Rect::from_min_max(Pos2::new(head.max.x - 200.0, head.min.y), Pos2::new(head.max.x - 110.0, head.max.y)), Align2::RIGHT_CENTER, head.max.x - 150.0),
+        (SortKey::Modified, t("explorer-modificado"), Rect::from_min_max(Pos2::new(head.max.x - 110.0, head.min.y), head.max), Align2::RIGHT_CENTER, head.max.x - 8.0),
     ];
     let current_sort = state.sort.unwrap_or((SortKey::Name, true));
     for (key, label, zone, align, x) in columns {
@@ -1178,7 +1179,7 @@ fn pane_ui(
         };
         let color = if active || response.hovered() { theme::text() } else { theme::subtext() };
         ui.painter().text(Pos2::new(x, head.center().y), align, format!("{label}{arrow}"), FontId::new(theme::size::SMALL, FontFamily::Proportional), color);
-        if response.on_hover_text("Ordenar por esta columna").clicked() {
+        if response.on_hover_text(t("explorer-ordenar-por-esta-columna")).clicked() {
             actions.push(PaneAction::Sort(key));
         }
     }
@@ -1193,7 +1194,7 @@ fn pane_ui(
         list_ui.label(RichText::new(message).color(if state.error.is_some() { theme::red() } else { theme::subtext() }));
     } else if state.loading && state.entries.is_empty() {
         list_ui.add_space(theme::space::M);
-        list_ui.label(RichText::new("Cargando…").color(theme::subtext()));
+        list_ui.label(RichText::new(t("explorer-cargando")).color(theme::subtext()));
     } else {
         let visible_names: Vec<String> = state.visible().iter().map(|e| e.name.clone()).collect();
         ScrollArea::vertical().id_salt(("explorer-list", side == Side::Remote)).auto_shrink([false, false]).show(&mut list_ui, |ui| {
@@ -1201,7 +1202,7 @@ fn pane_ui(
             let visible: Vec<Entry> = state.visible().into_iter().cloned().collect();
             if visible.is_empty() {
                 ui.add_space(theme::space::M);
-                ui.label(RichText::new("Carpeta vacía").color(theme::subtext()));
+                ui.label(RichText::new(t("explorer-carpeta-vacia")).color(theme::subtext()));
             }
             for (index, entry) in visible.iter().enumerate() {
                 let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_HEIGHT), Sense::click_and_drag());
@@ -1274,33 +1275,33 @@ fn pane_ui(
                     actions.push(PaneAction::Open(entry.name.clone()));
                 }
                 response.context_menu(|ui| {
-                    if entry.is_dir && ui.button("Abrir").clicked() {
+                    if entry.is_dir && ui.button(t("explorer-abrir")).clicked() {
                         actions.push(PaneAction::Open(entry.name.clone()));
                         ui.close();
                     }
                     let (label, hint) = match side {
-                        Side::Local => ("Subir al servidor", "→"),
-                        Side::Remote => ("Bajar a este equipo", "←"),
+                        Side::Local => (t("explorer-subir-al-servidor"), "→"),
+                        Side::Remote => (t("explorer-bajar-a-este-equipo"), "←"),
                     };
                     if ui.button(format!("{label}  {hint}")).clicked() {
                         actions.push(PaneAction::CopyAcross);
                         ui.close();
                     }
-                    if ui.button("Copiar ruta").clicked() {
+                    if ui.button(t("explorer-copiar-ruta")).clicked() {
                         actions.push(PaneAction::CopyPath);
                         ui.close();
                     }
                     ui.separator();
-                    if ui.add_enabled(state.selected.len() == 1, Button::new("Renombrar").shortcut_text("F2")).clicked() {
+                    if ui.add_enabled(state.selected.len() == 1, Button::new(t("explorer-renombrar")).shortcut_text("F2")).clicked() {
                         actions.push(PaneAction::Rename);
                         ui.close();
                     }
-                    if side == Side::Remote && ui.add_enabled(state.selected.len() == 1 && can_chmod, Button::new("Permisos")).clicked() {
+                    if side == Side::Remote && ui.add_enabled(state.selected.len() == 1 && can_chmod, Button::new(t("explorer-permisos"))).clicked() {
                         actions.push(PaneAction::Permissions);
                         ui.close();
                     }
-                    let delete = if can_delete { "Eliminar" } else { "Mover a la papelera" };
-                    if crate::ui::kit::danger_item(ui, delete, "Supr").clicked() {
+                    let delete = if can_delete { t("explorer-eliminar") } else { t("explorer-mover-a-la-papelera") };
+                    if crate::ui::kit::danger_item(ui, delete, t("explorer-supr")).clicked() {
                         actions.push(PaneAction::Delete);
                         ui.close();
                     }

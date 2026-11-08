@@ -42,6 +42,8 @@ chacha20poly1305 = "0.11.0"
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
 directories = "6.0.0"
 eframe = "0.37.0"
+fluent-bundle = "0.16.0"
+fluent-syntax = "0.12.0"
 fontdb = "0.24.0"
 futures-util = "0.3.34"
 getrandom = "0.4.3"
@@ -58,10 +60,12 @@ serialport = { version = "4.10.1", default-features = false }
 sha2 = "0.11"
 smb = "0.10"
 suppaftp = { version = "12", features = ["deprecated", "tokio", "tokio-rustls-ring"] }
+sys-locale = "0.3.2"
 termwiz = { version = "0.23.3", default-features = false }
 tokio = { version = "1.53.3", features = ["rt-multi-thread", "sync", "macros", "time", "net", "io-util", "fs"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 trash = "5.2.9"
+unic-langid = "0.9.6"
 webpki-roots = "1.0.9"
 zeroize = "1.9.1"
 

@@ -1,5 +1,6 @@
 //! Almacén de secretos: desbloqueo, guardado, cambio de modo y migración.
 
+use crate::i18n::t;
 use super::*;
 
 impl App {
@@ -51,9 +52,8 @@ impl App {
             MigrateFrom::Master => crate::data::secrets::migrate(master.as_ref(), &KeyringStore, &accounts),
         };
         match result {
-            Ok(1) => self.notify("Se migró 1 contraseña al nuevo almacén"),
-            Ok(count) => self.notify(format!("Se migraron {count} contraseñas al nuevo almacén")),
-            Err(error) => self.dialog = Some(Dialog::failure("No se pudieron migrar las contraseñas", error)),
+            Ok(count) => self.notify(crate::tf!("secrets-flow-migrated", "n" => count)),
+            Err(error) => self.dialog = Some(Dialog::failure(t("secrets-flow-no-se-pudieron-migrar-las"), error)),
         }
     }
 
@@ -67,8 +67,8 @@ impl App {
         });
         drop(store);
         match result {
-            Err(error) => self.dialog = Some(Dialog::failure("No se pudo guardar el ajuste", format!("{error:#}"))),
-            Ok(()) if to_master == active_master => self.notify("Se mantiene el almacén actual"),
+            Err(error) => self.dialog = Some(Dialog::failure(t("secrets-flow-no-se-pudo-guardar-el"), format!("{error:#}"))),
+            Ok(()) if to_master == active_master => self.notify(t("secrets-flow-se-mantiene-el-almacen-actual")),
             Ok(()) => self.dialog = Some(Dialog::Restart),
         }
     }
@@ -80,7 +80,7 @@ impl App {
                 self.close_confirmed = true;
                 self.ctx.send_viewport_cmd(ViewportCommand::Close);
             }
-            Err(error) => self.dialog = Some(Dialog::failure("No se pudo reiniciar", format!("{error:#}"))),
+            Err(error) => self.dialog = Some(Dialog::failure(t("secrets-flow-no-se-pudo-reiniciar"), format!("{error:#}"))),
         }
     }
 
@@ -101,7 +101,7 @@ impl App {
         match self.secrets.set(&account, &secret) {
             Ok(()) => {}
             Err(SecretError::Locked) => self.ask_unlock(Pending::Save { account, secret }),
-            Err(error) => self.dialog = Some(Dialog::failure("No se pudo guardar el secreto", error)),
+            Err(error) => self.dialog = Some(Dialog::failure(t("secrets-flow-no-se-pudo-guardar-el-2"), error)),
         }
     }
 }

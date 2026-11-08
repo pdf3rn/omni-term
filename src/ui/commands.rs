@@ -1,5 +1,6 @@
 //! Comandos de la app y paleta de comandos.
 
+use crate::i18n::t;
 use super::*;
 
 impl App {
@@ -9,7 +10,7 @@ impl App {
             items.push(palette::Item {
                 title: connection.name.clone(),
                 detail: connection.target(),
-                kind: "Conexión",
+                kind: t("commands-conexion"),
                 target: Target::Connect(connection.clone()),
             });
         }
@@ -18,15 +19,15 @@ impl App {
             items.push(palette::Item {
                 title: snippet.title.clone(),
                 detail: first.chars().take(60).collect(),
-                kind: "Snippet",
+                kind: t("commands-snippet"),
                 target: Target::Snippet(snippet.clone()),
             });
         }
         for (index, tab) in self.tabs.iter().enumerate() {
-            items.push(palette::Item { title: tab.title(), detail: String::new(), kind: "Pestaña", target: Target::Tab(index) });
+            items.push(palette::Item { title: tab.title(), detail: String::new(), kind: t("commands-pestana"), target: Target::Tab(index) });
         }
         for (command, label) in palette::COMMANDS {
-            items.push(palette::Item { title: label.to_string(), detail: String::new(), kind: "Acción", target: Target::Command(command) });
+            items.push(palette::Item { title: t(label).to_string(), detail: String::new(), kind: t("commands-accion"), target: Target::Command(command) });
         }
         items
     }
@@ -106,7 +107,7 @@ impl App {
                 let selected = self.tabs.get(self.active).and_then(|t| t.pane()).and_then(|p| p.selection_text());
                 match selected {
                     Some(text) => self.dialog = Some(Dialog::Snippet(SnippetForm::new(text))),
-                    None => self.notify("Selecciona texto en el terminal para guardarlo como snippet"),
+                    None => self.notify(t("commands-selecciona-texto-en-el-terminal")),
                 }
             }
             Command::ZoomIn => self.set_font_size(self.settings.font_size + 1.0),

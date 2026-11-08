@@ -1,5 +1,6 @@
 //! Trabajo de cada fotograma: eventos pendientes, avisos de actividad y sesión guardada.
 
+use crate::i18n::t;
 use super::*;
 
 impl App {
@@ -43,7 +44,7 @@ impl App {
                 std::thread::spawn(move || {
                     let _ = notify_rust::Notification::new()
                         .summary("omni-term")
-                        .body(&format!("Terminó la actividad en «{title}»"))
+                        .body(&crate::tf!("startup-activity-finished", "title" => title.to_string()))
                         .show();
                 });
             }
@@ -121,7 +122,7 @@ impl App {
             match saved.kind {
                 TabKind::Local => {
                     if let Err(error) = self.open_local() {
-                        self.dialog = Some(Dialog::failure("No se pudo abrir el terminal local", format!("{error:#}")));
+                        self.dialog = Some(Dialog::failure(t("startup-no-se-pudo-abrir-el"), format!("{error:#}")));
                     }
                 }
                 TabKind::Connection(id) => {

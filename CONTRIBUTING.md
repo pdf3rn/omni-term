@@ -23,6 +23,7 @@ All code lives under `src/`, grouped by domain. Each folder has a sibling file (
 | `files/` | Remote files: the explorer, transfers, and the SFTP, FTP, SMB and ADB clients. |
 | `containers/` | Docker and Podman manager: the engine client and its view. |
 | `data/` | Storage: the SQLite `store`, `secrets` and `settings`. |
+| `i18n.rs` | Interface languages: the Fluent catalogs in `assets/i18n/` embedded in the binary, and the `t` / `tf!` lookups. |
 | `ui/` | The window and everything drawn. `ui.rs` holds the `App` state and the frame loop; its methods live in topic modules (`sessions`, `connecting`, `secrets_flow`, `library`, `commands`, `closing`, `startup`, `dialog_flow`, `toasts`), and the screens in `sidebar`, `tabs` (strip and tab state), `central` (the active tab's area), `empty`, `window` (title bar) and `appearance`. Also `dialogs/` (shell, connection form, settings, prompts), `palette`, `theme`, `icons`, `fonts` and the reusable `kit`. |
 
 ## UI style
@@ -33,6 +34,12 @@ Everything that looks like something lives in one of two places:
 - `src/ui/kit/`: reusable components (buttons with `Variant`, cards and settings rows, list rows, form fields, chips, keycaps).
 
 To change how buttons, cards or rows look, edit those files. Do not write numeric radii, strokes, font sizes, spacing or `Color32::from_rgb(..)` in the screens: a test (`style_guard`) fails if you do.
+
+## Translations
+
+Interface text lives in `assets/i18n/<code>.ftl` (Fluent), with Spanish (`es.ftl`) as the base catalog. In code use `t("key")` for plain text and `tf!("key", "name" => value)` for text with variables or plurals; do not write user-facing strings in the screens.
+
+To add a language, create `assets/i18n/<code>.ftl` with the same keys, add it to `Lang` in `src/i18n.rs` and run the tests: they fail if a key is missing, unused, or takes different variables in two languages. Names the user typed (connections, groups, snippets) and messages from servers are shown as they are.
 
 ## Commits
 

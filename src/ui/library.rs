@@ -1,5 +1,6 @@
 //! Conexiones y snippets guardados: borrar, fijar, mover de grupo, importar y olvidar hosts.
 
+use crate::i18n::t;
 use super::*;
 
 impl App {
@@ -27,7 +28,7 @@ impl App {
                     pane.insert_text(body, run);
                 }
             }
-            _ => self.notify("No hay un terminal activo donde insertar"),
+            _ => self.notify(t("library-no-hay-un-terminal-activo")),
         }
     }
 
@@ -58,11 +59,11 @@ impl App {
         let forwards = self.forwards.get(&id).cloned().unwrap_or_default();
         let dependents: Vec<i64> = self.connections.iter().filter(|c| c.jump == Some(id)).filter_map(|c| c.id).collect();
         if let Err(error) = self.store.lock().unwrap().delete_connection(id) {
-            self.dialog = Some(Dialog::failure("No se pudo eliminar la conexión", format!("{error:#}")));
+            self.dialog = Some(Dialog::failure(t("library-no-se-pudo-eliminar-la"), format!("{error:#}")));
             return;
         }
         self.refresh_connections();
-        let text = format!("«{}» eliminada", connection.name);
+        let text = crate::tf!("library-connection-deleted", "name" => connection.name.to_string());
         self.push_toast(text, Some(Undo::Connection { connection, forwards, dependents }), Some(Cleanup::Secrets(id)));
     }
 
@@ -103,11 +104,11 @@ impl App {
         moved.env = env;
         moved.color = color;
         if let Err(error) = self.store.lock().unwrap().save_connection(&moved) {
-            self.dialog = Some(Dialog::failure("No se pudo mover la conexión", format!("{error:#}")));
+            self.dialog = Some(Dialog::failure(t("library-no-se-pudo-mover-la"), format!("{error:#}")));
             return;
         }
         self.refresh_connections();
-        let text = format!("«{}» movida a {label}", connection.name);
+        let text = crate::tf!("library-moved", "name" => connection.name.to_string(), "group" => super::sidebar::group_title(&label));
         self.push_toast(text, Some(Undo::Environment { id, env: connection.env, color: connection.color }), None);
     }
 
@@ -122,7 +123,7 @@ impl App {
             match known_hosts::remove(&path, entry) {
                 Ok(index) => removed.push((index, entry.raw.clone())),
                 Err(error) => {
-                    self.dialog = Some(Dialog::failure("No se pudo olvidar el host", format!("{error:#}")));
+                    self.dialog = Some(Dialog::failure(t("library-no-se-pudo-olvidar-el"), format!("{error:#}")));
                     break;
                 }
             }
@@ -133,7 +134,7 @@ impl App {
         }
         removed.reverse();
         let first = ordered.first().map_or_else(String::new, |e| e.display());
-        let text = if removed.len() == 1 { format!("Huella de «{first}» olvidada") } else { format!("{} huellas olvidadas", removed.len()) };
+        let text = if removed.len() == 1 { crate::tf!("library-fingerprint-forgotten", "name" => first.clone()) } else { crate::tf!("library-fingerprints-forgotten", "n" => removed.len()) };
         self.push_toast(text, Some(Undo::KnownHosts(removed)), None);
         if let Some((host, port)) = reconnect {
             self.reconnect_to(&host, port);
@@ -156,11 +157,11 @@ impl App {
     pub(super) fn delete_snippet(&mut self, snippet: Snippet) {
         let Some(id) = snippet.id else { return };
         if let Err(error) = self.store.lock().unwrap().delete_snippet(id) {
-            self.dialog = Some(Dialog::failure("No se pudo eliminar el snippet", format!("{error:#}")));
+            self.dialog = Some(Dialog::failure(t("library-no-se-pudo-eliminar-el"), format!("{error:#}")));
             return;
         }
         self.refresh_connections();
-        let text = format!("«{}» eliminado", snippet.title);
+        let text = crate::tf!("library-snippet-deleted", "name" => snippet.title.to_string());
         self.push_toast(text, Some(Undo::Snippet(snippet)), None);
     }
 
@@ -169,7 +170,7 @@ impl App {
         let text = match std::fs::read_to_string(&path) {
             Ok(text) => text,
             Err(error) => {
-                self.dialog = Some(Dialog::failure("No se pudo leer ~/.ssh/config", format!("{}: {error}", path.display())));
+                self.dialog = Some(Dialog::failure(t("library-no-se-pudo-leer-ssh"), format!("{}: {error}", path.display())));
                 return;
             }
         };
@@ -201,7 +202,7 @@ impl App {
             }
         }
         self.refresh_connections();
-        self.notify(format!("Importadas {imported} conexiones de ~/.ssh/config"));
+        self.notify(crate::tf!("library-imported", "n" => imported));
     }
 
     /// Hasta 5 conexiones para el menú del «+»: las últimas usadas y, si faltan, las demás por nombre.

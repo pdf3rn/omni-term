@@ -1,5 +1,6 @@
 //! Barra lateral: conexiones, snippets, grupos y navegación.
 
+use crate::i18n::t;
 use super::*;
 
 /// Sangría de las conexiones bajo su cabecera (el icono alinea con el nombre del grupo) y de los snippets.
@@ -128,7 +129,7 @@ impl App {
                     let search = ui.add(
                         egui::TextEdit::singleline(&mut self.sidebar_query)
                             .id(search_id)
-                            .hint_text(if connections_view { "Buscar conexiones" } else { "Buscar snippets" })
+                            .hint_text(if connections_view { t("sidebar-buscar-conexiones") } else { t("sidebar-buscar-snippets") })
                             .margin(Margin { left: 30, right: 8, top: 5, bottom: 5 })
                             .desired_width(f32::INFINITY),
                     );
@@ -157,7 +158,7 @@ impl App {
                     ui.horizontal(|ui| {
                         ui.spacing_mut().button_padding.x = 0.0;
                         ui.spacing_mut().item_spacing.x = 12.0;
-                        for (view, label) in [(SidebarView::Connections, "Conexiones"), (SidebarView::Snippets, "Snippets")] {
+                        for (view, label) in [(SidebarView::Connections, t("sidebar-conexiones")), (SidebarView::Snippets, t("sidebar-snippets"))] {
                             let selected = self.sidebar_view == view;
                             // Pestañas de texto: sin caja al pasar el ratón (con el relleno de un botón quedaba un bloque
                             // gris pegado al texto). El hover aclara el texto y muestra un subrayado tenue; la elegida
@@ -188,10 +189,10 @@ impl App {
                             let room = ui.available_width();
                             if room >= TAB_BUTTON {
                                 if connections_view {
-                                    if crate::ui::kit::icon_button(ui, icons::PLUS, theme::size::ICON, theme::text()).on_hover_text("Nueva conexión").clicked() {
+                                    if crate::ui::kit::icon_button(ui, icons::PLUS, theme::size::ICON, theme::text()).on_hover_text(t("dialogs-nueva-conexion")).clicked() {
                                         new_connection = true;
                                     }
-                                } else if crate::ui::kit::icon_button(ui, icons::PLUS, theme::size::ICON, theme::text()).on_hover_text("Nuevo snippet").clicked() {
+                                } else if crate::ui::kit::icon_button(ui, icons::PLUS, theme::size::ICON, theme::text()).on_hover_text(t("dialogs-nuevo-snippet")).clicked() {
                                     new_snippet = true;
                                 }
                             }
@@ -199,16 +200,16 @@ impl App {
                             let group_keys: Vec<String> = if connections_view {
                                 groups.iter().map(|(label, _)| label.to_lowercase()).collect()
                             } else {
-                                let mut keys: Vec<String> = self.snippets.iter().map(|s| format!("snip:{}", if s.tag.trim().is_empty() { "sin etiqueta".to_string() } else { s.tag.trim().to_lowercase() })).collect();
+                                let mut keys: Vec<String> = self.snippets.iter().map(|s| format!("snip:{}", if s.tag.trim().is_empty() { NO_TAG_LABEL.to_lowercase() } else { s.tag.trim().to_lowercase() })).collect();
                                 keys.sort();
                                 keys.dedup();
                                 keys
                             };
                             if group_keys.len() >= 2 && room >= 2.0 * TAB_BUTTON + TAB_BUTTON_GAP {
                                 let all_folded = group_keys.iter().all(|k| self.collapsed_groups.contains(k));
-                                let (icon, tip) = if all_folded { (icons::PLUS_SQUARE, "Desplegar todos los grupos") } else { (icons::MINUS_SQUARE, "Plegar todos los grupos") };
+                                let (icon, tip) = if all_folded { (icons::PLUS_SQUARE, t("sidebar-desplegar-todos-los-grupos")) } else { (icons::MINUS_SQUARE, t("sidebar-plegar-todos-los-grupos")) };
                                 let button = crate::ui::kit::IconButton::new(icon).size(theme::size::ICON).color(theme::subtext()).enabled(!searching).show(ui);
-                                if button.on_hover_text(if searching { "Con una búsqueda activa se ven todos los grupos" } else { tip }).clicked() {
+                                if button.on_hover_text(if searching { t("sidebar-con-una-busqueda-activa-se") } else { tip }).clicked() {
                                     fold_all = Some((!all_folded, group_keys));
                                 }
                             }
@@ -218,7 +219,7 @@ impl App {
                     ui.add_space(theme::space::M);
 
                     if connections_view && self.tabs.len() >= 3 {
-                        ui.label(RichText::new("Abiertas").small().color(theme::subtext()));
+                        ui.label(RichText::new(t("sidebar-abiertas")).small().color(theme::subtext()));
                         ui.spacing_mut().item_spacing.y = 1.0;
                         for (index, tab) in self.tabs.iter().enumerate().take(6) {
                             let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 28.0), Sense::click());
@@ -249,12 +250,12 @@ impl App {
                                 let color = if lost { theme::red() } else { theme::accent() };
                                 ui.painter().circle_filled(Pos2::new(rect.max.x - 6.0, rect.center().y), 3.5, color);
                             }
-                            if response.on_hover_text(if lost { "Sesión caída" } else if tab.attention { "Actividad terminada" } else { "Ir a esta pestaña" }).clicked() {
+                            if response.on_hover_text(if lost { t("sidebar-sesion-caida") } else if tab.attention { t("sidebar-actividad-terminada") } else { t("sidebar-ir-a-esta-pestana") }).clicked() {
                                 open_tab = Some(index);
                             }
                         }
                         if self.tabs.len() > 6 {
-                            ui.label(RichText::new(format!("+{} más en la barra de pestañas", self.tabs.len() - 6)).small().color(theme::subtext()));
+                            ui.label(RichText::new(crate::tf!("sidebar-more-tabs", "n" => self.tabs.len() - 6)).small().color(theme::subtext()));
                         }
                         ui.add_space(theme::space::M);
                         ui.spacing_mut().item_spacing.y = 8.0;
@@ -262,9 +263,9 @@ impl App {
 
                     if connections_view {
                         if self.connections.is_empty() {
-                            new_connection |= crate::ui::kit::empty_hint(ui, "Aún no hay conexiones.", "Crea una");
+                            new_connection |= crate::ui::kit::empty_hint(ui, t("sidebar-aun-no-hay-conexiones"), t("sidebar-crea-una"));
                         } else if groups.is_empty() {
-                            ui.label(RichText::new("Ninguna conexión coincide con la búsqueda.").color(theme::subtext()));
+                            ui.label(RichText::new(t("sidebar-ninguna-conexion-coincide-con-la")).color(theme::subtext()));
                         }
                         ui.spacing_mut().item_spacing.y = 2.0;
                         let list = egui::ScrollArea::vertical().id_salt("connections").auto_shrink([false, false]).max_height(ui.available_height() - footer_height(keyring_fallback)).show(ui, |ui| {
@@ -299,11 +300,11 @@ impl App {
                                 ui.painter().text(
                                     Pos2::new(rect.min.x + 18.0, rect.center().y),
                                     Align2::LEFT_CENTER,
-                                    format!("{label}  {}", indices.len()),
+                                    format!("{}  {}", group_title(label), indices.len()),
                                     FontId::new(theme::size::SMALL, strong_family()),
                                     color,
                                 );
-                                if response.hand().on_hover_text(if folded { "Mostrar el grupo" } else { "Plegar el grupo" }).clicked() && !searching {
+                                if response.hand().on_hover_text(if folded { t("sidebar-mostrar-el-grupo") } else { t("sidebar-plegar-el-grupo") }).clicked() && !searching {
                                     toggle_group = Some(key.clone());
                                 }
                             }
@@ -377,8 +378,8 @@ impl App {
                                 let actions = over || menu_open_before;
                                 let mut buttons = None;
                                 if actions {
-                                    let pencil = crate::ui::kit::IconButton::new(icons::PENCIL).show_at(ui, edit_slot, (response.id, "edit")).on_hover_text("Editar");
-                                    let more = crate::ui::kit::IconButton::new(icons::DOTS).size(theme::size::ICON_XL).active(menu_open_before).show_at(ui, more_slot, (response.id, "more")).on_hover_text("Más acciones");
+                                    let pencil = crate::ui::kit::IconButton::new(icons::PENCIL).show_at(ui, edit_slot, (response.id, "edit")).on_hover_text(t("settings-editar"));
+                                    let more = crate::ui::kit::IconButton::new(icons::DOTS).size(theme::size::ICON_XL).active(menu_open_before).show_at(ui, more_slot, (response.id, "more")).on_hover_text(t("sidebar-mas-acciones"));
                                     let menu_open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&more));
                                     ui.data_mut(|d| d.insert_temp(menu_state, menu_open));
                                     buttons = Some((pencil, more));
@@ -436,11 +437,11 @@ impl App {
                                 let detail = crate::ui::kit::fit_text(&second_line, &connection.destination(), &detail_font, right_limit - text_x);
                                 second_line.text(Pos2::new(text_x, detail_top), Align2::LEFT_TOP, detail, detail_font, theme::subtext());
                                 let hint = match state {
-                                    LinkState::Closed => "Doble clic para conectar",
-                                    LinkState::Open => "Sesión abierta. Doble clic para otra pestaña",
-                                    LinkState::Lost => "Sesión caída: usa Reconectar en su pestaña",
+                                    LinkState::Closed => t("sidebar-doble-clic-para-conectar"),
+                                    LinkState::Open => t("sidebar-sesion-abierta-doble-clic-para"),
+                                    LinkState::Lost => t("sidebar-sesion-caida-usa-reconectar-en"),
                                 };
-                                let hint = if ago.is_empty() { hint.to_string() } else { format!("{hint}\nÚltimo uso: {ago}") };
+                                let hint = if ago.is_empty() { hint.to_string() } else { format!("{hint}\n{}", crate::tf!("sidebar-last-use", "ago" => ago.clone())) };
                                 let response = response.hand().on_hover_text(hint);
                                 if response.double_clicked() {
                                     self.sidebar_nav = false;
@@ -470,7 +471,7 @@ impl App {
                                     None => {
                                         let count = connection.id.and_then(|id| self.forwards.get(&id)).map_or(0, Vec::len);
                                         if count > 0 {
-                                            let text = if count == 1 { "1 túnel".to_string() } else { format!("{count} túneles") };
+                                            let text = crate::tf!("sidebar-tunnels", "n" => count);
                                             ui.label(RichText::new(text).small().color(theme::subtext()));
                                         }
                                     }
@@ -485,23 +486,23 @@ impl App {
                         let query = self.sidebar_query.clone();
                         let visible: Vec<&Snippet> = self.snippets.iter().filter(|s| s.matches(&query)).collect();
                         if self.snippets.is_empty() {
-                            new_snippet |= crate::ui::kit::empty_hint(ui, "Aún no hay snippets.", "Crea uno");
+                            new_snippet |= crate::ui::kit::empty_hint(ui, t("sidebar-aun-no-hay-snippets"), t("sidebar-crea-uno"));
                         } else if visible.is_empty() {
-                            ui.label(RichText::new("Ningún snippet coincide con la búsqueda.").color(theme::subtext()));
+                            ui.label(RichText::new(t("sidebar-ningun-snippet-coincide-con-la")).color(theme::subtext()));
                         }
                         ui.spacing_mut().item_spacing.y = 2.0;
                         let list = egui::ScrollArea::vertical().id_salt("snippets").auto_shrink([false, false]).max_height(ui.available_height() - footer_height(keyring_fallback)).show(ui, |ui| {
                         reserve_scrollbar(ui, "snippets");
                         let mut tags: Vec<(String, Vec<&Snippet>)> = Vec::new();
                         for snippet in visible {
-                            let label = if snippet.tag.trim().is_empty() { "Sin etiqueta".to_string() } else { snippet.tag.trim().to_string() };
+                            let label = if snippet.tag.trim().is_empty() { NO_TAG_LABEL.to_string() } else { snippet.tag.trim().to_string() };
                             match tags.iter_mut().find(|(l, _)| l.to_lowercase() == label.to_lowercase()) {
                                 Some((_, members)) => members.push(snippet),
                                 None => tags.push((label, vec![snippet])),
                             }
                         }
-                        tags.sort_by_key(|(label, _)| (label == "Sin etiqueta", label.to_lowercase()));
-                        let grouped = tags.len() > 1 || tags.first().is_some_and(|(l, _)| l != "Sin etiqueta");
+                        tags.sort_by_key(|(label, _)| (label == NO_TAG_LABEL, label.to_lowercase()));
+                        let grouped = tags.len() > 1 || tags.first().is_some_and(|(l, _)| l != NO_TAG_LABEL);
                         for (label, members) in &tags {
                             let key = format!("snip:{}", label.to_lowercase());
                             let folded = grouped && !searching && self.collapsed_groups.contains(&key);
@@ -521,11 +522,11 @@ impl App {
                                 ui.painter().text(
                                     Pos2::new(rect.min.x + 18.0, rect.center().y),
                                     Align2::LEFT_CENTER,
-                                    format!("{label}  {}", members.len()),
+                                    format!("{}  {}", group_title(label), members.len()),
                                     FontId::new(theme::size::SMALL, strong_family()),
                                     color,
                                 );
-                                if response.hand().on_hover_text(if folded { "Mostrar el grupo" } else { "Plegar el grupo" }).clicked() && !searching {
+                                if response.hand().on_hover_text(if folded { t("sidebar-mostrar-el-grupo") } else { t("sidebar-plegar-el-grupo") }).clicked() && !searching {
                                     toggle_group = Some(key.clone());
                                 }
                             }
@@ -555,7 +556,7 @@ impl App {
 
                                 let run_slot = Rect::from_center_size(Pos2::new(rect.max.x - 18.0, rect.center().y), Vec2::splat(26.0));
                                 let run_clicked = over
-                                    && crate::ui::kit::IconButton::new(icons::PLAY).show_at(ui, run_slot, (response.id, "run")).on_hover_text("Insertar y ejecutar").clicked();
+                                    && crate::ui::kit::IconButton::new(icons::PLAY).show_at(ui, run_slot, (response.id, "run")).on_hover_text(t("dialogs-insertar-y-ejecutar")).clicked();
                                 if run_clicked {
                                     insert = Some((Snippet::clone(snippet), true));
                                 }
@@ -568,23 +569,23 @@ impl App {
                                     insert = Some((Snippet::clone(snippet), false));
                                 }
                                 response.context_menu(|ui| {
-                                    if ui.button("Insertar").clicked() {
+                                    if ui.button(t("dialogs-insertar")).clicked() {
                                         insert = Some((Snippet::clone(snippet), false));
                                         ui.close();
                                     }
-                                    if ui.button("Insertar y ejecutar").clicked() {
+                                    if ui.button(t("dialogs-insertar-y-ejecutar")).clicked() {
                                         insert = Some((Snippet::clone(snippet), true));
                                         ui.close();
                                     }
-                                    if ui.button("Copiar").clicked() {
+                                    if ui.button(t("pane-copiar")).clicked() {
                                         copy = Some(snippet.body.clone());
                                         ui.close();
                                     }
-                                    if ui.button("Editar").clicked() {
+                                    if ui.button(t("settings-editar")).clicked() {
                                         edit_snippet = Some(Snippet::clone(snippet));
                                         ui.close();
                                     }
-                                    if crate::ui::kit::danger_item(ui, "Eliminar", "").clicked() {
+                                    if crate::ui::kit::danger_item(ui, t("explorer-eliminar"), "").clicked() {
                                         delete_snippet = Some(Snippet::clone(snippet));
                                         ui.close();
                                     }
@@ -599,7 +600,7 @@ impl App {
                     // Pie: solo avisos; el estado normal de los secretos no hace falta mostrarlo.
                     ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
                         if keyring_fallback {
-                            ui.label(RichText::new("Sin keyring: las contraseñas usan la clave maestra").small().color(theme::subtext()));
+                            ui.label(RichText::new(t("sidebar-sin-keyring-las-contrasenas-usan")).small().color(theme::subtext()));
                         }
                     });
                 });
@@ -667,7 +668,7 @@ impl App {
                     let forwards = self.forwards.get(&connection.id.unwrap_or_default()).map_or(&[][..], |f| f.as_slice());
                     let mut form = ConnForm::from_connection(&connection, forwards);
                     form.id = None;
-                    form.name = format!("{} (copia)", connection.name);
+                    form.name = crate::tf!("sidebar-copy-name", "name" => connection.name.to_string());
                     self.dialog = Some(Dialog::Edit(form));
                 }
             }
@@ -723,7 +724,7 @@ impl App {
                     ui.painter().text(rect.center(), Align2::CENTER_CENTER, glyph, FontId::proportional(theme::size::ICON_LG), theme::text());
                     response.on_hover_text(tip).clicked()
                 };
-                if icon(ui, icons::SEARCH, &shortcuts::label("Buscar (Ctrl+Shift+P)")) {
+                if icon(ui, icons::SEARCH, &shortcuts::label(t("sidebar-buscar-ctrl-shift-p"))) {
                     palette = true;
                 }
                 ui.add_space(theme::space::XS);
@@ -745,7 +746,7 @@ impl App {
                     }
                 }
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
-                    if icon(ui, icons::PLUS, "Nueva conexión") {
+                    if icon(ui, icons::PLUS, t("dialogs-nueva-conexion")) {
                         *new_connection = true;
                     }
                 });
@@ -785,6 +786,19 @@ pub(super) enum NavRow {
 }
 
 pub(super) const PINNED_LABEL: &str = "Fijadas";
+/// Nombres internos de los grupos que no vienen de los datos. Se comparan tal cual; solo se traducen al mostrarlos.
+pub(super) const NO_ENV_LABEL: &str = "Sin entorno";
+const NO_TAG_LABEL: &str = "Sin etiqueta";
+
+/// Nombre de un grupo tal como se ve: los grupos propios se traducen y los del usuario no.
+pub(super) fn group_title(label: &str) -> String {
+    match label {
+        PINNED_LABEL => t("sidebar-pinned").to_string(),
+        NO_ENV_LABEL => t("sidebar-no-environment").to_string(),
+        NO_TAG_LABEL => t("sidebar-no-tag").to_string(),
+        other => other.to_string(),
+    }
+}
 
 /// Entorno y color que corresponden a un grupo del sidebar; `None` en «Sin entorno».
 pub(super) fn group_environment(label: &str, members: &[&Connection]) -> Option<(String, Option<u8>)> {
@@ -823,18 +837,18 @@ const SCROLLBAR_ROOM: f32 = 10.0;
 
 pub(super) fn connection_menu(ui: &mut egui::Ui, connection: &Connection, pinned: bool, out: &mut Option<(RowAction, Connection)>) {
     for (label, action) in [
-        ("Conectar", RowAction::Connect),
-        ("Explorador de archivos", RowAction::Files),
-        ("Editar", RowAction::Edit),
-        ("Duplicar", RowAction::Duplicate),
-        (if pinned { "Desfijar" } else { "Fijar arriba" }, RowAction::Pin),
+        (t("dialogs-conectar"), RowAction::Connect),
+        (t("settings-explorador-de-archivos"), RowAction::Files),
+        (t("settings-editar"), RowAction::Edit),
+        (t("sidebar-duplicar"), RowAction::Duplicate),
+        (if pinned { t("sidebar-desfijar") } else { t("sidebar-fijar-arriba") }, RowAction::Pin),
     ] {
         if ui.button(label).clicked() {
             *out = Some((action, connection.clone()));
             ui.close();
         }
     }
-    if crate::ui::kit::danger_item(ui, "Eliminar", "").clicked() {
+    if crate::ui::kit::danger_item(ui, t("explorer-eliminar"), "").clicked() {
         *out = Some((RowAction::Delete, connection.clone()));
         ui.close();
     }
@@ -854,7 +868,7 @@ pub(super) fn sidebar_groups(connections: &[Connection], query: &str, pinned: &[
         let label = if c.id.is_some_and(|id| pinned.contains(&id)) {
             PINNED_LABEL.to_string()
         } else if env.is_empty() {
-            "Sin entorno".to_string()
+            NO_ENV_LABEL.to_string()
         } else {
             let mut chars = env.chars();
             chars.next().map(|f| f.to_uppercase().collect::<String>() + chars.as_str()).unwrap_or_default()

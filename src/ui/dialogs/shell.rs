@@ -1,5 +1,6 @@
 //! Marco común de los diálogos: título, cuerpo y pie con botones.
 
+use crate::i18n::t;
 use super::*;
 
 /// Aspecto de la acción principal.
@@ -56,7 +57,7 @@ impl Spec {
             accept: None,
             accept_enabled: true,
             tone: Tone::Normal,
-            cancel: "Cancelar".into(),
+            cancel: t("explorer-cancelar").into(),
             extras: Vec::new(),
             submit: Submit::Enter,
             backdrop_cancels: false,
@@ -187,7 +188,7 @@ pub fn shell(ctx: &egui::Context, spec: Spec, body: impl FnOnce(&mut egui::Ui) -
         ui.painter().text(title_rect.center(), egui::Align2::CENTER_CENTER, &spec.title, FontId::new(theme::size::BODY, crate::ui::strong_family()), theme::text());
         let close_slot = egui::Rect::from_center_size(egui::pos2(title_rect.max.x - 22.0, title_rect.center().y), egui::vec2(26.0, 26.0));
         let close = crate::ui::kit::IconButton::new(crate::ui::icons::X).size(theme::size::ICON_SM).skip_focus().show_at(ui, close_slot, "dialog-close");
-        if close.on_hover_text("Cerrar").clicked() {
+        if close.on_hover_text(t("pane-cerrar")).clicked() {
             action = Action::Cancel;
         }
 

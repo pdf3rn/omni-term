@@ -7,6 +7,7 @@ use eframe::egui;
 use muda::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu};
 
 use crate::data::store::Connection;
+use crate::i18n::{t, Lang};
 use crate::ui::palette::Command;
 
 /// Lo que hace falta para que una entrada esté activa.
@@ -54,63 +55,63 @@ use Need::*;
 use Row::{Item, Separator};
 
 const APP: &[Row] = &[
-    Item("Acerca de omni-term", Command::About, Always),
-    Item("Ajustes…", Command::Settings, Always),
+    Item("dialogs-acerca-de-omni-term", Command::About, Always),
+    Item("native-menu-ajustes", Command::Settings, Always),
     Separator,
-    Item("Salir", Command::Quit, Always),
+    Item("native-menu-salir", Command::Quit, Always),
 ];
 
 const FILE: &[Row] = &[
-    Item("Nueva pestaña local", Command::NewTab, Always),
-    Item("Nueva conexión…", Command::NewConnection, Always),
-    Item("Importar de ~/.ssh/config", Command::ImportConfig, Always),
+    Item("native-menu-nueva-pestana-local", Command::NewTab, Always),
+    Item("native-menu-nueva-conexion", Command::NewConnection, Always),
+    Item("empty-importar-de-ssh-config", Command::ImportConfig, Always),
     Separator,
-    Item("Cerrar pestaña", Command::CloseTab, Tabs),
-    Item("Hosts conocidos", Command::KnownHosts, Always),
+    Item("native-menu-cerrar-pestana", Command::CloseTab, Tabs),
+    Item("settings-hosts-conocidos", Command::KnownHosts, Always),
 ];
 
 const EDIT: &[Row] = &[
-    Item("Copiar", Command::Copy, Selection),
-    Item("Pegar", Command::Paste, Terminal),
-    Item("Escribir contraseña…", Command::TypePassword, Terminal),
-    Item("Seleccionar todo", Command::SelectAll, Terminal),
+    Item("pane-copiar", Command::Copy, Selection),
+    Item("pane-pegar", Command::Paste, Terminal),
+    Item("pane-escribir-contrasena", Command::TypePassword, Terminal),
+    Item("pane-seleccionar-todo", Command::SelectAll, Terminal),
     Separator,
-    Item("Buscar en la salida", Command::Search, Terminal),
-    Item("Guardar selección como snippet", Command::SaveSnippet, Selection),
+    Item("settings-buscar-en-la-salida", Command::Search, Terminal),
+    Item("pane-guardar-seleccion-como-snippet", Command::SaveSnippet, Selection),
     Separator,
-    Item("Contraseñas guardadas", Command::Passwords, Always),
+    Item("native-menu-contrasenas-guardadas", Command::Passwords, Always),
 ];
 
 const VIEW: &[Row] = &[
-    Item("Barra lateral", Command::ToggleSidebar, Always),
-    Item("Pantalla completa", Command::Fullscreen, Always),
+    Item("native-menu-barra-lateral", Command::ToggleSidebar, Always),
+    Item("settings-pantalla-completa", Command::Fullscreen, Always),
     Separator,
-    Item("Dividir a la derecha", Command::SplitRight, Terminal),
-    Item("Dividir hacia abajo", Command::SplitDown, Terminal),
-    Item("Ampliar o restaurar el panel", Command::TogglePaneZoom, Terminal),
-    Item("Igualar paneles", Command::EqualizePanes, Terminal),
+    Item("pane-dividir-a-la-derecha", Command::SplitRight, Terminal),
+    Item("pane-dividir-hacia-abajo", Command::SplitDown, Terminal),
+    Item("settings-ampliar-o-restaurar-el-panel", Command::TogglePaneZoom, Terminal),
+    Item("native-menu-igualar-paneles", Command::EqualizePanes, Terminal),
     Separator,
-    Item("Aumentar la letra", Command::ZoomIn, Always),
-    Item("Reducir la letra", Command::ZoomOut, Always),
-    Item("Restablecer la letra", Command::ZoomReset, Always),
+    Item("native-menu-aumentar-la-letra", Command::ZoomIn, Always),
+    Item("native-menu-reducir-la-letra", Command::ZoomOut, Always),
+    Item("native-menu-restablecer-la-letra", Command::ZoomReset, Always),
     Separator,
-    Item("Tema oscuro", Command::ThemeDark, Always),
-    Item("Tema claro", Command::ThemeLight, Always),
-    Item("Tema del sistema", Command::ThemeSystem, Always),
+    Item("native-menu-tema-oscuro", Command::ThemeDark, Always),
+    Item("native-menu-tema-claro", Command::ThemeLight, Always),
+    Item("native-menu-tema-del-sistema", Command::ThemeSystem, Always),
 ];
 
 const GO: &[Row] = &[
-    Item("Paleta de comandos", Command::Palette, Always),
+    Item("settings-paleta-de-comandos", Command::Palette, Always),
     Separator,
-    Item("Pestaña siguiente", Command::NextTab, Several),
-    Item("Pestaña anterior", Command::PrevTab, Several),
-    Item("Explorador de archivos de esta conexión", Command::Files, Remote),
-    Item("Contenedores", Command::Containers, Always),
+    Item("native-menu-pestana-siguiente", Command::NextTab, Several),
+    Item("native-menu-pestana-anterior", Command::PrevTab, Several),
+    Item("native-menu-explorador-de-archivos-de-esta", Command::Files, Remote),
+    Item("conn-edit-contenedores", Command::Containers, Always),
     Separator,
     Row::Recents,
 ];
 
-const HELP: &[Row] = &[Item("Atajos de teclado", Command::Shortcuts, Always)];
+const HELP: &[Row] = &[Item("settings-atajos-de-teclado", Command::Shortcuts, Always)];
 
 /// Menú nativo de la aplicación. Vive en el hilo principal, junto a la ventana.
 pub struct NativeMenu {
@@ -121,6 +122,7 @@ pub struct NativeMenu {
     recent_list: Vec<Connection>,
     enabled: Enabled,
     events: Receiver<MenuId>,
+    lang: Lang,
 }
 
 impl NativeMenu {
@@ -131,31 +133,43 @@ impl NativeMenu {
             ctx.request_repaint();
         }));
 
-        let menu = Menu::new();
-        let recents = Submenu::new("Conexiones recientes", false);
         let mut native = Self {
-            _menu: menu.clone(),
+            _menu: Menu::new(),
             entries: Vec::new(),
-            recents: recents.clone(),
+            recents: Submenu::new("", false),
             recent_items: HashMap::new(),
             recent_list: Vec::new(),
             enabled: Enabled::default(),
             events,
+            lang: crate::i18n::current(),
         };
-        for (title, rows) in [("omni-term", APP), ("Archivo", FILE), ("Editar", EDIT), ("Ver", VIEW), ("Ir", GO), ("Ayuda", HELP)] {
+        native.build()?;
+        Ok(native)
+    }
+
+    /// Crea el menú con los textos del idioma actual; se repite cuando el idioma cambia.
+    fn build(&mut self) -> muda::Result<()> {
+        let menu = Menu::new();
+        self.entries.clear();
+        self.recents = Submenu::new(t("native-menu-conexiones-recientes"), false);
+        self.recent_items.clear();
+        self.recent_list.clear();
+        self.lang = crate::i18n::current();
+        for (title, rows) in [("omni-term", APP), (t("native-menu-archivo"), FILE), (t("settings-editar"), EDIT), (t("native-menu-ver"), VIEW), (t("native-menu-ir"), GO), (t("native-menu-ayuda"), HELP)] {
             let submenu = Submenu::new(title, true);
-            native.fill(&submenu, rows)?;
+            self.fill(&submenu, rows)?;
             menu.append(&submenu)?;
         }
         menu.init_for_nsapp();
-        Ok(native)
+        self._menu = menu;
+        Ok(())
     }
 
     fn fill(&mut self, submenu: &Submenu, rows: &[Row]) -> muda::Result<()> {
         for row in rows {
             match row {
                 Item(label, command, need) => {
-                    let item = MenuItem::new(label, true, None);
+                    let item = MenuItem::new(t(label), true, None);
                     submenu.append(&item)?;
                     self.entries.push((item, *command, *need));
                 }
@@ -168,13 +182,18 @@ impl NativeMenu {
 
     /// Activa o desactiva las entradas y rehace las conexiones recientes cuando cambian.
     pub fn sync(&mut self, enabled: Enabled, recents: &[Connection]) -> muda::Result<()> {
-        if enabled != self.enabled {
+        // Con otro idioma el menú se rehace entero, así que hay que volver a aplicar el estado.
+        let rebuilt = self.lang != crate::i18n::current();
+        if rebuilt {
+            self.build()?;
+        }
+        if rebuilt || enabled != self.enabled {
             for (item, _, need) in &self.entries {
                 item.set_enabled(enabled.allows(*need));
             }
             self.enabled = enabled;
         }
-        if recents != self.recent_list.as_slice() {
+        if rebuilt || recents != self.recent_list.as_slice() {
             while self.recents.remove_at(0).is_some() {}
             self.recent_items.clear();
             for connection in recents {

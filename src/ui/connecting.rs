@@ -1,5 +1,6 @@
 //! Conectar: pedir las credenciales que falten y abrir la conexión.
 
+use crate::i18n::t;
 use super::*;
 
 impl App {
@@ -23,7 +24,7 @@ impl App {
             Ok(Some(secret)) => Ok(credentials_for(kind, secret)),
             Ok(None) => Err(Step::Prompt { asking: connection.clone(), kind }),
             Err(SecretError::Locked) => Err(Step::Unlock),
-            Err(error) => Err(Step::Failed(format!("Almacén de secretos: {error}"))),
+            Err(error) => Err(Step::Failed(crate::tf!("connecting-secret-store", "error" => error.to_string()))),
         }
     }
 
@@ -32,10 +33,10 @@ impl App {
         let mut credentials = self.own_credentials(connection)?;
         if let Some(jump_id) = connection.jump {
             if depth >= 4 {
-                return Err(Step::Failed("Demasiados saltos encadenados: revisa que no haya un ciclo".into()));
+                return Err(Step::Failed(t("connecting-demasiados-saltos-encadenados-revi").into()));
             }
             let Some(jump) = self.connections.iter().find(|c| c.id == Some(jump_id)).cloned() else {
-                return Err(Step::Failed("El servidor de salto de esta conexión ya no existe".into()));
+                return Err(Step::Failed(t("connecting-el-servidor-de-salto-de").into()));
             };
             let jump_credentials = self.gather_credentials(&jump, depth + 1)?;
             credentials.jump = Some(Box::new(JumpHost { connection: jump, credentials: jump_credentials }));
@@ -57,32 +58,32 @@ impl App {
         };
         let mut credentials = Credentials::default();
         if let Some(kind) = needs {
-            let what = if kind == SecretKind::Password { "la contraseña" } else { "la passphrase" };
+            let what = if kind == SecretKind::Password { t("connecting-la-contrasena") } else { t("connecting-la-passphrase") };
             if !typed.is_empty() {
                 credentials = credentials_for(kind, Zeroizing::new(typed.to_string()));
             } else if connection.id.is_some() {
                 credentials = match self.own_credentials(connection) {
                     Ok(found) => found,
-                    Err(Step::Prompt { .. }) => return Err(format!("Escribe {what} en el formulario para poder probar.")),
+                    Err(Step::Prompt { .. }) => return Err(crate::tf!("connecting-enter-to-test", "what" => what)),
                     Err(Step::Unlock) => {
-                        return Err("El almacén de secretos está bloqueado: ábrelo antes con una conexión que use contraseña guardada.".into())
+                        return Err(t("connecting-el-almacen-de-secretos-esta").into())
                     }
                     Err(Step::Failed(message)) => return Err(message),
                 };
             } else {
-                return Err(format!("Escribe {what} en el formulario para poder probar."));
+                return Err(crate::tf!("connecting-enter-to-test", "what" => what));
             }
         }
         if let Some(jump_id) = connection.jump {
             let Some(jump) = self.connections.iter().find(|c| c.id == Some(jump_id)).cloned() else {
-                return Err("El servidor de salto ya no existe.".into());
+                return Err(t("connecting-el-servidor-de-salto-ya").into());
             };
             match self.gather_credentials(&jump, 1) {
                 Ok(found) => credentials.jump = Some(Box::new(JumpHost { connection: jump, credentials: found })),
                 Err(Step::Prompt { asking, .. }) => {
-                    return Err(format!("«{}» necesita su contraseña guardada para poder pasar por él.", asking.name))
+                    return Err(crate::tf!("connecting-jump-needs-password", "name" => asking.name.to_string()))
                 }
-                Err(Step::Unlock) => return Err("El almacén de secretos está bloqueado.".into()),
+                Err(Step::Unlock) => return Err(t("connecting-el-almacen-de-secretos-esta-2").into()),
                 Err(Step::Failed(message)) => return Err(message),
             }
         }
@@ -95,7 +96,7 @@ impl App {
         let purpose = if connection.is_files() && matches!(purpose, Purpose::Terminal) { Purpose::Explorer(None, None) } else { purpose };
         if connection.is_engine() {
             if !matches!(purpose, Purpose::Terminal) {
-                self.notify("Un motor de contenedores no tiene explorador de archivos ni paneles");
+                self.notify(t("connecting-un-motor-de-contenedores-no"));
                 return;
             }
             // Volver a abrir el mismo motor lleva a su pestaña en lugar de duplicarla.
@@ -107,7 +108,7 @@ impl App {
         }
         if connection.is_local() {
             if matches!(purpose, Purpose::Explorer(..)) {
-                self.notify("Un terminal local no tiene explorador de archivos");
+                self.notify(t("connecting-un-terminal-local-no-tiene"));
             } else {
                 self.finish_open(connection, Credentials::default(), slot, purpose);
             }
@@ -115,7 +116,7 @@ impl App {
         }
         if connection.is_serial() {
             if matches!(purpose, Purpose::Explorer(..)) {
-                self.notify("Un puerto serie no tiene explorador de archivos");
+                self.notify(t("connecting-un-puerto-serie-no-tiene"));
             } else {
                 self.finish_open(connection, Credentials::default(), slot, purpose);
             }
@@ -141,7 +142,7 @@ impl App {
         if connection.is_telnet() {
             // Telnet no tiene credenciales guardadas ni explorador de archivos.
             if matches!(purpose, Purpose::Explorer(..)) {
-                self.notify("Telnet no tiene explorador de archivos");
+                self.notify(t("connecting-telnet-no-tiene-explorador-de"));
             } else {
                 self.finish_open(connection, Credentials::default(), slot, purpose);
             }
@@ -162,7 +163,7 @@ impl App {
                 }));
             }
             Err(Step::Unlock) => self.ask_unlock(Pending::Open(connection, slot, purpose)),
-            Err(Step::Failed(message)) => self.dialog = Some(Dialog::failure("No se pudo preparar la conexión", message)),
+            Err(Step::Failed(message)) => self.dialog = Some(Dialog::failure(t("connecting-no-se-pudo-preparar-la"), message)),
         }
     }
 
@@ -190,7 +191,7 @@ impl App {
         };
         if let Err(error) = result {
             self.dialog = Some(Dialog::Error(ErrorInfo {
-                title: "No se pudo abrir la conexión".into(),
+                title: t("connecting-no-se-pudo-abrir-la").into(),
                 detail: format!("{error:#}"),
                 retry: Some(retry),
             }));

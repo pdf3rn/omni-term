@@ -90,15 +90,13 @@ fn open_error_message(path: &str, error: &serialport::Error) -> String {
     let lower = text.to_lowercase();
     if raw == Some(std::io::ErrorKind::PermissionDenied) || lower.contains("permission denied") {
         let group = serial_group();
-        format!(
-            "Permiso denegado en {path}.\r\nEn Linux hay que estar en el grupo «{group}»:\r\n  sudo usermod -aG {group} $USER\r\nY volver a iniciar sesión."
-        )
+        crate::tf!("err-serial-permission", "path" => path.to_string(), "group" => group.to_string()).replace('\n', "\r\n")
     } else if matches!(error.kind, serialport::ErrorKind::NoDevice) || raw == Some(std::io::ErrorKind::NotFound) || lower.contains("no such file") {
-        format!("No existe {path}. ¿Está conectado el dispositivo?")
+        crate::tf!("err-serial-missing", "path" => path.to_string())
     } else if lower.contains("busy") || lower.contains("in use") || lower.contains("denied") {
-        format!("{path} está en uso por otro programa.")
+        crate::tf!("err-serial-busy", "path" => path.to_string())
     } else {
-        format!("No se pudo abrir {path}: {text}")
+        crate::tf!("err-serial-open", "path" => path.to_string(), "error" => text.to_string())
     }
 }
 

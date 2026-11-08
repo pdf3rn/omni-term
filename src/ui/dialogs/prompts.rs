@@ -1,5 +1,6 @@
 //! Diálogos pequeños: errores, contraseñas, confirmaciones y avisos.
 
+use crate::i18n::t;
 use super::*;
 
 pub struct SnippetForm {
@@ -28,10 +29,10 @@ impl SnippetForm {
     pub fn to_snippet(&self) -> Result<Snippet, String> {
         let title = self.title.trim();
         if title.is_empty() {
-            return Err("El título es obligatorio".into());
+            return Err(t("prompts-el-titulo-es-obligatorio").into());
         }
         if self.body.trim().is_empty() {
-            return Err("El contenido no puede estar vacío".into());
+            return Err(t("prompts-el-contenido-no-puede-estar").into());
         }
         Ok(Snippet { id: self.id, title: title.into(), tag: self.tag.trim().into(), body: self.body.clone() })
     }
@@ -135,10 +136,10 @@ impl PasswordForm {
     pub fn to_saved(&self) -> Result<crate::data::store::SavedPassword, String> {
         let name = self.name.trim();
         if name.is_empty() {
-            return Err("El nombre es obligatorio".into());
+            return Err(t("prompts-el-nombre-es-obligatorio").into());
         }
         if self.id.is_none() && self.secret.is_empty() {
-            return Err("Escribe la contraseña".into());
+            return Err(t("prompts-escribe-la-contrasena").into());
         }
         Ok(crate::data::store::SavedPassword { id: self.id, name: name.into(), user: self.user.trim().into() })
     }
@@ -189,9 +190,9 @@ pub enum ErrorAction {
 
 /// Diálogo de error común a toda la app: detalle seleccionable, «Copiar detalle» y «Reintentar».
 pub fn error_dialog(ctx: &egui::Context, info: &ErrorInfo) -> ErrorAction {
-    let mut spec = Spec::new(info.title.clone()).width(440.0).cancel("Cerrar").extra("Copiar detalle").icon(DialogIcon::Error);
+    let mut spec = Spec::new(info.title.clone()).width(440.0).cancel(t("pane-cerrar")).extra(t("prompts-copiar-detalle")).icon(DialogIcon::Error);
     if info.retry.is_some() {
-        spec = spec.accept("Reintentar");
+        spec = spec.accept(t("view-reintentar"));
     }
     match shell(ctx, spec, |ui| {
         egui::ScrollArea::vertical().max_height(140.0).auto_shrink([false, true]).show(ui, |ui| {
@@ -261,15 +262,15 @@ pub const MIN_MASTER_KEY: usize = 8;
 
 pub(super) fn snippet_body(ui: &mut egui::Ui, form: &mut SnippetForm) -> bool {
     egui::Grid::new("snippet_form").num_columns(2).spacing([10.0, 8.0]).show(ui, |ui| {
-        ui.label("Título");
+        ui.label(t("prompts-titulo"));
         ui.add(TextEdit::singleline(&mut form.title).desired_width(f32::INFINITY));
         ui.end_row();
-        ui.label("Etiqueta");
+        ui.label(t("conn-edit-etiqueta"));
         ui.add(TextEdit::singleline(&mut form.tag).hint_text("opcional").desired_width(200.0));
         ui.end_row();
     });
-    ui.label("Contenido");
-    ui.label(RichText::new("Usa {{variable}} o {{variable=valor por defecto}}; se pedirán al insertar.").small().color(theme::subtext()));
+    ui.label(t("prompts-contenido"));
+    ui.label(RichText::new(t("prompts-variables-help")).small().color(theme::subtext()));
     ui.add(
         TextEdit::multiline(&mut form.body)
             .font(egui::TextStyle::Monospace)
@@ -283,19 +284,19 @@ pub(super) fn snippet_body(ui: &mut egui::Ui, form: &mut SnippetForm) -> bool {
 pub(super) fn password_body(ui: &mut egui::Ui, form: &mut PasswordForm) -> bool {
     let mut submitted = false;
     egui::Grid::new("password_form").num_columns(2).spacing([10.0, 8.0]).show(ui, |ui| {
-        ui.label("Nombre");
+        ui.label(t("conn-edit-nombre"));
         let name = ui.add(TextEdit::singleline(&mut form.name).desired_width(f32::INFINITY));
         if std::mem::take(&mut form.focus) {
             name.request_focus();
         }
         submitted |= entered(ui, &name);
         ui.end_row();
-        ui.label("Usuario");
+        ui.label(t("conn-edit-usuario"));
         let user = ui.add(TextEdit::singleline(&mut form.user).hint_text("opcional").desired_width(f32::INFINITY));
         submitted |= entered(ui, &user);
         ui.end_row();
-        ui.label("Contraseña");
-        let hint = if form.id.is_some() { "vacía: no se cambia" } else { "" };
+        ui.label(t("dialogs-contrasena"));
+        let hint = if form.id.is_some() { t("prompts-vacia-no-se-cambia") } else { "" };
         let field = secret_field(ui, &mut form.secret, &mut form.reveal, hint);
         submitted |= entered(ui, &field);
         ui.end_row();
@@ -318,7 +319,7 @@ pub(super) fn vars_body(ui: &mut egui::Ui, prompt: &mut VarsPrompt) -> bool {
         }
     });
     ui.add_space(theme::space::XS);
-    ui.label(RichText::new("Resultado").small().color(theme::subtext()));
+    ui.label(RichText::new(t("prompts-resultado")).small().color(theme::subtext()));
     egui::ScrollArea::vertical().max_height(120.0).show(ui, |ui| {
         ui.label(RichText::new(prompt.rendered()).monospace().color(theme::subtext()));
     });
@@ -328,31 +329,31 @@ pub(super) fn vars_body(ui: &mut egui::Ui, prompt: &mut VarsPrompt) -> bool {
 pub(super) fn secret_body(ui: &mut egui::Ui, prompt: &mut SecretPrompt) -> bool {
     let field = secret_field(ui, &mut prompt.input, &mut prompt.reveal, "");
     field.request_focus();
-    crate::ui::kit::switch_labeled(ui, &mut prompt.save, "Guardar en el almacén de secretos");
-    ui.label(RichText::new("Si no la guardas, se recuerda hasta cerrar omni-term.").small().color(theme::subtext()));
+    crate::ui::kit::switch_labeled(ui, &mut prompt.save, t("prompts-guardar-en-el-almacen-de"));
+    ui.label(RichText::new(t("prompts-si-no-la-guardas-se")).small().color(theme::subtext()));
     entered(ui, &field)
 }
 
 pub(super) fn unlock_body(ui: &mut egui::Ui, prompt: &mut UnlockPrompt) -> bool {
     if prompt.creating {
-        ui.label("No hay keyring del sistema disponible. Elige una clave maestra para cifrar tus contraseñas.");
-        ui.label(RichText::new("Si la olvidas no se puede recuperar: tendrás que borrar los secretos y volver a introducirlos.").color(theme::subtext()));
+        ui.label(t("prompts-no-hay-keyring-del-sistema"));
+        ui.label(RichText::new(t("prompts-si-la-olvidas-no-se")).color(theme::subtext()));
     } else {
-        ui.label("Introduce tu clave maestra.");
+        ui.label(t("prompts-introduce-tu-clave-maestra"));
     }
-    let field = secret_field(ui, &mut prompt.input, &mut prompt.reveal, "clave maestra");
+    let field = secret_field(ui, &mut prompt.input, &mut prompt.reveal, t("prompts-clave-maestra"));
     if std::mem::take(&mut prompt.focus) {
         field.request_focus();
     }
     let mut submitted = entered(ui, &field);
     if prompt.creating {
-        let confirm = secret_field(ui, &mut prompt.confirm, &mut prompt.reveal, "repite la clave");
+        let confirm = secret_field(ui, &mut prompt.confirm, &mut prompt.reveal, t("prompts-repite-la-clave"));
         submitted |= entered(ui, &confirm);
         let length = prompt.input.chars().count();
         if length > 0 && length < MIN_MASTER_KEY {
-            ui.label(RichText::new(format!("Usa al menos {MIN_MASTER_KEY} caracteres ({length} ahora).")).small().color(theme::red()));
+            ui.label(RichText::new(crate::tf!("prompts-master-key-length", "min" => MIN_MASTER_KEY, "n" => length)).small().color(theme::red()));
         } else if !prompt.confirm.is_empty() && prompt.input != prompt.confirm {
-            ui.label(RichText::new("Las dos claves no coinciden.").small().color(theme::red()));
+            ui.label(RichText::new(t("prompts-las-dos-claves-no-coinciden")).small().color(theme::red()));
         }
     }
     error_label(ui, &prompt.error);
@@ -374,33 +375,33 @@ pub(super) fn prompt_body(ui: &mut egui::Ui, request: &PromptRequest, answers: &
 }
 
 pub(super) fn host_key_body(ui: &mut egui::Ui, request: &HostKeyRequest) -> bool {
-    ui.label(format!("No se puede verificar la autenticidad de {}:{}.", request.host, request.port));
+    ui.label(crate::tf!("prompts-host-unverified", "host" => request.host.to_string(), "port" => request.port as i64));
     ui.add_space(theme::space::XS);
     ui.label(RichText::new(format!("{} {}", request.algorithm, request.fingerprint)).monospace());
     ui.add_space(theme::space::XS);
-    ui.label("Si confías en él, se añadirá a ~/.ssh/known_hosts.");
+    ui.label(t("prompts-si-confias-en-el-se"));
     false
 }
 
 pub(super) fn host_key_changed_body(ui: &mut egui::Ui, change: &HostKeyChange) -> bool {
     ui.label(
-        RichText::new("omni-term no se ha conectado. Puede que alguien se esté haciendo pasar por el servidor, o que el servidor se haya reinstalado.")
+        RichText::new(t("prompts-omni-term-no-se-ha"))
             .color(theme::red()),
     );
     ui.add_space(theme::space::XS);
     egui::Grid::new("host_key_changed").num_columns(2).spacing([14.0, 6.0]).show(ui, |ui| {
-        ui.label("Servidor");
+        ui.label(t("conn-edit-servidor"));
         ui.label(RichText::new(format!("{}:{}", change.host, change.port)).monospace());
         ui.end_row();
-        ui.label(format!("Guardada (línea {})", change.line));
-        ui.label(RichText::new(change.stored.as_deref().unwrap_or("desconocida")).monospace().color(theme::subtext()));
+        ui.label(crate::tf!("prompts-stored-line", "n" => change.line as i64));
+        ui.label(RichText::new(change.stored.as_deref().unwrap_or(t("prompts-unknown"))).monospace().color(theme::subtext()));
         ui.end_row();
-        ui.label("Recibida");
+        ui.label(t("prompts-recibida"));
         ui.label(RichText::new(format!("{} ({})", change.received, change.algorithm)).monospace());
         ui.end_row();
     });
     ui.add_space(theme::space::XS);
-    ui.label("Si sabes que el servidor cambió de verdad, borra la huella antigua y vuelve a conectar:");
+    ui.label(t("prompts-si-sabes-que-el-servidor"));
     ui.label(RichText::new(change.forget_command()).monospace().color(theme::subtext()));
     false
 }

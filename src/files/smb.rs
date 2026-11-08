@@ -1,5 +1,6 @@
 //! SMB 2/3 sobre la crate `smb` (Rust puro, sin SMB1).
 
+use crate::i18n::t;
 use std::io;
 use std::sync::Arc;
 use std::time::Duration;
@@ -57,7 +58,7 @@ impl SmbFs {
         let args = FileCreateArgs::make_open_existing(FileAccessMask::new().with_generic_read(true));
         match self.open(path, &args).await? {
             Resource::Directory(dir) => Ok(Arc::new(dir)),
-            _ => anyhow::bail!("{path} no es una carpeta"),
+            _ => anyhow::bail!(crate::tf!("err-smb-not-folder", "path" => path.to_string())),
         }
     }
 
@@ -100,7 +101,7 @@ impl SmbFs {
                 dir.set_info(FileDispositionInformation::default()).await.map_err(failure).with_context(|| format!("eliminando {path}"))?;
                 let _ = dir.close().await;
             }
-            _ => anyhow::bail!("{path} no se puede eliminar"),
+            _ => anyhow::bail!(crate::tf!("err-smb-no-delete", "path" => path.to_string())),
         }
         Ok(())
     }
@@ -156,7 +157,7 @@ impl RemoteFs for SmbFs {
                 dir.set_info(info).await.map_err(failure).with_context(|| format!("renombrando {from}"))?;
                 let _ = dir.close().await;
             }
-            _ => anyhow::bail!("{from} no se puede renombrar"),
+            _ => anyhow::bail!(crate::tf!("err-smb-no-rename", "path" => from.to_string())),
         }
         Ok(())
     }
@@ -193,7 +194,7 @@ impl RemoteFs for SmbFs {
         let args = FileCreateArgs::make_open_existing(FileAccessMask::new().with_generic_read(true));
         let file = match self.open(path, &args).await? {
             Resource::File(file) => file,
-            _ => anyhow::bail!("{path} no es un archivo"),
+            _ => anyhow::bail!(crate::tf!("err-smb-not-file", "path" => path.to_string())),
         };
         let (mut task_side, user_side) = tokio::io::duplex(4 * CHUNK);
         let task: JoinHandle<io::Result<()>> = tokio::spawn(async move {
@@ -229,7 +230,7 @@ impl RemoteFs for SmbFs {
         };
         let file = match self.open(path, &args).await.with_context(|| format!("creando {path}"))? {
             Resource::File(file) => file,
-            _ => anyhow::bail!("{path} no es un archivo"),
+            _ => anyhow::bail!(crate::tf!("err-smb-not-file", "path" => path.to_string())),
         };
         let (mut task_side, user_side) = tokio::io::duplex(4 * CHUNK);
         let task: JoinHandle<io::Result<()>> = tokio::spawn(async move {
@@ -260,7 +261,7 @@ impl RemoteFs for SmbFs {
 
 pub async fn connect(connection: &Connection, credentials: &Credentials) -> anyhow::Result<Arc<dyn RemoteFs>> {
     if connection.smb_share().trim_matches(['\\', '/']).is_empty() {
-        anyhow::bail!("Falta el recurso compartido: edita la conexión e indica su nombre");
+        anyhow::bail!(t("err-smb-no-share"));
     }
     let server = if connection.port == 445 { connection.host.clone() } else { format!("{}:{}", connection.host, connection.port) };
     let base = UncPath::new(&server).map_err(failure)?.with_share(connection.smb_share()).map_err(failure)?;
@@ -272,7 +273,7 @@ pub async fn connect(connection: &Connection, credentials: &Credentials) -> anyh
         let mut config = ClientConfig::default();
         config.connection.smb2_only_negotiate = smb2_only;
         let client = Client::new(config);
-        let attempt = tokio::time::timeout(CONNECT_TIMEOUT, client.share_connect(&base, &user, password.clone())).await.context("tiempo de espera agotado")?;
+        let attempt = tokio::time::timeout(CONNECT_TIMEOUT, client.share_connect(&base, &user, password.clone())).await.context(t("err-timeout"))?;
         match attempt {
             Ok(()) => return Ok(Arc::new(SmbFs { client: Some(Arc::new(client)), base, runtime: tokio::runtime::Handle::current() })),
             Err(error) => {
@@ -285,6 +286,6 @@ pub async fn connect(connection: &Connection, credentials: &Credentials) -> anyh
             }
         }
     }
-    Err(anyhow::anyhow!("{}", last_error.unwrap_or_default())).context("el servidor rechazó la conexión (revisa usuario, contraseña y recurso)")
+    Err(anyhow::anyhow!("{}", last_error.unwrap_or_default())).context(t("err-smb-rejected"))
 }
 

@@ -1,5 +1,6 @@
 //! Resultado de los diálogos y de la página de ajustes.
 
+use crate::i18n::t;
 use super::*;
 
 impl App {
@@ -35,7 +36,7 @@ impl App {
                     let saved = self.store.lock().unwrap().save_connection(&connection);
                     match saved {
                         Err(error) => {
-                            form.errors.general = Some(format!("No se pudo guardar: {error:#}"));
+                            form.errors.general = Some(crate::tf!("common-save-failed", "error" => format!("{error:#}")));
                             self.dialog = Some(Dialog::Edit(form));
                         }
                         Ok(id) => {
@@ -134,7 +135,7 @@ impl App {
             (Outcome::Delete, Dialog::ConfirmReset(then)) => {
                 if let Some(master) = self.active_master() {
                     if let Err(error) = master.reset() {
-                        self.dialog = Some(Dialog::failure("No se pudieron borrar los secretos", format!("{error:#}")));
+                        self.dialog = Some(Dialog::failure(t("dialog-flow-no-se-pudieron-borrar-los"), format!("{error:#}")));
                         return;
                     }
                 }
@@ -154,9 +155,9 @@ impl App {
             (Outcome::Submit, Dialog::Unlock(mut prompt)) => {
                 let Some(master) = self.active_master() else { return };
                 if prompt.input.is_empty() {
-                    prompt.error = Some("Escribe la clave maestra".into());
+                    prompt.error = Some(t("dialog-flow-escribe-la-clave-maestra").into());
                 } else if prompt.creating && prompt.input != prompt.confirm {
-                    prompt.error = Some("Las claves no coinciden".into());
+                    prompt.error = Some(t("dialog-flow-las-claves-no-coinciden").into());
                 } else {
                     match master.unlock(&prompt.input) {
                         Ok(()) => {
@@ -168,7 +169,7 @@ impl App {
                             }
                             return;
                         }
-                        Err(SecretError::WrongPassword) => prompt.error = Some("Clave maestra incorrecta".into()),
+                        Err(SecretError::WrongPassword) => prompt.error = Some(t("dialog-flow-clave-maestra-incorrecta").into()),
                         Err(error) => prompt.error = Some(error.to_string()),
                     }
                 }

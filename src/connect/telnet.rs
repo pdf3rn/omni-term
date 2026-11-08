@@ -1,5 +1,6 @@
 //! Conexiones Telnet: negociación mínima del protocolo, eco local y codificaciones antiguas.
 
+use crate::i18n::t;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
@@ -303,12 +304,12 @@ pub fn spawn(handle: &tokio::runtime::Handle, connection: Connection, size: (usi
         let stream = match tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(&address)).await {
             Ok(Ok(stream)) => stream,
             Ok(Err(error)) => {
-                feed.feed(red(&format!("No se pudo conectar a {address}: {error}")).as_bytes());
+                feed.feed(red(&crate::tf!("err-telnet-connect", "address" => address.to_string(), "error" => error.to_string())).as_bytes());
                 feed.disconnect();
                 return;
             }
             Err(_) => {
-                feed.feed(red(&format!("Tiempo de espera agotado al conectar a {address}")).as_bytes());
+                feed.feed(red(&crate::tf!("err-telnet-timeout", "address" => address.to_string())).as_bytes());
                 feed.disconnect();
                 return;
             }
@@ -324,7 +325,7 @@ pub fn spawn(handle: &tokio::runtime::Handle, connection: Connection, size: (usi
                         if received_any {
                             feed.close();
                         } else {
-                            feed.feed(red("El servidor cerró la conexión.").as_bytes());
+                            feed.feed(red(t("err-telnet-closed")).as_bytes());
                             feed.disconnect();
                         }
                         return;
@@ -341,7 +342,7 @@ pub fn spawn(handle: &tokio::runtime::Handle, connection: Connection, size: (usi
                         }
                     }
                     Err(error) => {
-                        feed.feed(red(&format!("Conexión perdida: {error}")).as_bytes());
+                        feed.feed(red(&crate::tf!("err-connection-lost", "error" => error.to_string())).as_bytes());
                         feed.disconnect();
                         return;
                     }

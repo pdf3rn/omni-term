@@ -2,6 +2,7 @@
 
 use crate::data::store::Store;
 use crate::data::term_theme;
+use crate::i18n::Lang;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ThemeChoice {
@@ -27,10 +28,10 @@ pub enum AccentChoice {
 
 impl AccentChoice {
     pub const ALL: [(AccentChoice, &'static str); 4] = [
-        (AccentChoice::Blue, "Azul"),
-        (AccentChoice::Gray, "Gris"),
-        (AccentChoice::Green, "Verde"),
-        (AccentChoice::Mauve, "Malva"),
+        (AccentChoice::Blue, "accent-blue"),
+        (AccentChoice::Gray, "accent-gray"),
+        (AccentChoice::Green, "accent-green"),
+        (AccentChoice::Mauve, "accent-mauve"),
     ];
 
     pub fn index(self) -> u8 {
@@ -109,6 +110,8 @@ pub struct Settings {
     /// Familia instalada elegida para el terminal; sin ella, JetBrains Mono (incluida).
     pub font_family: Option<String>,
     pub theme: ThemeChoice,
+    /// Idioma elegido; sin elegir, el del sistema.
+    pub language: Option<Lang>,
     pub font_size: f32,
     pub cursor: CursorChoice,
     pub blink: bool,
@@ -161,6 +164,7 @@ impl Default for Settings {
             notify_after: 15,
             font_family: None,
             theme: ThemeChoice::Dark,
+            language: None,
             font_size: DEFAULT_FONT_SIZE,
             cursor: CursorChoice::Block,
             blink: false,
@@ -198,6 +202,7 @@ impl Settings {
                 Some("dark") => ThemeChoice::Dark,
                 _ => defaults.theme,
             },
+            language: text(store, "setting.language").and_then(|code| Lang::from_code(&code)),
             font_size: text(store, "font_size")
                 .and_then(|t| t.parse::<f32>().ok())
                 .filter(|size| size.is_finite())
@@ -240,6 +245,7 @@ impl Settings {
         store.set_meta("setting.notify_after", self.notify_after.to_string().as_bytes())?;
         store.set_meta("setting.font_family", self.font_family.as_deref().unwrap_or("").as_bytes())?;
         store.set_meta("setting.theme", theme.as_bytes())?;
+        store.set_meta("setting.language", self.language.map_or("auto", Lang::code).as_bytes())?;
         store.set_meta("font_size", self.font_size.to_string().as_bytes())?;
         store.set_meta("setting.cursor", cursor.as_bytes())?;
         store.set_meta("setting.blink", if self.blink { b"1" } else { b"0" })?;
@@ -276,6 +282,7 @@ mod tests {
             notify_after: 45,
             font_family: Some("Fira Code".into()),
             theme: ThemeChoice::Light,
+            language: Some(Lang::En),
             font_size: 18.0,
             cursor: CursorChoice::Beam,
             blink: true,

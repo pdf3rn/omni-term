@@ -1,5 +1,6 @@
 //! Pestaña «Contenedores»: lista de Docker o Podman con iniciar, detener, reiniciar y abrir un terminal.
 
+use crate::i18n::t;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -196,10 +197,10 @@ impl ContainersView {
         self.runtime.spawn(async move {
             let result = Client::new(endpoint).act(&id, action).await;
             let message = match (&result, action) {
-                (Ok(()), Action::Start) => format!("«{name}» iniciado"),
-                (Ok(()), Action::Stop) => format!("«{name}» detenido"),
-                (Ok(()), Action::Restart) => format!("«{name}» reiniciado"),
-                (Err(error), _) => format!("No se pudo con «{name}»: {error}"),
+                (Ok(()), Action::Start) => crate::tf!("containers-started", "name" => name.to_string()),
+                (Ok(()), Action::Stop) => crate::tf!("containers-stopped", "name" => name.to_string()),
+                (Ok(()), Action::Restart) => crate::tf!("containers-restarted", "name" => name.to_string()),
+                (Err(error), _) => crate::tf!("containers-action-failed", "name" => name.to_string(), "error" => error.to_string()),
             };
             busy.lock().unwrap().retain(|b| *b != id);
             messages.lock().unwrap().push(message);
@@ -241,10 +242,10 @@ impl ContainersView {
             ui.label(RichText::new(error).color(theme::red()));
             // Con la sesión SSH caída hay que reconectar; si no, basta con volver a intentarlo.
             if self.link().is_some_and(|link| link.is_lost()) {
-                if ui.button("Reconectar").hand().clicked() {
+                if ui.button(t("view-reconectar")).hand().clicked() {
                     self.reconnect();
                 }
-            } else if ui.button("Reintentar").hand().clicked() {
+            } else if ui.button(t("view-reintentar")).hand().clicked() {
                 if endpoints.is_empty() {
                     self.redetect();
                 } else {
@@ -256,8 +257,8 @@ impl ContainersView {
         if self.detecting.load(Ordering::SeqCst) {
             ui.add_space(theme::space::L);
             let text = match self.link() {
-                Some(link) => format!("Conectando con {}…", link.name()),
-                None => "Buscando motores…".to_string(),
+                Some(link) => crate::tf!("containers-connecting", "name" => link.name().to_string()),
+                None => t("view-buscando-motores").to_string(),
             };
             ui.label(RichText::new(text).color(theme::subtext()));
             return None;
@@ -268,7 +269,7 @@ impl ContainersView {
         }
         if !loaded {
             ui.add_space(theme::space::L);
-            ui.label(RichText::new("Cargando contenedores…").color(theme::subtext()));
+            ui.label(RichText::new(t("view-cargando-contenedores")).color(theme::subtext()));
             return None;
         }
 
@@ -282,7 +283,7 @@ impl ContainersView {
 
         if shown.is_empty() {
             ui.add_space(theme::space::L);
-            let text = if containers.is_empty() { "No hay contenedores." } else { "Ningún contenedor coincide." };
+            let text = if containers.is_empty() { t("view-no-hay-contenedores") } else { t("view-ningun-contenedor-coincide") };
             ui.label(RichText::new(text).color(theme::subtext()));
             return None;
         }
@@ -320,11 +321,11 @@ impl ContainersView {
                 ui.label(RichText::new(endpoint.engine.name()).color(theme::subtext()));
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui.add(egui::Button::new(crate::ui::icons::REFRESH).frame(false)).on_hover_text("Actualizar ahora").hand().clicked() {
+                if ui.add(egui::Button::new(crate::ui::icons::REFRESH).frame(false)).on_hover_text(t("view-actualizar-ahora")).hand().clicked() {
                     self.refresh.store(true, Ordering::SeqCst);
                 }
-                crate::ui::kit::switch_labeled(ui, &mut self.show_stopped, "Mostrar apagados");
-                crate::ui::kit::search_field(ui, &mut self.search, "Buscar", 180.0);
+                crate::ui::kit::switch_labeled(ui, &mut self.show_stopped, t("view-mostrar-apagados"));
+                crate::ui::kit::search_field(ui, &mut self.search, t("view-buscar"), 180.0);
             });
         });
     }
@@ -332,20 +333,20 @@ impl ContainersView {
     fn empty(&mut self, ui: &mut Ui) {
         ui.add_space(theme::space::XXL);
         let title = match self.link() {
-            Some(link) => format!("No se encontró Docker ni Podman en {}", link.name()),
-            None => "No se encontró Docker ni Podman".to_string(),
+            Some(link) => crate::tf!("containers-no-engine", "name" => link.name().to_string()),
+            None => t("view-no-se-encontro-docker-ni").to_string(),
         };
         ui.label(RichText::new(title).font(FontId::new(theme::size::HEADING, crate::ui::strong_family())).color(theme::text()));
         let places = if self.link().is_some() {
-            "Inicia el motor en el servidor y vuelve a buscar. Se buscan DOCKER_HOST, /var/run/docker.sock, los sockets rootless del usuario y los de Podman."
+            t("view-inicia-el-motor-en-el")
         } else if cfg!(windows) {
             "Inicia Docker Desktop o la máquina de Podman y vuelve a buscar. Se busca la tubería de DOCKER_HOST, \\\\.\\pipe\\docker_engine y las de podman-machine."
         } else {
-            "Inicia el motor y vuelve a buscar. Se buscan sus sockets en /var/run/docker.sock, en DOCKER_HOST y en el directorio de ejecución del usuario."
+            t("view-inicia-el-motor-y-vuelve")
         };
         ui.label(RichText::new(places).color(theme::subtext()));
         ui.add_space(theme::space::XS);
-        if ui.button("Buscar de nuevo").hand().clicked() {
+        if ui.button(t("view-buscar-de-nuevo")).hand().clicked() {
             self.redetect();
         }
     }
@@ -357,20 +358,20 @@ impl ContainersView {
         let mut buttons = ui.new_child(UiBuilder::new().max_rect(rect.shrink2(Vec2::new(10.0, 0.0))).layout(Layout::right_to_left(Align::Center)));
         buttons.spacing_mut().item_spacing.x = 6.0;
         if container.is_running() {
-            if IconButton::stop().enabled(!working).show(&mut buttons).on_hover_text("Detener").clicked() {
+            if IconButton::stop().enabled(!working).show(&mut buttons).on_hover_text(t("view-detener")).clicked() {
                 request = Some(Request::Confirm(endpoint.clone(), container.clone(), Action::Stop));
             }
-            if IconButton::new(crate::ui::icons::REFRESH).enabled(!working).show(&mut buttons).on_hover_text("Reiniciar").clicked() {
+            if IconButton::new(crate::ui::icons::REFRESH).enabled(!working).show(&mut buttons).on_hover_text(t("view-reiniciar")).clicked() {
                 request = Some(Request::Confirm(endpoint.clone(), container.clone(), Action::Restart));
             }
-            if IconButton::new(crate::ui::icons::TERMINAL).enabled(!working).show(&mut buttons).on_hover_text("Abrir un terminal").clicked() {
+            if IconButton::new(crate::ui::icons::TERMINAL).enabled(!working).show(&mut buttons).on_hover_text(t("view-abrir-un-terminal")).clicked() {
                 request = Some(Request::Terminal(endpoint.clone(), container.clone()));
             }
         } else {
-            if IconButton::new(crate::ui::icons::PLAY).enabled(!working).show(&mut buttons).on_hover_text("Iniciar").clicked() {
+            if IconButton::new(crate::ui::icons::PLAY).enabled(!working).show(&mut buttons).on_hover_text(t("view-iniciar")).clicked() {
                 self.act(endpoint.clone(), container, Action::Start);
             }
-            IconButton::new(crate::ui::icons::TERMINAL).enabled(false).show(&mut buttons).on_hover_text("Inicia el contenedor para abrir un terminal");
+            IconButton::new(crate::ui::icons::TERMINAL).enabled(false).show(&mut buttons).on_hover_text(t("view-inicia-el-contenedor-para-abrir"));
         }
         let text_right = buttons.min_rect().min.x - 12.0;
 
@@ -381,7 +382,7 @@ impl ContainersView {
         } else {
             theme::subtext()
         };
-        let status = if working { "Procesando…".to_string() } else { container.status.clone() };
+        let status = if working { t("view-procesando").to_string() } else { container.status.clone() };
         let mut detail = vec![container.image.clone(), status];
         if !container.ports.is_empty() {
             detail.push(container.ports.clone());

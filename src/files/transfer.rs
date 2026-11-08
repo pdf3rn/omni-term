@@ -1,5 +1,6 @@
 //! Transferencias SFTP en segundo plano: subir y bajar archivos y carpetas con progreso y cancelación.
 
+use crate::i18n::t;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
@@ -342,9 +343,9 @@ fn describe(paths: impl Iterator<Item = String>) -> String {
         .map(|p| p.trim_end_matches(['/', '\\']).rsplit(['/', '\\']).next().unwrap_or("").to_string())
         .collect();
     match names.as_slice() {
-        [] => "Transferencia".to_string(),
+        [] => t("explorer-transfers").to_string(),
         [one] => one.clone(),
-        [first, rest @ ..] => format!("{first} y {} más", rest.len()),
+        [first, rest @ ..] => crate::tf!("transfer-and-more", "first" => first.to_string(), "n" => rest.len()),
     }
 }
 

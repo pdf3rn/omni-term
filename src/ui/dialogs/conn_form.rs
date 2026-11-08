@@ -1,13 +1,14 @@
 //! Modelo del formulario de conexión: campos, validación y conversión a `Connection`.
 
+use crate::i18n::t;
 use super::*;
 
 /// Atajos de entorno: nombre del botón, etiqueta que se guarda y color de identidad.
 pub(super) const ENVIRONMENTS: [(&str, &str, u8); 4] = [
-    ("Producción", "producción", 0),
-    ("Staging", "staging", 1),
-    ("Desarrollo", "desarrollo", 3),
-    ("Personal", "personal", 4),
+    ("conn-form-produccion", "producción", 0),
+    ("conn-form-staging", "staging", 1),
+    ("conn-form-desarrollo", "desarrollo", 3),
+    ("conn-form-personal", "personal", 4),
 ];
 
 pub struct ForwardRow {
@@ -40,35 +41,35 @@ impl ForwardRow {
     }
 
     pub(super) fn to_forward(&self) -> Result<Forward, String> {
-        let port = |text: &str, what: &str| -> Result<u16, String> {
+        let port = |text: &str, message: &'static str| -> Result<u16, String> {
             match text.trim().parse::<u16>() {
                 Ok(port) if port > 0 => Ok(port),
-                _ => Err(format!("El puerto {what} de un túnel debe estar entre 1 y 65535")),
+                _ => Err(t(message).to_string()),
             }
         };
         let bind_host = self.bind_host.trim();
         if bind_host.is_empty() {
-            return Err("Cada túnel necesita una dirección de escucha".into());
+            return Err(t("conn-form-cada-tunel-necesita-una-direccion").into());
         }
         if self.kind == ForwardKind::Dynamic {
             return Ok(Forward {
                 kind: self.kind,
                 bind_host: bind_host.into(),
-                bind_port: port(&self.bind_port, "de escucha")?,
+                bind_port: port(&self.bind_port, "conn-form-bind-port-invalid")?,
                 dest_host: String::new(),
                 dest_port: 0,
             });
         }
         let dest_host = self.dest_host.trim();
         if dest_host.is_empty() {
-            return Err("Cada túnel necesita dirección de destino".into());
+            return Err(t("conn-form-cada-tunel-necesita-direccion-de").into());
         }
         Ok(Forward {
             kind: self.kind,
             bind_host: bind_host.into(),
-            bind_port: port(&self.bind_port, "de escucha")?,
+            bind_port: port(&self.bind_port, "conn-form-bind-port-invalid")?,
             dest_host: dest_host.into(),
-            dest_port: port(&self.dest_port, "de destino")?,
+            dest_port: port(&self.dest_port, "conn-form-dest-port-invalid")?,
         })
     }
 }
@@ -316,35 +317,35 @@ impl ConnForm {
         let host = self.host.trim().to_string();
         let user = self.user.trim().to_string();
         if name.is_empty() {
-            errors.name = Some("Pon un nombre para reconocerla".into());
+            errors.name = Some(t("conn-form-pon-un-nombre-para-reconocerla").into());
         }
         if self.local {
             if !crate::connect::local::program_exists(&host) {
-                errors.host = Some("No se encuentra ese intérprete".into());
+                errors.host = Some(t("conn-form-no-se-encuentra-ese-interprete").into());
             }
             if crate::connect::local::split_args(&self.local_args).is_err() {
-                errors.user = Some("Falta cerrar unas comillas".into());
+                errors.user = Some(t("conn-form-falta-cerrar-unas-comillas").into());
             }
             if !crate::connect::local::dir_exists(&self.local_cwd) {
-                errors.cwd = Some("Esa carpeta no existe".into());
+                errors.cwd = Some(t("conn-form-esa-carpeta-no-existe").into());
             }
         }
         if host.is_empty() && !self.adb && !self.local && !self.engine {
-            errors.host = Some(if self.serial { "Indica el puerto, por ejemplo /dev/ttyUSB0" } else { "Indica el servidor" }.into());
+            errors.host = Some(if self.serial { t("conn-form-indica-el-puerto-por-ejemplo") } else { t("conn-form-indica-el-servidor") }.into());
         }
         let mut baud = 0;
         if self.serial {
             match self.baud.trim().parse::<u32>() {
                 Ok(value) if value > 0 => baud = value,
-                _ => errors.port = Some("Una velocidad mayor que 0".into()),
+                _ => errors.port = Some(t("conn-form-una-velocidad-mayor-que-0").into()),
             }
         }
         let user_needed = self.ssh_like() || self.files == 3 || (self.files == 2 && !self.ftp_anonymous);
         if user.is_empty() && user_needed {
-            errors.user = Some("Indica el usuario".into());
+            errors.user = Some(t("conn-form-indica-el-usuario").into());
         }
         if self.files == 3 && self.smb_share.trim().trim_matches(['\\', '/']).is_empty() {
-            errors.share = Some("Indica el recurso compartido".into());
+            errors.share = Some(t("conn-form-indica-el-recurso-compartido").into());
         }
         let port = if self.serial || self.adb || self.local || self.engine {
             0
@@ -352,14 +353,14 @@ impl ConnForm {
             match self.port.trim().parse::<u16>() {
                 Ok(port) if port > 0 => port,
                 _ => {
-                    errors.port = Some("Un número entre 1 y 65535".into());
+                    errors.port = Some(t("conn-form-un-numero-entre-1-y").into());
                     0
                 }
             }
         };
         let key_path = self.key_path.trim().to_string();
         if self.auth == Auth::Key && key_path.is_empty() {
-            errors.key_path = Some("Indica la ruta de la llave privada".into());
+            errors.key_path = Some(t("conn-form-indica-la-ruta-de-la").into());
         }
         let mut forwards = Vec::new();
         for row in self.forwards.iter().filter(|_| self.is_ssh()) {

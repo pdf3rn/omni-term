@@ -1,5 +1,6 @@
 //! Lectura y edición del archivo `known_hosts` de OpenSSH.
 
+use crate::i18n::t;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -163,7 +164,7 @@ pub fn remove(path: &Path, entry: &KnownHost) -> std::io::Result<usize> {
         lines
             .iter()
             .position(|l| *l == entry.raw)
-            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "la huella ya no está en known_hosts"))?
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, t("err-known-hosts-gone")))?
     };
     lines.remove(position);
     write_lines(path, &lines)?;

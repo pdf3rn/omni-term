@@ -3,6 +3,7 @@
 //! Una conexión de control sirve para listar, crear, renombrar y borrar; cada transferencia abre
 //! su propia conexión para no bloquear la navegación mientras se sube o baja un archivo.
 
+use crate::i18n::t;
 use std::io;
 use std::net::ToSocketAddrs;
 use std::pin::Pin;
@@ -67,24 +68,24 @@ async fn open_client(config: &Config) -> anyhow::Result<Client> {
         .to_socket_addrs()
         .with_context(|| format!("resolviendo {}", config.host))?
         .next()
-        .with_context(|| format!("sin dirección para {}", config.host))?;
+        .with_context(|| crate::tf!("err-ftp-no-address", "host" => config.host.to_string()))?;
     let connect = async {
         Ok::<_, anyhow::Error>(match config.options.tls {
             FtpTls::None => Client::Plain(AsyncFtpStream::connect_timeout(address, CONNECT_TIMEOUT).await?),
             FtpTls::Explicit => {
                 let plain = AsyncRustlsFtpStream::connect_timeout(address, CONNECT_TIMEOUT).await?;
-                Client::Tls(plain.into_secure(tls_connector(), &config.host).await.context("negociando TLS (el certificado debe ser de confianza)")?)
+                Client::Tls(plain.into_secure(tls_connector(), &config.host).await.context(t("err-ftp-tls"))?)
             }
             FtpTls::Implicit => Client::Tls(
                 AsyncRustlsFtpStream::connect_secure_implicit(address, tls_connector(), &config.host)
                     .await
-                    .context("conectando con TLS implícito (el certificado debe ser de confianza)")?,
+                    .context(t("err-ftp-tls-implicit"))?,
             ),
         })
     };
-    let mut client = tokio::time::timeout(CONNECT_TIMEOUT, connect).await.context("tiempo de espera agotado")??;
+    let mut client = tokio::time::timeout(CONNECT_TIMEOUT, connect).await.context(t("err-timeout"))??;
     on_client!(&mut client, c => {
-        c.login(config.user.as_str(), config.password.as_str()).await.context("el servidor rechazó el usuario o la contraseña")?;
+        c.login(config.user.as_str(), config.password.as_str()).await.context(t("err-ftp-login"))?;
         c.set_mode(if config.options.passive { Mode::Passive } else { Mode::Active });
         c.transfer_type(FileType::Binary).await?;
     });
@@ -247,7 +248,7 @@ macro_rules! on_transfer {
         match $self.transfer.as_mut() {
             Some(Transfer::Plain($t)) => $body,
             Some(Transfer::Tls($t)) => $body,
-            None => Poll::Ready(Err(io::Error::other("la transferencia ya terminó"))),
+            None => Poll::Ready(Err(io::Error::other(t("err-ftp-transfer-done")))),
         }
     };
 }
@@ -285,9 +286,9 @@ impl AsyncWrite for TransferIo {
 pub async fn connect(connection: &Connection, credentials: &Credentials) -> anyhow::Result<Arc<dyn RemoteFs>> {
     let FilesKind::Ftp(options) = (match connection.protocol {
         crate::data::store::Protocol::Files(kind) => kind,
-        _ => anyhow::bail!("la conexión no es FTP"),
+        _ => anyhow::bail!(t("err-ftp-not-ftp")),
     }) else {
-        anyhow::bail!("la conexión no es FTP");
+        anyhow::bail!(t("err-ftp-not-ftp"));
     };
     let (user, password) = if options.anonymous {
         ("anonymous".to_string(), "anonymous@".to_string())

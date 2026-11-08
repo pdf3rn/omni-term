@@ -1,5 +1,6 @@
 //! Avisos temporales con «Deshacer».
 
+use crate::i18n::t;
 use super::*;
 
 impl App {
@@ -59,10 +60,10 @@ impl App {
                         Frame::popup(ui.style()).inner_margin(Margin::symmetric(14, 10)).show(ui, |ui| {
                             ui.horizontal(|ui| {
                                 ui.label(&toast.text);
-                                if toast.undo.is_some() && crate::ui::kit::button_with(ui, Button::new(RichText::new("Deshacer").color(theme::accent())), crate::ui::kit::Variant::Ghost).clicked() {
+                                if toast.undo.is_some() && crate::ui::kit::button_with(ui, Button::new(RichText::new(t("toasts-deshacer")).color(theme::accent())), crate::ui::kit::Variant::Ghost).clicked() {
                                     undone = Some(index);
                                 }
-                                if ui.add(Button::new(icons::X).frame(false)).on_hover_text("Cerrar").clicked() {
+                                if ui.add(Button::new(icons::X).frame(false)).on_hover_text(t("pane-cerrar")).clicked() {
                                     dismissed = Some(index);
                                 }
                             });
@@ -117,7 +118,7 @@ impl App {
                 self.refresh_connections();
                 self.refresh_passwords();
             }
-            Err(error) => self.dialog = Some(Dialog::failure("No se pudo deshacer", format!("{error:#}"))),
+            Err(error) => self.dialog = Some(Dialog::failure(t("toasts-no-se-pudo-deshacer"), format!("{error:#}"))),
         }
     }
 }

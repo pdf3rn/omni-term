@@ -87,7 +87,7 @@ impl Auth {
             "key" => Ok(Auth::Key),
             "agent" => Ok(Auth::Agent),
             "interactive" => Ok(Auth::Interactive),
-            other => bail!("método de autenticación desconocido: {other}"),
+            other => bail!(crate::tf!("err-store-auth-unknown", "name" => other.to_string())),
         }
     }
 }
@@ -438,7 +438,7 @@ impl Connection {
     pub fn local_shell_name(&self) -> String {
         let program = self.host.trim();
         if program.is_empty() {
-            return "shell del sistema".to_string();
+            return crate::i18n::t("store-system-shell").to_string();
         }
         let name = program.rsplit(['/', '\\']).next().unwrap_or(program);
         name.strip_suffix(".exe").unwrap_or(name).to_string()
@@ -457,13 +457,13 @@ impl Connection {
         match self.protocol {
             Protocol::Ssh => "SSH",
             Protocol::Telnet(_) => "Telnet",
-            Protocol::Serial(_) => "Serie",
+            Protocol::Serial(_) => crate::i18n::t("kind-serial"),
             Protocol::Files(FilesKind::Sftp) => "SFTP",
             Protocol::Files(FilesKind::Ftp(_)) => "FTP",
             Protocol::Files(FilesKind::Smb) => "SMB",
             Protocol::Adb => "ADB",
-            Protocol::Local => "Local",
-            Protocol::Engine => "Contenedores",
+            Protocol::Local => crate::i18n::t("kind-local"),
+            Protocol::Engine => crate::i18n::t("kind-containers"),
         }
     }
 
@@ -473,9 +473,9 @@ impl Connection {
             Protocol::Ssh | Protocol::Files(FilesKind::Sftp) => format!("{}@{}", self.user, self.host),
             Protocol::Telnet(_) => format!("{}:{}", self.host, self.port),
             Protocol::Serial(o) => format!("{} · {}", self.host, o.baud),
-            Protocol::Files(FilesKind::Ftp(o)) => format!("{}@{}", if o.anonymous { "anónimo" } else { self.user.as_str() }, self.host),
+            Protocol::Files(FilesKind::Ftp(o)) => format!("{}@{}", if o.anonymous { crate::i18n::t("store-anonymous") } else { self.user.as_str() }, self.host),
             Protocol::Files(FilesKind::Smb) => format!("\\\\{}\\{}", self.host, self.smb_share()),
-            Protocol::Adb if self.host.is_empty() => "el dispositivo conectado".to_string(),
+            Protocol::Adb if self.host.is_empty() => crate::i18n::t("store-connected-device").to_string(),
             Protocol::Adb => self.host.clone(),
             Protocol::Local => self.local_shell_name(),
             Protocol::Engine => self.engine_place(),
@@ -497,13 +497,13 @@ impl Connection {
             Protocol::Ssh => format!("{}@{}", self.user, self.host),
             Protocol::Telnet(_) => format!("telnet · {}:{}", self.host, self.port),
             Protocol::Serial(o) => format!("serie · {} · {}", self.host, o.baud),
-            Protocol::Adb if self.host.is_empty() => "adb · el dispositivo conectado".to_string(),
+            Protocol::Adb if self.host.is_empty() => format!("adb · {}", crate::i18n::t("store-connected-device")),
             Protocol::Adb => format!("adb · {}", self.host),
             Protocol::Local => format!("local · {}", self.local_shell_name()),
             Protocol::Engine => format!("contenedores · {}", self.engine_place()),
             Protocol::Files(FilesKind::Sftp) => format!("sftp · {}@{}", self.user, self.host),
             Protocol::Files(FilesKind::Ftp(o)) => {
-                let who = if o.anonymous { "anónimo" } else { self.user.as_str() };
+                let who = if o.anonymous { crate::i18n::t("store-anonymous") } else { self.user.as_str() };
                 format!("ftp · {who}@{}", self.host)
             }
             Protocol::Files(FilesKind::Smb) => format!("smb · \\\\{}\\{}", self.host, self.smb_share()),
@@ -562,7 +562,7 @@ impl ForwardKind {
             "local" => Ok(ForwardKind::Local),
             "remote" => Ok(ForwardKind::Remote),
             "dynamic" => Ok(ForwardKind::Dynamic),
-            other => bail!("tipo de túnel desconocido: {other}"),
+            other => bail!(crate::tf!("err-store-tunnel-unknown", "name" => other.to_string())),
         }
     }
 }
@@ -661,7 +661,7 @@ impl Store {
     pub fn default_path() -> anyhow::Result<std::path::PathBuf> {
         // El nombre del directorio y del archivo se mantienen para no perder datos existentes.
         let dirs = directories::ProjectDirs::from("dev", "omniterm", "omniterm")
-            .context("no se pudo determinar el directorio de datos")?;
+            .context(crate::i18n::t("err-store-data-dir"))?;
         Ok(dirs.data_dir().join("omniterm.db"))
     }
 
@@ -675,7 +675,7 @@ impl Store {
     fn migrate(&mut self) -> anyhow::Result<()> {
         let current = self.db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))? as usize;
         if current > MIGRATIONS.len() {
-            bail!("la base de datos es más nueva que esta versión de omni-term");
+            bail!(crate::i18n::t("err-store-newer"));
         }
         for (index, sql) in MIGRATIONS.iter().enumerate().skip(current) {
             let tx = self.db.transaction()?;
@@ -797,7 +797,7 @@ impl Store {
 
     /// Vuelve a insertar una conexión borrada, con su mismo id (para «Deshacer»).
     pub fn restore_connection(&self, connection: &Connection) -> anyhow::Result<()> {
-        let id = connection.id.context("la conexión no tiene id")?;
+        let id = connection.id.context(crate::i18n::t("err-store-no-id-connection"))?;
         let mut columns = connection.protocol.columns();
         if connection.protocol == Protocol::Local {
             columns.4 = Some(connection.vars.clone());
@@ -835,7 +835,7 @@ impl Store {
     }
 
     pub fn restore_snippet(&self, snippet: &Snippet) -> anyhow::Result<()> {
-        let id = snippet.id.context("el snippet no tiene id")?;
+        let id = snippet.id.context(crate::i18n::t("err-store-no-id-snippet"))?;
         self.db.execute(
             "INSERT INTO snippets (id, title, tag, body) VALUES (?1, ?2, ?3, ?4)",
             params![id, snippet.title, snippet.tag, snippet.body],
@@ -869,7 +869,7 @@ impl Store {
 
     /// Vuelve a crear una contraseña borrada con su mismo id (para deshacer).
     pub fn restore_password(&self, password: &SavedPassword) -> anyhow::Result<()> {
-        let id = password.id.context("la contraseña no tiene id")?;
+        let id = password.id.context(crate::i18n::t("err-store-no-id-password"))?;
         self.db.execute("INSERT INTO passwords (id, name, user) VALUES (?1, ?2, ?3)", params![id, password.name, password.user])?;
         Ok(())
     }

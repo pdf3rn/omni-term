@@ -1,5 +1,6 @@
 //! Cliente SFTP sobre un canal de una sesión SSH propia (russh-sftp).
 
+use crate::i18n::t;
 use std::sync::mpsc as std_mpsc;
 use std::sync::{Arc, Mutex};
 
@@ -96,8 +97,8 @@ pub async fn connect(
         ssh::new_tunnels(&[]),
     )
     .await?;
-    let channel = handle.channel_open_session().await.context("abriendo el canal")?;
-    channel.request_subsystem(true, "sftp").await.context("el servidor no ofrece el subsistema sftp")?;
+    let channel = handle.channel_open_session().await.context(t("err-ssh-open-channel"))?;
+    channel.request_subsystem(true, "sftp").await.context(t("err-sftp-subsystem"))?;
     let session = SftpSession::new(channel.into_stream()).await.context("iniciando SFTP")?;
     Ok(Sftp { session: Arc::new(session), connection: Arc::new(handle) })
 }
@@ -143,7 +144,7 @@ pub async fn rename(sftp: &SftpSession, from: &str, to: &str) -> anyhow::Result<
 
 pub async fn set_permissions(sftp: &SftpSession, path: &str, mode: u32) -> anyhow::Result<()> {
     let attributes = russh_sftp::protocol::FileAttributes { permissions: Some(mode & 0o7777), ..Default::default() };
-    sftp.set_metadata(path.to_string(), attributes).await.with_context(|| format!("cambiando permisos de {path}"))
+    sftp.set_metadata(path.to_string(), attributes).await.with_context(|| crate::tf!("err-sftp-chmod", "path" => path.to_string()))
 }
 
 /// Permisos en el formato de `ls -l`, por ejemplo `rwxr-xr-x`.

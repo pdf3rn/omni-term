@@ -1,6 +1,7 @@
 //! Gestor de contraseñas: escribir una contraseña guardada en el terminal (Ctrl+Alt+P), por ejemplo
 //! cuando `sudo` la pide, y darlas de alta, editarlas y borrarlas desde Ajustes.
 
+use crate::i18n::t;
 use super::*;
 use crate::data::secrets::password_account;
 use crate::terminal::password_prompt::looks_like_password_prompt;
@@ -20,7 +21,7 @@ impl App {
         });
         match target {
             Some((tab, pane)) => self.palette = Some(Palette::passwords(tab, pane)),
-            None => self.notify("Abre un terminal para escribir una contraseña"),
+            None => self.notify(t("passwords-abre-un-terminal-para-escribir")),
         }
     }
 
@@ -34,9 +35,9 @@ impl App {
         };
         if let Some(connection) = connection {
             items.push(palette::Item {
-                title: format!("Contraseña de «{}»", connection.name),
+                title: crate::tf!("passwords-password-of", "name" => connection.name.to_string()),
                 detail: connection.target(),
-                kind: "Conexión",
+                kind: t("commands-conexion"),
                 target: Target::Password(PasswordSource::Connection(connection.id.unwrap_or_default())),
             });
         }
@@ -44,21 +45,21 @@ impl App {
             items.push(palette::Item {
                 title: password.name.clone(),
                 detail: password.user.clone(),
-                kind: "Guardada",
+                kind: t("passwords-guardada"),
                 target: Target::Password(PasswordSource::Saved(password.id.unwrap_or_default())),
             });
         }
-        let manage = if self.passwords.is_empty() { "Añadir una contraseña" } else { "Gestionar contraseñas" };
-        items.push(palette::Item { title: manage.into(), detail: String::new(), kind: "Acción", target: Target::Command(Command::Passwords) });
+        let manage = if self.passwords.is_empty() { t("passwords-anadir-una-contrasena") } else { t("palette-gestionar-contrasenas") };
+        items.push(palette::Item { title: manage.into(), detail: String::new(), kind: t("commands-accion"), target: Target::Command(Command::Passwords) });
         items
     }
 
     fn password_label(&self, source: PasswordSource) -> String {
         match source {
             PasswordSource::Connection(id) => {
-                self.connections.iter().find(|c| c.id == Some(id)).map_or_else(|| "la conexión".into(), |c| format!("«{}»", c.name))
+                self.connections.iter().find(|c| c.id == Some(id)).map_or_else(|| t("passwords-la-conexion").into(), |c| format!("«{}»", c.name))
             }
-            PasswordSource::Saved(id) => self.passwords.iter().find(|p| p.id == Some(id)).map_or_else(|| "la contraseña".into(), |p| format!("«{}»", p.name)),
+            PasswordSource::Saved(id) => self.passwords.iter().find(|p| p.id == Some(id)).map_or_else(|| t("connecting-la-contrasena").into(), |p| format!("«{}»", p.name)),
         }
     }
 
@@ -66,7 +67,7 @@ impl App {
     /// pregunta antes: en un shell quedaría a la vista y en el historial.
     pub(super) fn type_password(&mut self, request: TypeRequest) {
         let Some(prompt_line) = self.find_pane(request.tab, request.pane).map(Pane::text_before_cursor) else {
-            self.notify("El panel donde ibas a escribir la contraseña ya no está abierto");
+            self.notify(t("passwords-el-panel-donde-ibas-a"));
             return;
         };
         if !request.checked && !looks_like_password_prompt(&prompt_line) {
@@ -89,10 +90,10 @@ impl App {
             }
             Ok(None) => {
                 let label = self.password_label(request.source);
-                self.notify(format!("No hay ninguna contraseña guardada para {label}"));
+                self.notify(crate::tf!("passwords-none-saved", "what" => label));
             }
             Err(SecretError::Locked) => self.ask_unlock(Pending::TypePassword(request)),
-            Err(error) => self.dialog = Some(Dialog::failure("No se pudo leer la contraseña", error)),
+            Err(error) => self.dialog = Some(Dialog::failure(t("passwords-no-se-pudo-leer-la"), error)),
         }
     }
 
@@ -111,11 +112,11 @@ impl App {
             PasswordRequest::Delete(password) => {
                 let Some(id) = password.id else { return };
                 if let Err(error) = self.store.lock().unwrap().delete_password(id) {
-                    self.dialog = Some(Dialog::failure("No se pudo eliminar la contraseña", format!("{error:#}")));
+                    self.dialog = Some(Dialog::failure(t("passwords-no-se-pudo-eliminar-la"), format!("{error:#}")));
                     return;
                 }
                 self.refresh_passwords();
-                let text = format!("«{}» eliminada", password.name);
+                let text = crate::tf!("passwords-deleted", "name" => password.name.to_string());
                 // El secreto se borra cuando el aviso caduca sin deshacer.
                 self.push_toast(text, Some(Undo::Password(password)), Some(Cleanup::Password(id)));
             }
@@ -135,7 +136,7 @@ impl App {
         let saved = self.store.lock().unwrap().save_password(&password);
         match saved {
             Err(error) => {
-                form.error = Some(format!("No se pudo guardar: {error:#}"));
+                form.error = Some(crate::tf!("common-save-failed", "error" => format!("{error:#}")));
                 self.dialog = Some(Dialog::Password(form));
             }
             Ok(id) => {

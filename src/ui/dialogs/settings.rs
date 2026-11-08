@@ -1,5 +1,6 @@
 //! Página de ajustes: secciones, atajos y hosts conocidos.
 
+use crate::i18n::t;
 use super::*;
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -35,7 +36,7 @@ impl KnownHostsView {
             }
             Err(error) => {
                 self.entries.clear();
-                self.error = Some(format!("No se pudo leer known_hosts: {error}"));
+                self.error = Some(crate::tf!("settings-known-hosts-failed", "error" => error.to_string()));
             }
         }
     }
@@ -58,54 +59,54 @@ pub struct SecretsChoice {
 
 pub(super) const SHORTCUTS: [(&str, &[(&str, &str)]); 4] = [
     (
-        "Pestañas",
+        "settings-pestanas",
         &[
-            ("Ctrl+Shift+P", "Paleta de comandos"),
-            ("Ctrl+,", "Abrir los ajustes"),
-            ("Ctrl+Shift+N", "Nueva conexión"),
-            ("Alt+1 … 9", "Ir a la pestaña 1 … 9 (Alt+9, la última)"),
-            ("Ctrl+Tab / Ctrl+Shift+Tab", "Pestaña siguiente / anterior"),
-            ("Doble clic en la pestaña", "Renombrarla"),
+            ("Ctrl+Shift+P", "settings-paleta-de-comandos"),
+            ("Ctrl+,", "settings-abrir-los-ajustes"),
+            ("Ctrl+Shift+N", "dialogs-nueva-conexion"),
+            ("Alt+1 … 9", "settings-ir-a-la-pestana-1"),
+            ("Ctrl+Tab / Ctrl+Shift+Tab", "settings-pestana-siguiente-anterior"),
+            ("settings-doble-clic-en-la-pestana", "settings-renombrarla"),
         ],
     ),
     (
-        "Terminal",
+        "conn-edit-terminal",
         &[
-            ("Ctrl+Shift+C / V", "Copiar / pegar"),
-            ("Ctrl+Shift+F", "Buscar en la salida"),
-            ("Ctrl+Alt+P", "Escribir una contraseña guardada"),
-            ("Ctrl+Shift+D / E", "Dividir a la derecha / hacia abajo"),
-            ("Ctrl+Shift+W", "Cerrar el panel o la pestaña"),
-            ("Alt+flechas", "Ir al panel de al lado"),
-            ("Alt+Shift+flechas", "Mover el borde del panel"),
-            ("Ctrl+Shift+Z", "Ampliar o restaurar el panel"),
-            ("Ctrl+= / Ctrl+− / Ctrl+0", "Aumentar / reducir / restablecer la letra"),
+            ("Ctrl+Shift+C / V", "settings-copiar-pegar"),
+            ("Ctrl+Shift+F", "settings-buscar-en-la-salida"),
+            ("Ctrl+Alt+P", "settings-escribir-una-contrasena-guardada"),
+            ("Ctrl+Shift+D / E", "settings-dividir-a-la-derecha-hacia"),
+            ("Ctrl+Shift+W", "settings-cerrar-el-panel-o-la"),
+            ("Alt+flechas", "settings-ir-al-panel-de-al"),
+            ("Alt+Shift+flechas", "settings-mover-el-borde-del-panel"),
+            ("Ctrl+Shift+Z", "settings-ampliar-o-restaurar-el-panel"),
+            ("Ctrl+= / Ctrl+− / Ctrl+0", "settings-aumentar-reducir-restablecer-la-le"),
         ],
     ),
     (
-        "Ventana",
-        &[("Ctrl+Shift+B", "Mostrar u ocultar la barra lateral"), ("Ctrl+Shift+K", "Buscar en la barra lateral"), ("F11", "Pantalla completa")],
+        "settings-ventana",
+        &[("Ctrl+Shift+B", "settings-mostrar-u-ocultar-la-barra"), ("Ctrl+Shift+K", "settings-buscar-en-la-barra-lateral"), ("F11", "settings-pantalla-completa")],
     ),
     (
-        "Explorador de archivos",
+        "settings-explorador-de-archivos",
         &[
-            ("F2", "Renombrar"),
-            ("Supr", "Eliminar"),
-            ("Enter", "Abrir la carpeta"),
-            ("Retroceso", "Subir un nivel"),
-            ("F5", "Actualizar"),
-            ("Ctrl+A", "Seleccionar todo"),
-            ("Ctrl+L", "Escribir una ruta"),
+            ("F2", "explorer-renombrar"),
+            ("explorer-supr", "explorer-eliminar"),
+            ("Enter", "settings-abrir-la-carpeta"),
+            ("settings-retroceso", "settings-subir-un-nivel"),
+            ("F5", "settings-actualizar"),
+            ("Ctrl+A", "pane-seleccionar-todo"),
+            ("Ctrl+L", "settings-escribir-una-ruta"),
         ],
     ),
 ];
 
 /// Lista de secciones de la página de ajustes.
 pub(super) const SETTINGS_SECTIONS: [(SettingsTab, &str); 4] = [
-    (SettingsTab::General, "General"),
-    (SettingsTab::Atajos, "Atajos de teclado"),
-    (SettingsTab::Passwords, "Contraseñas"),
-    (SettingsTab::Hosts, "Hosts conocidos"),
+    (SettingsTab::General, "settings-general"),
+    (SettingsTab::Atajos, "settings-atajos-de-teclado"),
+    (SettingsTab::Passwords, "settings-contrasenas"),
+    (SettingsTab::Hosts, "settings-hosts-conocidos"),
 ];
 
 pub struct PasswordsPage<'a> {
@@ -135,7 +136,7 @@ pub fn settings_page(ui: &mut egui::Ui, tab: &mut SettingsTab, settings: &mut Se
                     ui.painter().rect_filled(rect, egui::CornerRadius::same(theme::radius::CONTROL), theme::hover());
                 }
                 let font = FontId::new(theme::size::BODY, if selected { crate::ui::strong_family() } else { egui::FontFamily::Proportional });
-                ui.painter().text(rect.min + egui::vec2(12.0, 16.0), egui::Align2::LEFT_CENTER, label, font, if selected { theme::text() } else { theme::subtext() });
+                ui.painter().text(rect.min + egui::vec2(12.0, 16.0), egui::Align2::LEFT_CENTER, t(label), font, if selected { theme::text() } else { theme::subtext() });
                 if response.clicked() && !selected {
                     *tab = choice;
                     hosts.loaded = false;
@@ -166,9 +167,9 @@ pub(super) fn settings_content(ui: &mut egui::Ui, tab: SettingsTab, settings: &m
     }
     if tab == SettingsTab::Atajos {
         for (group, entries) in SHORTCUTS {
-            crate::ui::kit::card(ui, group, |ui| {
+            crate::ui::kit::card(ui, t(group), |ui| {
                 for (index, (keys, what)) in entries.iter().enumerate() {
-                    crate::ui::kit::setting_row(ui, &crate::ui::shortcuts::label(what), None, index + 1 < entries.len(), |ui| {
+                    crate::ui::kit::setting_row(ui, &crate::ui::shortcuts::label(t(what)), None, index + 1 < entries.len(), |ui| {
                         for (n, combo) in keys.split(" / ").enumerate() {
                             if n > 0 {
                                 ui.label(RichText::new("/").color(theme::subtext()));
@@ -181,77 +182,83 @@ pub(super) fn settings_content(ui: &mut egui::Ui, tab: SettingsTab, settings: &m
         }
         return;
     }
-    crate::ui::kit::card(ui, "Apariencia", |ui| {
-        crate::ui::kit::setting_row(ui, "Tema", None, true, |ui| {
-            ui.selectable_value(&mut settings.theme, ThemeChoice::Dark, "Oscuro");
-            ui.selectable_value(&mut settings.theme, ThemeChoice::Light, "Claro");
-            ui.selectable_value(&mut settings.theme, ThemeChoice::System, "Sistema");
+    crate::ui::kit::card(ui, t("settings-apariencia"), |ui| {
+        crate::ui::kit::setting_row(ui, t("settings-tema"), None, true, |ui| {
+            ui.selectable_value(&mut settings.theme, ThemeChoice::Dark, t("settings-oscuro"));
+            ui.selectable_value(&mut settings.theme, ThemeChoice::Light, t("settings-claro"));
+            ui.selectable_value(&mut settings.theme, ThemeChoice::System, t("settings-sistema"));
         });
-        crate::ui::kit::setting_row(ui, "Acento", Some("Color de lo seleccionado"), true, |ui| {
+        crate::ui::kit::setting_row(ui, t("settings-language"), Some(t("settings-language-hint")), true, |ui| {
+            ui.selectable_value(&mut settings.language, None, t("settings-language-auto"));
+            for lang in crate::i18n::Lang::ALL {
+                ui.selectable_value(&mut settings.language, Some(lang), lang.native_name());
+            }
+        });
+        crate::ui::kit::setting_row(ui, t("settings-acento"), Some(t("settings-color-de-lo-seleccionado")), true, |ui| {
             for (choice, label) in AccentChoice::ALL {
-                ui.selectable_value(&mut settings.accent, choice, label);
+                ui.selectable_value(&mut settings.accent, choice, t(label));
             }
         });
         if !crate::data::settings::NATIVE_CHROME {
-            crate::ui::kit::setting_row(ui, "Usar barra de título del sistema", Some("Se aplica al reiniciar"), true, |ui| {
+            crate::ui::kit::setting_row(ui, t("settings-usar-barra-de-titulo-del"), Some(t("settings-se-aplica-al-reiniciar")), true, |ui| {
                 crate::ui::kit::toggle(ui, &mut settings.system_titlebar);
             });
         }
         if settings.system_titlebar {
-            crate::ui::kit::setting_row(ui, "Barra de menú", Some("Si está oculta, Alt la muestra"), true, |ui| {
+            crate::ui::kit::setting_row(ui, t("settings-barra-de-menu"), Some(t("settings-si-esta-oculta-alt-la")), true, |ui| {
                 crate::ui::kit::toggle(ui, &mut settings.menu_bar);
             });
         } else {
             if !crate::data::settings::NATIVE_CHROME {
-                crate::ui::kit::setting_row(ui, "Menú en la barra de título", Some("Si no, queda tras el botón ⋯"), true, |ui| {
+                crate::ui::kit::setting_row(ui, t("settings-menu-en-la-barra-de"), Some(t("settings-si-no-queda-tras-el")), true, |ui| {
                     crate::ui::kit::toggle(ui, &mut settings.titlebar_menu);
                 });
             }
-            crate::ui::kit::setting_row(ui, "Altura de la barra de título", None, true, |ui| {
-                ui.selectable_value(&mut settings.titlebar_compact, false, "Cómoda");
-                ui.selectable_value(&mut settings.titlebar_compact, true, "Compacta");
+            crate::ui::kit::setting_row(ui, t("settings-altura-de-la-barra-de"), None, true, |ui| {
+                ui.selectable_value(&mut settings.titlebar_compact, false, t("settings-comoda"));
+                ui.selectable_value(&mut settings.titlebar_compact, true, t("settings-compacta"));
             });
         }
-        crate::ui::kit::setting_row(ui, "Confirmar al cerrar pestañas", Some("Solo si tienen algo en ejecución"), true, |ui| {
+        crate::ui::kit::setting_row(ui, t("settings-confirmar-al-cerrar-pestanas"), Some(t("settings-solo-si-tienen-algo-en")), true, |ui| {
             crate::ui::kit::toggle(ui, &mut settings.confirm_close);
         });
-        crate::ui::kit::setting_row(ui, "Confirmar al pegar varias líneas", Some("Evita ejecutar comandos sin querer"), true, |ui| {
+        crate::ui::kit::setting_row(ui, t("settings-confirmar-al-pegar-varias-lineas"), Some(t("settings-evita-ejecutar-comandos-sin-querer")), true, |ui| {
             crate::ui::kit::toggle(ui, &mut settings.confirm_paste);
         });
-        crate::ui::kit::setting_row(ui, "Al iniciar", Some("Pestañas de la sesión anterior"), false, |ui| {
-            ui.selectable_value(&mut settings.on_start, StartupChoice::Ask, "Preguntar");
-            ui.selectable_value(&mut settings.on_start, StartupChoice::Restore, "Restaurar");
-            ui.selectable_value(&mut settings.on_start, StartupChoice::Fresh, "Vacío");
+        crate::ui::kit::setting_row(ui, t("settings-al-iniciar"), Some(t("settings-pestanas-de-la-sesion-anterior")), false, |ui| {
+            ui.selectable_value(&mut settings.on_start, StartupChoice::Ask, t("settings-preguntar"));
+            ui.selectable_value(&mut settings.on_start, StartupChoice::Restore, t("dialogs-restaurar"));
+            ui.selectable_value(&mut settings.on_start, StartupChoice::Fresh, t("settings-vacio"));
         });
     });
 
-    crate::ui::kit::card(ui, "Terminal", |ui| {
-        crate::ui::kit::setting_row(ui, "Terminal local predeterminado", Some(&crate::ui::shortcuts::label("Para el botón + y Ctrl+Shift+T")), true, |ui| {
+    crate::ui::kit::card(ui, t("conn-edit-terminal"), |ui| {
+        crate::ui::kit::setting_row(ui, t("settings-terminal-local-predeterminado"), Some(&crate::ui::shortcuts::label(t("settings-para-el-boton-y-ctrl"))), true, |ui| {
             let profiles: Vec<&Connection> = connections.iter().filter(|c| c.is_local()).collect();
             let current = settings.local_profile.and_then(|id| profiles.iter().find(|c| c.id == Some(id)));
-            let current_name = current.map_or("Shell del sistema".to_string(), |c| c.name.clone());
+            let current_name = current.map_or(t("settings-shell-del-sistema").to_string(), |c| c.name.clone());
             crate::ui::kit::select(ui, "local-profile", 190.0, current_name, |options| {
-                options.value(&mut settings.local_profile, None, "Shell del sistema");
+                options.value(&mut settings.local_profile, None, t("settings-shell-del-sistema"));
                 for profile in &profiles {
                     options.value(&mut settings.local_profile, profile.id, profile.name.as_str());
                 }
             });
         });
-        crate::ui::kit::setting_row(ui, "Fuente", Some("Monoespaciada, instalada en el equipo"), true, |ui| {
+        crate::ui::kit::setting_row(ui, t("settings-fuente"), Some(t("settings-monoespaciada-instalada-en-el-equi")), true, |ui| {
             font_picker(ui, &mut settings.font_family);
         });
-        crate::ui::kit::setting_row(ui, "Tamaño de la letra", None, true, |ui| {
+        crate::ui::kit::setting_row(ui, t("settings-tamano-de-la-letra"), None, true, |ui| {
             ui.add(egui::Slider::new(&mut settings.font_size, MIN_FONT_SIZE..=MAX_FONT_SIZE).step_by(1.0).suffix(" pt"));
         });
-        crate::ui::kit::setting_row(ui, "Cursor", None, true, |ui| {
-            ui.selectable_value(&mut settings.cursor, CursorChoice::Block, "Bloque");
-            ui.selectable_value(&mut settings.cursor, CursorChoice::Beam, "Barra");
-            ui.selectable_value(&mut settings.cursor, CursorChoice::Underline, "Subrayado");
+        crate::ui::kit::setting_row(ui, t("settings-cursor"), None, true, |ui| {
+            ui.selectable_value(&mut settings.cursor, CursorChoice::Block, t("settings-bloque"));
+            ui.selectable_value(&mut settings.cursor, CursorChoice::Beam, t("settings-barra"));
+            ui.selectable_value(&mut settings.cursor, CursorChoice::Underline, t("settings-subrayado"));
         });
-        crate::ui::kit::setting_row(ui, "Cursor parpadeante", None, true, |ui| {
+        crate::ui::kit::setting_row(ui, t("settings-cursor-parpadeante"), None, true, |ui| {
             crate::ui::kit::toggle(ui, &mut settings.blink);
         });
-        crate::ui::kit::setting_row(ui, "Tema del terminal", Some("Fondo, texto, cursor y los 16 colores ANSI"), true, |ui| {
+        crate::ui::kit::setting_row(ui, t("settings-tema-del-terminal"), Some(t("settings-fondo-texto-cursor-y-los")), true, |ui| {
             let themes = &crate::data::term_theme::THEMES;
             let current = settings.ansi.index() as usize;
             crate::ui::kit::select(ui, "terminal-theme", 250.0, themes[current].name, |options| {
@@ -263,50 +270,50 @@ pub(super) fn settings_content(ui: &mut egui::Ui, tab: SettingsTab, settings: &m
                 }
             });
         });
-        crate::ui::kit::setting_row(ui, "Negrita brillante", Some("La negrita aclara los colores ANSI 0-7"), true, |ui| {
+        crate::ui::kit::setting_row(ui, t("settings-negrita-brillante"), Some(t("settings-la-negrita-aclara-los-colores")), true, |ui| {
             crate::ui::kit::toggle(ui, &mut settings.bold_bright);
         });
-        crate::ui::kit::setting_row(ui, "Historial", Some("Se aplica a las sesiones nuevas"), false, |ui| {
-            ui.add(egui::DragValue::new(&mut settings.scrollback).range(MIN_SCROLLBACK..=MAX_SCROLLBACK).speed(100.0).suffix(" líneas"));
+        crate::ui::kit::setting_row(ui, t("settings-historial"), Some(t("settings-se-aplica-a-las-sesiones")), false, |ui| {
+            ui.add(egui::DragValue::new(&mut settings.scrollback).range(MIN_SCROLLBACK..=MAX_SCROLLBACK).speed(100.0).suffix(format!(" {}", t("settings-lines-unit"))));
         });
     });
 
-    crate::ui::kit::card(ui, "Avisos", |ui| {
+    crate::ui::kit::card(ui, t("settings-avisos"), |ui| {
         let mut notify = settings.notify_after > 0;
-        crate::ui::kit::setting_row(ui, "Avisar al terminar la actividad", Some("De una pestaña que no está a la vista"), notify, |ui| {
+        crate::ui::kit::setting_row(ui, t("settings-avisar-al-terminar-la-actividad"), Some(t("settings-de-una-pestana-que-no")), notify, |ui| {
             if crate::ui::kit::toggle(ui, &mut notify).changed() {
                 settings.notify_after = if notify { 15 } else { 0 };
             }
         });
         if notify {
-            crate::ui::kit::setting_row(ui, "Solo si duró al menos", None, false, |ui| {
+            crate::ui::kit::setting_row(ui, t("settings-solo-si-duro-al-menos"), None, false, |ui| {
                 ui.add(egui::DragValue::new(&mut settings.notify_after).range(1..=3600).suffix(" s"));
             });
         }
     });
 
-    crate::ui::kit::card(ui, "Secretos", |ui| {
-        crate::ui::kit::setting_row(ui, "Modo de cifrado de credenciales", Some("Dónde se guardan las contraseñas. Se aplica al reiniciar"), false, |ui| {
-            let name = |master: bool| if master { "Clave maestra" } else { "Llavero del sistema" };
-            let keyring_label = if secrets.keyring_available { "Llavero del sistema" } else { "Llavero del sistema (no disponible)" };
+    crate::ui::kit::card(ui, t("settings-secretos"), |ui| {
+        crate::ui::kit::setting_row(ui, t("settings-modo-de-cifrado-de-credenciales"), Some(t("settings-donde-se-guardan-las-contrasenas")), false, |ui| {
+            let name = |master: bool| if master { t("settings-clave-maestra") } else { t("settings-llavero-del-sistema") };
+            let keyring_label = if secrets.keyring_available { t("settings-llavero-del-sistema") } else { t("settings-llavero-del-sistema-no-disponible") };
             crate::ui::kit::select(ui, "secrets-mode", 190.0, name(secrets.master), |options| {
                 if options.option_enabled(!secrets.master, keyring_label, secrets.keyring_available) {
                     secrets.master = false;
                 }
-                options.value(&mut secrets.master, true, "Clave maestra");
+                options.value(&mut secrets.master, true, t("settings-clave-maestra"));
             });
         });
         if secrets.master != secrets.active_master {
-            let text = format!("En uso ahora: {}. El cambio se aplica al reiniciar.", name_of(secrets.active_master));
+            let text = crate::tf!("settings-in-use-now", "name" => name_of(secrets.active_master));
             ui.label(RichText::new(text).small().color(theme::subtext()));
         } else if !secrets.keyring_available {
-            ui.label(RichText::new("Este sistema no tiene llavero disponible.").small().color(theme::subtext()));
+            ui.label(RichText::new(t("settings-este-sistema-no-tiene-llavero")).small().color(theme::subtext()));
         }
     });
 }
 
 pub(super) fn name_of(master: bool) -> &'static str {
-    if master { "clave maestra" } else { "llavero del sistema" }
+    if master { t("prompts-clave-maestra") } else { t("settings-llavero-del-sistema-2") }
 }
 
 /// Vista previa de un tema en su fila: un recuadro con su fondo y texto, y los seis colores principales.
@@ -335,7 +342,7 @@ pub(super) fn font_picker(ui: &mut egui::Ui, family: &mut Option<String>) {
         ui.spacing_mut().interact_size.y = 26.0;
         let search_id = ui.make_persistent_id("font-search");
         let mut query: String = ui.data_mut(|d| d.get_temp(search_id)).unwrap_or_default();
-        let field = crate::ui::kit::search_field(ui, &mut query, "Buscar fuente", f32::INFINITY);
+        let field = crate::ui::kit::search_field(ui, &mut query, t("settings-buscar-fuente"), f32::INFINITY);
         if button.clicked() {
             field.request_focus();
         }
@@ -359,7 +366,7 @@ pub(super) fn font_picker(ui: &mut egui::Ui, family: &mut Option<String>) {
                 }
             }
             if families.is_empty() {
-                ui.label(RichText::new("No se encontró ninguna fuente monoespaciada instalada.").color(theme::subtext()));
+                ui.label(RichText::new(t("settings-no-se-encontro-ninguna-fuente")).color(theme::subtext()));
             }
         });
     });
@@ -370,16 +377,16 @@ pub(super) fn font_picker(ui: &mut egui::Ui, family: &mut Option<String>) {
 pub(super) fn passwords_body(ui: &mut egui::Ui, page: PasswordsPage<'_>) {
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = theme::space::XS;
-        ui.label(RichText::new("Escríbelas en el terminal con").color(theme::subtext()));
+        ui.label(RichText::new(t("settings-escribelas-en-el-terminal-con")).color(theme::subtext()));
         crate::ui::kit::keycap(ui, "Ctrl+Alt+P");
     });
     ui.add_space(theme::space::M);
-    if crate::ui::kit::button(ui, "Nueva contraseña", crate::ui::kit::Variant::PrimaryOutline).clicked() {
+    if crate::ui::kit::button(ui, t("dialogs-nueva-contrasena"), crate::ui::kit::Variant::PrimaryOutline).clicked() {
         *page.request = Some(PasswordRequest::New);
     }
     ui.add_space(theme::space::S);
     if page.passwords.is_empty() {
-        ui.label(RichText::new("Aún no hay contraseñas guardadas.").color(theme::subtext()));
+        ui.label(RichText::new(t("settings-aun-no-hay-contrasenas-guardadas")).color(theme::subtext()));
         return;
     }
     crate::ui::kit::card_frame().inner_margin(egui::Margin::symmetric(6, 4)).show(ui, |ui| {
@@ -398,7 +405,7 @@ pub(super) fn passwords_body(ui: &mut egui::Ui, page: PasswordsPage<'_>) {
             if has_user {
                 clip.text(rect.min + egui::vec2(36.0, 31.0), egui::Align2::LEFT_CENTER, &password.user, FontId::proportional(theme::size::SMALL), theme::subtext());
             }
-            for (offset, glyph, tip) in [(52.0, crate::ui::icons::PENCIL, "Editar"), (22.0, crate::ui::icons::TRASH, "Eliminar")] {
+            for (offset, glyph, tip) in [(52.0, crate::ui::icons::PENCIL, t("settings-editar")), (22.0, crate::ui::icons::TRASH, t("explorer-eliminar"))] {
                 let slot = egui::Rect::from_center_size(egui::pos2(rect.max.x - offset, rect.center().y), egui::vec2(26.0, 26.0));
                 let color = if glyph == crate::ui::icons::TRASH { theme::red() } else { theme::text() };
                 let clicked = crate::ui::kit::IconButton::new(glyph).color(color).show_at(ui, slot, ("password", password.id, glyph)).on_hover_text(tip).clicked();
@@ -415,9 +422,9 @@ pub(super) fn passwords_body(ui: &mut egui::Ui, page: PasswordsPage<'_>) {
 
 pub(super) fn known_hosts_body(ui: &mut egui::Ui, view: &mut KnownHostsView, connections: &[Connection]) {
     view.ensure_loaded();
-    crate::ui::kit::search_field(ui, &mut view.query, "Buscar por host, conexión o huella", f32::INFINITY);
+    crate::ui::kit::search_field(ui, &mut view.query, t("settings-buscar-por-host-conexion-o"), f32::INFINITY);
     if view.error.is_none() && !view.entries.is_empty() {
-        ui.label(RichText::new(format!("{} entradas en {}", view.entries.len(), crate::connect::ssh::default_known_hosts().display())).small().color(theme::subtext()));
+        ui.label(RichText::new(crate::tf!("settings-known-hosts-count", "n" => view.entries.len(), "path" => crate::connect::ssh::default_known_hosts().display().to_string())).small().color(theme::subtext()));
     }
     ui.add_space(theme::space::S);
     if let Some(error) = &view.error {
@@ -425,7 +432,7 @@ pub(super) fn known_hosts_body(ui: &mut egui::Ui, view: &mut KnownHostsView, con
         return;
     }
     if view.entries.is_empty() {
-        ui.label(RichText::new("Aún no hay hosts conocidos. Aparecen aquí cuando confías en un servidor al conectar.").color(theme::subtext()));
+        ui.label(RichText::new(t("settings-aun-no-hay-hosts-conocidos")).color(theme::subtext()));
         return;
     }
     let query = view.query.trim().to_lowercase();
@@ -461,7 +468,7 @@ pub(super) fn known_hosts_body(ui: &mut egui::Ui, view: &mut KnownHostsView, con
             FontId::new(theme::size::SMALL, egui::FontFamily::Monospace),
             theme::subtext(),
         );
-        for (offset, glyph, tip) in [(56.0, crate::ui::icons::COPY, "Copiar la huella"), (24.0, crate::ui::icons::TRASH, "Olvidar este host")] {
+        for (offset, glyph, tip) in [(56.0, crate::ui::icons::COPY, t("settings-copiar-la-huella")), (24.0, crate::ui::icons::TRASH, t("settings-olvidar-este-host"))] {
             // Cada botón se coloca a la derecha de la fila, con una identidad propia para que no se mezclen entre filas.
             let slot = egui::Rect::from_center_size(egui::pos2(rect.max.x - offset, rect.center().y), egui::vec2(26.0, 26.0));
             let clicked = crate::ui::kit::IconButton::new(glyph).show_at(ui, slot, ("known-host", entry.index, glyph)).on_hover_text(tip).clicked();
@@ -475,6 +482,6 @@ pub(super) fn known_hosts_body(ui: &mut egui::Ui, view: &mut KnownHostsView, con
         }
     }
     if shown == 0 {
-        ui.label(RichText::new("Ningún host coincide con la búsqueda.").color(theme::subtext()));
+        ui.label(RichText::new(t("settings-ningun-host-coincide-con-la")).color(theme::subtext()));
     }
 }

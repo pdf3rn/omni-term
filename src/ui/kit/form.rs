@@ -1,5 +1,6 @@
 //! Controles de formulario: filas con etiqueta, campos de texto, buscadores, fichas y mensajes de error.
 
+use crate::i18n::t;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use eframe::egui::{self, Color32, FontId, RichText, TextEdit, Ui};
@@ -75,7 +76,7 @@ pub fn password_field(ui: &mut Ui, value: &mut String, reveal: &mut bool, hint: 
         TextEdit::singleline(value).password(!*reveal).hint_text(hint).margin(margin).align(egui::Align2::LEFT_CENTER),
     );
     let slot = egui::Rect::from_center_size(egui::pos2(field.rect.max.x - 17.0, field.rect.center().y), egui::Vec2::splat(1.0));
-    let (glyph, tip) = if *reveal { (crate::ui::icons::EYE_OFF, "Ocultar") } else { (crate::ui::icons::EYE, "Mostrar") };
+    let (glyph, tip) = if *reveal { (crate::ui::icons::EYE_OFF, t("form-ocultar")) } else { (crate::ui::icons::EYE, t("form-mostrar")) };
     if super::IconButton::new(glyph).size(theme::size::ICON_SM).skip_focus().show_at(ui, slot, ("reveal", field.id)).on_hover_text(tip).clicked() {
         *reveal = !*reveal;
     }

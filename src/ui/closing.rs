@@ -13,7 +13,7 @@ impl App {
                 .filter(|p| tabs::pane_busy(p))
                 .map(|p| {
                     let title = if p.title().is_empty() { tab.label.clone() } else { p.title() };
-                    format!("«{title}»: proceso en ejecución")
+                    crate::tf!("closing-running", "title" => title.to_string())
                 })
                 .into_iter()
                 .collect();

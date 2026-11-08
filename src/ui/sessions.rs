@@ -1,5 +1,6 @@
 //! Abrir sesiones y pestañas: terminales, paneles, explorador y administrador de contenedores.
 
+use crate::i18n::t;
 use super::*;
 
 impl App {
@@ -85,7 +86,7 @@ impl App {
         let session = self.local_session()?;
         let id = self.take_tab_id();
         let body = Body::terminal(Pane::new(session, self.debug_keys, 1), None);
-        self.tabs.push(Tab { id, kind: TabKind::Local, label: "Terminal local".into(), custom: None, attention: false, body });
+        self.tabs.push(Tab { id, kind: TabKind::Local, label: t("sessions-terminal-local").into(), custom: None, attention: false, body });
         self.active = self.tabs.len() - 1;
         Ok(())
     }
@@ -99,7 +100,7 @@ impl App {
             return;
         }
         let id = self.take_tab_id();
-        self.tabs.push(Tab { id, kind: TabKind::Settings, label: "Ajustes".into(), custom: None, attention: false, body: Body::Settings(section) });
+        self.tabs.push(Tab { id, kind: TabKind::Settings, label: t("sessions-ajustes").into(), custom: None, attention: false, body: Body::Settings(section) });
         self.active = self.tabs.len() - 1;
     }
 
@@ -109,28 +110,28 @@ impl App {
             self.active = index;
             return;
         }
-        let view = ContainersView::new(self.runtime.handle().clone(), self.wake(), view::Source::Here, "Contenedores".into());
+        let view = ContainersView::new(self.runtime.handle().clone(), self.wake(), view::Source::Here, t("conn-edit-contenedores").into());
         let id = self.take_tab_id();
-        self.tabs.push(Tab { id, kind: TabKind::Containers, label: "Contenedores".into(), custom: None, attention: false, body: Body::Containers(Box::new(view)) });
+        self.tabs.push(Tab { id, kind: TabKind::Containers, label: t("conn-edit-contenedores").into(), custom: None, attention: false, body: Body::Containers(Box::new(view)) });
         self.active = self.tabs.len() - 1;
     }
 
     /// Pestaña de contenedores de un perfil de motor: en este equipo o en un servidor por SSH.
     pub(super) fn open_engine(&mut self, connection: Connection, credentials: Credentials) -> anyhow::Result<()> {
-        let Some(id) = connection.id else { anyhow::bail!("la conexión no está guardada") };
+        let Some(id) = connection.id else { anyhow::bail!(t("sessions-la-conexion-no-esta-guardada")) };
         let socket = connection.engine_socket().map(str::to_string);
         let source = match (credentials.jump, connection.jump) {
             (Some(server), _) => {
                 let link = ssh::SshLink::new(*server, self.events_tx.clone(), self.wake(), ssh::default_known_hosts());
                 view::Source::Remote { link: Arc::new(link), socket }
             }
-            (None, Some(_)) => anyhow::bail!("La conexión SSH de este motor ya no existe: edítalo y elige otra."),
+            (None, Some(_)) => anyhow::bail!(t("sessions-la-conexion-ssh-de-este")),
             (None, None) => match socket {
                 Some(socket) => view::Source::Socket(socket),
                 None => view::Source::Here,
             },
         };
-        let title = format!("Contenedores · {}", connection.name);
+        let title = crate::tf!("sessions-containers-title", "name" => connection.name.to_string());
         let view = ContainersView::new(self.runtime.handle().clone(), self.wake(), source, title.clone());
         let tab_id = self.take_tab_id();
         self.tabs.push(Tab { id: tab_id, kind: TabKind::Connection(id), label: title, custom: None, attention: false, body: Body::Containers(Box::new(view)) });
@@ -161,7 +162,7 @@ impl App {
                 self.container_shells.insert(tab_id, (endpoint, container.name.clone()));
                 self.active = self.tabs.len() - 1;
             }
-            Err(error) => self.dialog = Some(Dialog::failure("No se pudo abrir el terminal", format!("{error:#}"))),
+            Err(error) => self.dialog = Some(Dialog::failure(t("sessions-no-se-pudo-abrir-el"), format!("{error:#}"))),
         }
     }
 
@@ -175,7 +176,7 @@ impl App {
         }
         match self.container_session(endpoint, name) {
             Ok(session) => self.tabs[index].body = Body::terminal(Pane::new(session, self.debug_keys, 1), None),
-            Err(error) => self.dialog = Some(Dialog::failure("No se pudo reabrir el terminal", format!("{error:#}"))),
+            Err(error) => self.dialog = Some(Dialog::failure(t("sessions-no-se-pudo-reabrir-el"), format!("{error:#}"))),
         }
     }
 
@@ -197,7 +198,7 @@ impl App {
 
     /// Abre la sesión SSH en una pestaña nueva o, con `slot`, en lugar de una caída.
     pub(super) fn open_ssh(&mut self, connection: Connection, credentials: Credentials, slot: Option<u64>) -> anyhow::Result<()> {
-        let Some(id) = connection.id else { anyhow::bail!("la conexión no está guardada") };
+        let Some(id) = connection.id else { anyhow::bail!(t("sessions-la-conexion-no-esta-guardada")) };
         let label = connection.name.clone();
         let forwards = self.forwards.get(&id).cloned().unwrap_or_default();
         let tunnels = ssh::new_tunnels(&forwards);
@@ -260,7 +261,7 @@ impl App {
         match kind {
             TabKind::Local => match self.local_session() {
                 Ok(session) => self.place_pane(tab_id, PaneTarget::Split(dir), session),
-                Err(error) => self.dialog = Some(Dialog::failure("No se pudo abrir el terminal", format!("{error:#}"))),
+                Err(error) => self.dialog = Some(Dialog::failure(t("sessions-no-se-pudo-abrir-el"), format!("{error:#}"))),
             },
             TabKind::Connection(id) => {
                 if let Some(connection) = self.connections.iter().find(|c| c.id == Some(id)).cloned() {
@@ -309,8 +310,8 @@ impl App {
 
     /// Abre un explorador de archivos con su propia sesión SSH.
     pub(super) fn open_explorer(&mut self, connection: Connection, credentials: Credentials, paths: (Option<String>, Option<String>)) -> anyhow::Result<()> {
-        let Some(id) = connection.id else { anyhow::bail!("la conexión no está guardada") };
-        let label = format!("Archivos · {}", connection.name);
+        let Some(id) = connection.id else { anyhow::bail!(t("sessions-la-conexion-no-esta-guardada")) };
+        let label = crate::tf!("explorer-files-title", "name" => connection.name.to_string());
         let explorer = Explorer::new(
             connection,
             credentials,

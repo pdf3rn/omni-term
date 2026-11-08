@@ -1,5 +1,6 @@
 //! Pestañas: su estado, la barra de pestañas y el menú de «+».
 
+use crate::i18n::t;
 use super::*;
 
 pub(super) enum Body {
@@ -55,12 +56,12 @@ impl Tab {
             Body::Containers(_) | Body::Settings(_) => None,
             Body::Explorer(explorer) => {
                 let n = explorer.running_transfers();
-                (n > 0).then(|| if n == 1 { "1 transferencia en curso".to_string() } else { format!("{n} transferencias en curso") })
+                (n > 0).then(|| crate::tf!("tabs-transfers-running", "n" => n))
             }
             Body::Terminal { panes, .. } => {
                 let mut busy = false;
                 panes.for_each(&mut |_, pane| busy |= pane_busy(pane));
-                busy.then(|| "proceso en ejecución".to_string())
+                busy.then(|| t("tabs-proceso-en-ejecucion").to_string())
             }
         }
     }
@@ -99,7 +100,7 @@ impl Tab {
             }
             Body::Explorer(explorer) => explorer.label(),
             Body::Containers(view) => view.label(),
-            Body::Settings(_) => "Ajustes".to_string(),
+            Body::Settings(_) => t("sessions-ajustes").to_string(),
         }
     }
 }
@@ -183,15 +184,15 @@ pub(super) fn tab(
     let mut close_clicked = false;
     if selected || hovered {
         let close = crate::ui::kit::IconButton::new(icons::X).small().size(theme::size::LABEL).color(color).show_at(ui, close_rect, ("tab-close", index));
-        close_clicked = close.on_hover_text("Cerrar pestaña").clicked();
+        close_clicked = close.on_hover_text(t("native-menu-cerrar-pestana")).clicked();
     }
     response.context_menu(|ui| {
         for (label, action, enabled) in [
-            ("Renombrar", TabAction::Rename, can_rename),
-            ("Duplicar", TabAction::Duplicate, can_duplicate),
-            ("Cerrar otras", TabAction::CloseOthers, count > 1),
-            ("Cerrar a la derecha", TabAction::CloseRight, index + 1 < count),
-            ("Cerrar", TabAction::Close, true),
+            (t("explorer-renombrar"), TabAction::Rename, can_rename),
+            (t("sidebar-duplicar"), TabAction::Duplicate, can_duplicate),
+            (t("tabs-cerrar-otras"), TabAction::CloseOthers, count > 1),
+            (t("tabs-cerrar-a-la-derecha"), TabAction::CloseRight, index + 1 < count),
+            (t("pane-cerrar"), TabAction::Close, true),
         ] {
             if ui.add_enabled(enabled, Button::new(label)).clicked() {
                 *menu = Some((index, action));
@@ -262,15 +263,15 @@ pub(super) fn plus_menu(ui: &mut egui::Ui, recents: &[Connection], selected: &mu
 
     let (rect, clicked) = row(ui, 0, selected);
     ui.painter().text(rect.min + Vec2::new(20.0, 20.0), Align2::CENTER_CENTER, icons::TERMINAL, FontId::proportional(theme::size::ICON_LG), theme::text());
-    ui.painter().text(rect.min + Vec2::new(42.0, 13.0), Align2::LEFT_CENTER, "Terminal local", FontId::new(theme::size::BODY, strong_family()), theme::text());
-    ui.painter().text(rect.min + Vec2::new(42.0, 29.0), Align2::LEFT_CENTER, "Este equipo", FontId::new(theme::size::SMALL, FontFamily::Proportional), theme::subtext());
+    ui.painter().text(rect.min + Vec2::new(42.0, 13.0), Align2::LEFT_CENTER, t("sessions-terminal-local"), FontId::new(theme::size::BODY, strong_family()), theme::text());
+    ui.painter().text(rect.min + Vec2::new(42.0, 29.0), Align2::LEFT_CENTER, t("explorer-este-equipo"), FontId::new(theme::size::SMALL, FontFamily::Proportional), theme::subtext());
     if clicked {
         picked = Some(0);
     }
 
     if !recents.is_empty() {
         ui.add_space(theme::space::S);
-        ui.label(RichText::new("Recientes").small().color(theme::subtext()));
+        ui.label(RichText::new(t("empty-recientes")).small().color(theme::subtext()));
     }
     for (offset, connection) in recents.iter().enumerate() {
         let index = offset + 1;
@@ -291,7 +292,7 @@ pub(super) fn plus_menu(ui: &mut egui::Ui, recents: &[Connection], selected: &mu
         );
         let files_slot = Rect::from_center_size(Pos2::new(rect.max.x - 20.0, rect.center().y), Vec2::splat(26.0));
         let files_response = crate::ui::kit::IconButton::new(icons::FOLDER).color(theme::subtext()).show_at(ui, files_slot, ("plus-files", index));
-        if files_response.on_hover_text("Abrir el explorador de archivos").clicked() {
+        if files_response.on_hover_text(t("tabs-abrir-el-explorador-de-archivos")).clicked() {
             files_for = Some(index);
         } else if clicked {
             picked = Some(index);
@@ -302,14 +303,14 @@ pub(super) fn plus_menu(ui: &mut egui::Ui, recents: &[Connection], selected: &mu
     let containers_index = rows - 2;
     let (rect, clicked) = row(ui, containers_index, selected);
     ui.painter().text(rect.min + Vec2::new(20.0, 20.0), Align2::CENTER_CENTER, icons::DOTS, FontId::proportional(theme::size::ICON), theme::subtext());
-    ui.painter().text(rect.min + Vec2::new(42.0, 20.0), Align2::LEFT_CENTER, "Contenedores", FontId::new(theme::size::BODY, FontFamily::Proportional), theme::text());
+    ui.painter().text(rect.min + Vec2::new(42.0, 20.0), Align2::LEFT_CENTER, t("conn-edit-contenedores"), FontId::new(theme::size::BODY, FontFamily::Proportional), theme::text());
     if clicked {
         picked = Some(containers_index);
     }
     let index = rows - 1;
     let (rect, clicked) = row(ui, index, selected);
     ui.painter().text(rect.min + Vec2::new(20.0, 20.0), Align2::CENTER_CENTER, icons::SEARCH, FontId::proportional(theme::size::ICON), theme::subtext());
-    ui.painter().text(rect.min + Vec2::new(42.0, 20.0), Align2::LEFT_CENTER, "Ver todas…", FontId::new(theme::size::BODY, FontFamily::Proportional), theme::text());
+    ui.painter().text(rect.min + Vec2::new(42.0, 20.0), Align2::LEFT_CENTER, t("tabs-ver-todas"), FontId::new(theme::size::BODY, FontFamily::Proportional), theme::text());
     ui.painter().text(rect.max - Vec2::new(10.0, 20.0), Align2::RIGHT_CENTER, shortcuts::label("Ctrl+Shift+P"), FontId::new(theme::size::SMALL, FontFamily::Proportional), theme::subtext());
     if clicked {
         picked = Some(index);
@@ -341,10 +342,10 @@ pub(super) enum PlusChoice {
 pub(super) fn tunnel_line(ui: &mut egui::Ui, status: &ssh::TunnelStatus) {
     let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 20.0), Sense::hover());
     let (color, tip) = match &status.state {
-        TunnelState::Starting => (theme::subtext(), "Iniciando".to_string()),
-        TunnelState::Active => (theme::accent(), "Activo".to_string()),
+        TunnelState::Starting => (theme::subtext(), t("tabs-iniciando").to_string()),
+        TunnelState::Active => (theme::accent(), t("tabs-activo").to_string()),
         TunnelState::Failed(reason) => (theme::red(), reason.clone()),
-        TunnelState::Stopped => (theme::selection(), "Detenido".to_string()),
+        TunnelState::Stopped => (theme::selection(), t("tabs-detenido").to_string()),
     };
     ui.painter().circle_filled(Pos2::new(rect.min.x + 14.0, rect.center().y), 3.0, color);
     ui.painter().text(
@@ -403,7 +404,7 @@ impl App {
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 2.0;
-                    let hint = shortcuts::label(if self.sidebar_collapsed { "Mostrar la barra lateral (Ctrl+Shift+B)" } else { "Ocultar la barra lateral (Ctrl+Shift+B)" });
+                    let hint = shortcuts::label(if self.sidebar_collapsed { t("tabs-mostrar-la-barra-lateral-ctrl") } else { t("tabs-ocultar-la-barra-lateral-ctrl") });
                     let toggle = crate::ui::kit::icon_button(ui, icons::SIDEBAR, theme::size::ICON_LG, theme::subtext());
                     if toggle.on_hover_text(hint).clicked() {
                         toggle_sidebar_button = true;
@@ -430,7 +431,7 @@ impl App {
                     for (i, (title, identity, attention, insecure)) in tab_labels.iter().enumerate() {
                         if let Some((index, text, focus)) = renaming.as_mut().filter(|(index, _, _)| *index == i) {
                             let _ = index;
-                            let field = ui.add_sized([150.0, TAB_HEIGHT - 8.0], egui::TextEdit::singleline(text).hint_text("Nombre de la pestaña"));
+                            let field = ui.add_sized([150.0, TAB_HEIGHT - 8.0], egui::TextEdit::singleline(text).hint_text(t("tabs-nombre-de-la-pestana")));
                             if std::mem::take(focus) {
                                 field.request_focus();
                             }
@@ -470,7 +471,7 @@ impl App {
                         });
                     ui.add_space(theme::space::S);
                     let plus = crate::ui::kit::icon_button(ui, icons::PLUS, theme::size::ICON, theme::text());
-                    let plus = plus.on_hover_text(shortcuts::label("Nueva pestaña (Ctrl+Shift+T)"));
+                    let plus = plus.on_hover_text(shortcuts::label(t("tabs-nueva-pestana-ctrl-shift-t")));
                     let popup_id = egui::Popup::default_response_id(&plus);
                     if std::mem::take(&mut open_plus_menu) {
                         egui::Popup::open_id(ui.ctx(), popup_id);
@@ -483,7 +484,7 @@ impl App {
                     });
                     if overflowing {
                         let list = crate::ui::kit::icon_button(ui, icons::CARET_DOWN, theme::size::ICON_SM, theme::subtext());
-                        let list = list.on_hover_text("Todas las pestañas");
+                        let list = list.on_hover_text(t("tabs-todas-las-pestanas"));
                         egui::Popup::menu(&list).width(260.0).show(|ui| {
                             for (i, (title, _, _, _)) in tab_labels.iter().enumerate() {
                                 let shown: String = title.chars().take(32).collect();
@@ -498,7 +499,7 @@ impl App {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.spacing_mut().item_spacing.x = 4.0;
                         // Con la barra de título integrada el engranaje ya está en ella; con la del sistema va aquí, arriba a la derecha.
-                        if self.settings.system_titlebar && crate::ui::kit::IconButton::new(icons::GEAR).size(theme::size::ICON_LG).color(theme::subtext()).show(ui).on_hover_text(shortcuts::label("Ajustes (Ctrl+,)")).clicked() {
+                        if self.settings.system_titlebar && crate::ui::kit::IconButton::new(icons::GEAR).size(theme::size::ICON_LG).color(theme::subtext()).show(ui).on_hover_text(shortcuts::label(t("tabs-ajustes-ctrl"))).clicked() {
                             open_settings_button = true;
                         }
                         if self.tabs.get(self.active).is_some_and(|t| matches!(t.body, Body::Terminal { .. })) {
@@ -507,37 +508,37 @@ impl App {
                             let split_button = crate::ui::kit::IconButton::new(icons::SPLIT).size(theme::size::ICON_LG).color(theme::subtext()).active(menu_open).show(ui);
                             let popup = egui::Popup::menu(&split_button).show(|ui| {
                                 let entry = |ui: &mut egui::Ui, label: &str, shortcut: &str| ui.add(Button::new(label).shortcut_text(shortcuts::label(shortcut))).clicked();
-                                if entry(ui, "A la derecha", "Ctrl+Shift+D") {
+                                if entry(ui, t("tabs-a-la-derecha"), "Ctrl+Shift+D") {
                                     split = Some(Dir::Horizontal);
                                 }
-                                if entry(ui, "Hacia abajo", "Ctrl+Shift+E") {
+                                if entry(ui, t("tabs-hacia-abajo"), "Ctrl+Shift+E") {
                                     split = Some(Dir::Vertical);
                                 }
-                                if entry(ui, "Ampliar o restaurar el panel", "Ctrl+Shift+Z") {
+                                if entry(ui, t("settings-ampliar-o-restaurar-el-panel"), "Ctrl+Shift+Z") {
                                     pane_command = Some(Command::TogglePaneZoom);
                                 }
-                                if entry(ui, "Igualar paneles", "") {
+                                if entry(ui, t("native-menu-igualar-paneles"), "") {
                                     pane_command = Some(Command::EqualizePanes);
                                 }
                                 ui.separator();
-                                if entry(ui, "Cerrar panel", "Ctrl+Shift+W") {
+                                if entry(ui, t("tabs-cerrar-panel"), "Ctrl+Shift+W") {
                                     close_pane = true;
                                 }
                             });
                             ui.data_mut(|d| d.insert_temp(egui::Id::NULL.with("split-menu-open"), popup.is_some()));
                             if popup.is_none() {
-                                split_button.on_hover_text("Dividir el panel");
+                                split_button.on_hover_text(t("tabs-dividir-el-panel"));
                             }
                         }
                         if let Some(TabKind::Connection(id)) = self.tabs.get(self.active).map(|t| t.kind) {
-                            if self.active_has_explorer() && crate::ui::kit::icon_button(ui, icons::FOLDER, theme::size::ICON_LG, theme::subtext()).on_hover_text("Abrir el explorador de archivos de esta conexión").clicked() {
+                            if self.active_has_explorer() && crate::ui::kit::icon_button(ui, icons::FOLDER, theme::size::ICON_LG, theme::subtext()).on_hover_text(t("tabs-abrir-el-explorador-de-archivos-2")).clicked() {
                                 files_tab = Some(id);
                             }
                         }
                         if let Some(session) = self.tabs.get(self.active).and_then(|t| t.pane()).map(|p| &p.session).filter(|s| s.serial_status().is_some()) {
                             if let Some(status) = session.serial_status() {
-                                let menu = ui.menu_button(RichText::new(format!("{} baudios", status.baud)).small().color(theme::subtext()), |ui| {
-                                    ui.menu_button("Velocidad", |ui| {
+                                let menu = ui.menu_button(RichText::new(format!("{} {}", status.baud, t("conn-edit-baud-unit"))).small().color(theme::subtext()), |ui| {
+                                    ui.menu_button(t("conn-edit-velocidad"), |ui| {
                                         for rate in store::BAUD_RATES {
                                             if ui.selectable_label(rate == status.baud, rate.to_string()).clicked() {
                                                 session.control(term::Control::Baud(rate));
@@ -545,21 +546,21 @@ impl App {
                                             }
                                         }
                                     });
-                                    if ui.button("Enviar break").clicked() {
+                                    if ui.button(t("tabs-enviar-break")).clicked() {
                                         session.control(term::Control::Break);
                                         ui.close();
                                     }
                                     ui.separator();
                                     let mut dtr = status.dtr;
-                                    if crate::ui::kit::switch_labeled(ui, &mut dtr, "DTR").clicked() {
+                                    if crate::ui::kit::switch_labeled(ui, &mut dtr, t("tabs-dtr")).clicked() {
                                         session.control(term::Control::Dtr(dtr));
                                     }
                                     let mut rts = status.rts;
-                                    if crate::ui::kit::switch_labeled(ui, &mut rts, "RTS").clicked() {
+                                    if crate::ui::kit::switch_labeled(ui, &mut rts, t("tabs-rts")).clicked() {
                                         session.control(term::Control::Rts(rts));
                                     }
                                 });
-                                menu.response.on_hover_text("Ajustes del puerto serie");
+                                menu.response.on_hover_text(t("tabs-ajustes-del-puerto-serie"));
                             }
                         }
                     });

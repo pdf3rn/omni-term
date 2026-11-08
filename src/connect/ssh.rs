@@ -1,5 +1,6 @@
 //! Cliente SSH nativo (russh): un canal interactivo con PTY, alimentado por tokio.
 
+use crate::i18n::t;
 use std::sync::mpsc as std_mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -187,7 +188,7 @@ impl Handler for Client {
 
     async fn check_server_key(&mut self, key: &PublicKeyOrCertificate) -> Result<bool, Self::Error> {
         let PublicKeyOrCertificate::PublicKey { key, .. } = key else {
-            *self.rejection.lock().unwrap() = Some("el servidor usa un certificado de host, no soportado aún".into());
+            *self.rejection.lock().unwrap() = Some(t("err-ssh-host-certificate").into());
             return Ok(false);
         };
 
@@ -210,7 +211,7 @@ impl Handler for Client {
                     (self.wake)();
                 }
                 *self.rejection.lock().unwrap() =
-                    Some(format!("La huella del servidor ha cambiado (línea {line} de ~/.ssh/known_hosts). Conexión cancelada."));
+                    Some(crate::tf!("err-ssh-fingerprint-changed", "line" => line as i64));
                 return Ok(false);
             }
             Ok(false) | Err(_) => {}
@@ -231,15 +232,12 @@ impl Handler for Client {
 
         if answer.await.unwrap_or(false) {
             if let Err(error) = crate::connect::known_hosts::learn(&self.known_hosts, &self.host, self.port, key) {
-                *self.rejection.lock().unwrap() = Some(format!(
-                    "No se pudo guardar la huella en {}: {error}. Conexión cancelada.",
-                    self.known_hosts.display()
-                ));
+                *self.rejection.lock().unwrap() = Some(crate::tf!("err-ssh-fingerprint-save", "path" => self.known_hosts.display().to_string(), "error" => error.to_string()));
                 return Ok(false);
             }
             Ok(true)
         } else {
-            *self.rejection.lock().unwrap() = Some("servidor no confiable, conexión cancelada".into());
+            *self.rejection.lock().unwrap() = Some(t("err-ssh-untrusted").into());
             Ok(false)
         }
     }
@@ -297,13 +295,13 @@ pub async fn test_connection(
     )
     .await?;
     let _ = session.disconnect(russh::Disconnect::ByApplication, "", "es").await;
-    Ok(format!("Conexión correcta: {}@{}:{}", connection.user, connection.host, connection.port))
+    Ok(crate::tf!("err-ssh-test-ok", "user" => connection.user.to_string(), "host" => connection.host.to_string(), "port" => connection.port as i64))
 }
 
 /// Ejecuta `command` en el servidor sin PTY y devuelve su salida estándar.
 pub(crate) async fn run_command(session: &Handle<Client>, command: &str) -> anyhow::Result<String> {
-    let mut channel = session.channel_open_session().await.context("abriendo un canal para ejecutar un comando")?;
-    channel.exec(true, command).await.context("ejecutando un comando en el servidor")?;
+    let mut channel = session.channel_open_session().await.context(t("err-ssh-exec-channel"))?;
+    channel.exec(true, command).await.context(t("err-ssh-exec"))?;
     let mut output = Vec::new();
     while let Some(message) = channel.wait().await {
         match message {
@@ -349,7 +347,7 @@ impl SshLink {
             if !session.is_closed() {
                 return Ok(session.clone());
             }
-            *state = LinkState::Lost(format!("Se perdió la conexión con {}", self.name()));
+            *state = LinkState::Lost(crate::tf!("err-ssh-lost", "name" => self.name().to_string()));
         }
         if let LinkState::Lost(reason) = &*state {
             bail!("{reason}");
@@ -365,7 +363,7 @@ impl SshLink {
             new_tunnels(&[]),
         )
         .await
-        .with_context(|| format!("conectando con {}", connection.name));
+        .with_context(|| crate::tf!("err-ssh-connecting", "name" => connection.name.to_string()));
         match opened {
             Ok(session) => {
                 let session = Arc::new(session);
@@ -407,7 +405,7 @@ pub fn key_is_encrypted(path: &str) -> anyhow::Result<bool> {
     match russh::keys::load_secret_key(expand_home(path), None) {
         Ok(_) => Ok(false),
         Err(russh::keys::Error::KeyIsEncrypted) => Ok(true),
-        Err(error) => Err(anyhow!("no se pudo leer la llave {path}: {error}")),
+        Err(error) => Err(anyhow!(crate::tf!("err-ssh-key-read", "path" => path.to_string(), "error" => error.to_string()))),
     }
 }
 
@@ -475,7 +473,7 @@ pub(crate) fn establish<'a>(
                     new_tunnels(&[]),
                 )
                 .await
-                .with_context(|| format!("saltando por {}", jump.connection.name))?;
+                .with_context(|| crate::tf!("err-ssh-jumping", "name" => jump.connection.name.to_string()))?;
                 Some(Arc::new(session))
             }
             None => None,
@@ -499,7 +497,7 @@ pub(crate) fn establish<'a>(
                 let channel = via
                     .channel_open_direct_tcpip(connection.host.clone(), connection.port as u32, "127.0.0.1", 0)
                     .await
-                    .context("el servidor de salto no pudo abrir el túnel hasta el destino")?;
+                    .context(t("err-ssh-jump-tunnel"))?;
                 client::connect_stream(config, channel.into_stream(), handler).await
             }
             None => client::connect(config, (connection.host.as_str(), connection.port), handler).await,
@@ -510,7 +508,7 @@ pub(crate) fn establish<'a>(
                 let reason = rejection.lock().unwrap().take();
                 return Err(match reason {
                     Some(reason) => anyhow!(reason),
-                    None => anyhow!("no se pudo conectar: {error}"),
+                    None => anyhow!(crate::tf!("err-ssh-connect-failed", "error" => error.to_string())),
                 });
             }
         };
@@ -543,14 +541,14 @@ async fn run(
     let mut tasks = tokio::task::JoinSet::new();
     start_forwards(&session, &tunnels, &remote, &mut tasks).await;
 
-    let mut channel = session.channel_open_session().await.context("abriendo el canal")?;
+    let mut channel = session.channel_open_session().await.context(t("err-ssh-open-channel"))?;
     channel
         .request_pty(true, "xterm-256color", cols as u32, rows as u32, 0, 0, &[])
         .await
         .context("solicitando PTY")?;
     // Los servidores solo la aceptan con `AcceptEnv`; sin ella se ignora y no hay nada que hacer.
     let _ = channel.set_env(false, "COLORTERM", "truecolor").await;
-    channel.request_shell(true).await.context("iniciando el shell")?;
+    channel.request_shell(true).await.context(t("err-ssh-start-shell"))?;
     if let Some(command) = connection.init_command.as_deref().filter(|c| !c.is_empty()) {
         channel.data(format!("{command}\n").as_bytes()).await?;
     }
@@ -567,7 +565,7 @@ async fn run(
                     if shell_exited || !session.is_closed() {
                         break;
                     }
-                    bail!("la conexión se cerró de forma inesperada");
+                    bail!(t("err-ssh-closed"));
                 }
                 Some(ChannelMsg::Eof) => {}
                 Some(_) => {}
@@ -612,7 +610,7 @@ async fn start_forwards(
                         set_state(
                             tunnels,
                             index,
-                            TunnelState::Failed(format!("el servidor rechazó el reenvío remoto: {error}")),
+                            TunnelState::Failed(crate::tf!("err-ssh-remote-forward", "error" => format!("{error}"))),
                         );
                     }
                 }
@@ -625,7 +623,7 @@ async fn local_forward(session: Arc<Handle<Client>>, tunnels: Tunnels, index: us
     let listener = match tokio::net::TcpListener::bind((forward.bind_host.as_str(), forward.bind_port)).await {
         Ok(listener) => listener,
         Err(error) => {
-            let reason = format!("no se pudo escuchar en {}:{}: {error}", forward.bind_host, forward.bind_port);
+            let reason = crate::tf!("err-ssh-listen", "host" => forward.bind_host.to_string(), "port" => forward.bind_port as i64, "error" => error.to_string());
             set_state(&tunnels, index, TunnelState::Failed(reason));
             return;
         }
@@ -667,7 +665,7 @@ async fn dynamic_forward(session: Arc<Handle<Client>>, tunnels: Tunnels, index: 
     let listener = match tokio::net::TcpListener::bind((forward.bind_host.as_str(), forward.bind_port)).await {
         Ok(listener) => listener,
         Err(error) => {
-            let reason = format!("no se pudo escuchar en {}:{}: {error}", forward.bind_host, forward.bind_port);
+            let reason = crate::tf!("err-ssh-listen", "host" => forward.bind_host.to_string(), "port" => forward.bind_port as i64, "error" => error.to_string());
             set_state(&tunnels, index, TunnelState::Failed(reason));
             return;
         }
@@ -701,7 +699,7 @@ type DynAgent = AgentClient<Box<dyn russh::keys::agent::client::AgentStream + Se
 
 #[cfg(unix)]
 async fn connect_agent() -> anyhow::Result<DynAgent> {
-    let agent = AgentClient::connect_env().await.map_err(|e| anyhow!("no hay ssh-agent: {e}"))?;
+    let agent = AgentClient::connect_env().await.map_err(|e| anyhow!(crate::tf!("err-ssh-no-agent", "error" => e.to_string())))?;
     Ok(agent.dynamic())
 }
 
@@ -712,7 +710,7 @@ async fn connect_agent() -> anyhow::Result<DynAgent> {
         Ok(agent) => Ok(agent.dynamic()),
         Err(pipe_error) => match AgentClient::connect_pageant().await {
             Ok(agent) => Ok(agent.dynamic()),
-            Err(_) => bail!("no hay ssh-agent: {pipe_error}"),
+            Err(_) => bail!(crate::tf!("err-ssh-no-agent", "error" => pipe_error.to_string())),
         },
     }
 }
@@ -727,14 +725,14 @@ async fn authenticate(
     let first: Option<AuthResult> = match connection.auth {
         Auth::Interactive => None,
         Auth::Password => {
-            let password = credentials.password.as_ref().context("falta la contraseña")?;
+            let password = credentials.password.as_ref().context(t("err-ssh-missing-password"))?;
             Some(session.authenticate_password(user.clone(), password.as_str()).await?)
         }
         Auth::Key => {
-            let path = connection.key_path.as_deref().context("falta la ruta de la llave privada")?;
+            let path = connection.key_path.as_deref().context(t("err-ssh-missing-key-path"))?;
             let passphrase = credentials.key_passphrase.as_ref().map(|p| p.as_str());
             let key = russh::keys::load_secret_key(expand_home(path), passphrase)
-                .map_err(|e| anyhow!("no se pudo leer la llave {path}: {e}"))?;
+                .map_err(|e| anyhow!(crate::tf!("err-ssh-key-read", "path" => path.to_string(), "error" => e.to_string())))?;
             let hash = session.best_supported_rsa_hash().await?.flatten();
             Some(session.authenticate_publickey(user.clone(), PrivateKeyWithHashAlg::new(Arc::new(key), hash)).await?)
         }
@@ -742,7 +740,7 @@ async fn authenticate(
             let mut agent = connect_agent().await?;
             let identities = agent.request_identities().await.map_err(|e| anyhow!("ssh-agent: {e}"))?;
             if identities.is_empty() {
-                bail!("el ssh-agent no tiene identidades cargadas (ssh-add)");
+                bail!(t("err-ssh-agent-empty"));
             }
             let hash = session.best_supported_rsa_hash().await?.flatten();
             let mut last = None;
@@ -751,7 +749,7 @@ async fn authenticate(
                 let result = session
                     .authenticate_publickey_with(user.clone(), key, hash, &mut agent)
                     .await
-                    .map_err(|e| anyhow!("firmando con el agente: {e}"))?;
+                    .map_err(|e| anyhow!(crate::tf!("err-ssh-agent-sign", "error" => e.to_string())))?;
                 if result.success() {
                     return Ok(());
                 }
@@ -770,7 +768,7 @@ async fn authenticate(
                 let can_continue = remaining_methods.contains(&MethodKind::KeyboardInteractive)
                     && (partial_success || connection.auth == Auth::Password);
                 if !can_continue {
-                    bail!("autenticación rechazada por el servidor");
+                    bail!(t("err-ssh-auth-rejected"));
                 }
             }
         }
@@ -796,7 +794,7 @@ async fn keyboard_interactive(
     loop {
         match response {
             KeyboardInteractiveAuthResponse::Success => return Ok(()),
-            KeyboardInteractiveAuthResponse::Failure { .. } => bail!("autenticación rechazada por el servidor"),
+            KeyboardInteractiveAuthResponse::Failure { .. } => bail!(t("err-ssh-auth-rejected")),
             KeyboardInteractiveAuthResponse::InfoRequest { name, instructions, prompts } => {
                 let answers = match (prompts.as_slice(), autofill) {
                     ([], _) => Vec::new(),
@@ -806,7 +804,7 @@ async fn keyboard_interactive(
                     }
                     _ => {
                         let questions = prompts.iter().map(|p| (p.prompt.clone(), p.echo)).collect();
-                        ui.ask(name, instructions, questions).await.context("autenticación cancelada")?
+                        ui.ask(name, instructions, questions).await.context(t("err-ssh-auth-canceled"))?
                     }
                 };
                 response = session.authenticate_keyboard_interactive_respond(answers).await?;

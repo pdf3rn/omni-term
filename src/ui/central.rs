@@ -1,5 +1,6 @@
 //! Zona central: lo que muestra la pestaña activa (terminal, explorador, contenedores, ajustes) o la pantalla de inicio.
 
+use crate::i18n::t;
 use super::*;
 
 impl App {
@@ -150,7 +151,7 @@ impl App {
                             let corner = Rect::from_min_size(Pos2::new(rect.max.x - PANE_BUTTON, rect.min.y), Vec2::splat(PANE_BUTTON));
                             let grip_slot = corner.translate(Vec2::new(-PANE_BUTTON, 0.0));
                             if zoomed.is_some() && !search_open {
-                                let galley = ui.painter().layout_no_wrap("Ampliado".to_string(), FontId::proportional(theme::size::CAPTION), theme::subtext());
+                                let galley = ui.painter().layout_no_wrap(t("central-ampliado").to_string(), FontId::proportional(theme::size::CAPTION), theme::subtext());
                                 let badge = Rect::from_min_size(Pos2::new(grip_slot.min.x - galley.size().x - theme::space::L * 2.0, rect.min.y + theme::space::XS), galley.size() + Vec2::new(theme::space::L, theme::space::XS) * 2.0);
                                 ui.painter().rect_filled(badge, CornerRadius::same(theme::radius::SMALL), theme::surface());
                                 ui.painter().galley(badge.min + Vec2::new(theme::space::L, theme::space::XS), galley, theme::subtext());
@@ -160,7 +161,7 @@ impl App {
                             }
                             if panes.len() > 1 {
                                 let close = crate::ui::kit::IconButton::new(icons::X).color(theme::subtext()).show_at(ui, corner, ("pane-close", active, *id));
-                                if close.on_hover_text(shortcuts::label("Cerrar panel (Ctrl+Shift+W)")).clicked() {
+                                if close.on_hover_text(shortcuts::label(t("central-cerrar-panel-ctrl-shift-w"))).clicked() {
                                     close_pane = Some(*id);
                                 }
                             }
@@ -247,8 +248,8 @@ impl App {
                     .show(&ctx, |ui| {
                         Frame::popup(ui.style()).inner_margin(Margin::symmetric(14, 10)).show(ui, |ui| {
                             ui.horizontal(|ui| {
-                                ui.label("Sesión desconectada");
-                                let button = Button::new(RichText::new("Reconectar").color(theme::base()));
+                                ui.label(t("central-sesion-desconectada"));
+                                let button = Button::new(RichText::new(t("view-reconectar")).color(theme::base()));
                                 clicked = crate::ui::kit::button_with(ui, button, crate::ui::kit::Variant::Primary).clicked();
                             });
                         });
@@ -314,5 +315,5 @@ fn pane_grip(ui: &mut egui::Ui, slot: Rect, id: impl std::hash::Hash + std::fmt:
             ui.painter().circle_filled(dot, theme::stroke::MEDIUM, ink);
         }
     }
-    response.on_hover_text("Arrastrar el panel a otro sitio, a otra pestaña o a una pestaña nueva")
+    response.on_hover_text(t("central-arrastrar-el-panel-a-otro"))
 }

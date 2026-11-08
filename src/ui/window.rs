@@ -1,5 +1,6 @@
 //! La ventana: barra de título integrada, bordes, tamaño y posición.
 
+use crate::i18n::t;
 use super::*;
 
 impl App {
@@ -197,59 +198,59 @@ impl App {
                     }
                 };
                 let mut menus = |ui: &mut egui::Ui| {
-                    ui.menu_button("Archivo", |ui| {
+                    ui.menu_button(t("native-menu-archivo"), |ui| {
                         ui.set_min_width(300.0);
-                        item(ui, "Nueva pestaña local", "Ctrl+Shift+T", true, Command::NewTab);
-                        item(ui, "Nueva conexión…", "Ctrl+Shift+N", true, Command::NewConnection);
-                        item(ui, "Importar de ~/.ssh/config", "", true, Command::ImportConfig);
+                        item(ui, t("native-menu-nueva-pestana-local"), "Ctrl+Shift+T", true, Command::NewTab);
+                        item(ui, t("native-menu-nueva-conexion"), "Ctrl+Shift+N", true, Command::NewConnection);
+                        item(ui, t("empty-importar-de-ssh-config"), "", true, Command::ImportConfig);
                         ui.separator();
-                        item(ui, "Cerrar pestaña", "Ctrl+Shift+W", !self.tabs.is_empty(), Command::CloseTab);
-                        item(ui, "Ajustes", "Ctrl+,", true, Command::Settings);
-                        item(ui, "Hosts conocidos", "", true, Command::KnownHosts);
+                        item(ui, t("native-menu-cerrar-pestana"), "Ctrl+Shift+W", !self.tabs.is_empty(), Command::CloseTab);
+                        item(ui, t("sessions-ajustes"), "Ctrl+,", true, Command::Settings);
+                        item(ui, t("settings-hosts-conocidos"), "", true, Command::KnownHosts);
                         ui.separator();
-                        item(ui, "Salir", "", true, Command::Quit);
+                        item(ui, t("native-menu-salir"), "", true, Command::Quit);
                     });
-                    ui.menu_button("Editar", |ui| {
+                    ui.menu_button(t("settings-editar"), |ui| {
                         ui.set_min_width(300.0);
-                        item(ui, "Copiar", "Ctrl+Shift+C", has_selection, Command::Copy);
-                        item(ui, "Pegar", "Ctrl+Shift+V", has_terminal, Command::Paste);
-                        item(ui, "Escribir contraseña…", "Ctrl+Alt+P", has_terminal, Command::TypePassword);
-                        item(ui, "Seleccionar todo", "", has_terminal, Command::SelectAll);
+                        item(ui, t("pane-copiar"), "Ctrl+Shift+C", has_selection, Command::Copy);
+                        item(ui, t("pane-pegar"), "Ctrl+Shift+V", has_terminal, Command::Paste);
+                        item(ui, t("pane-escribir-contrasena"), "Ctrl+Alt+P", has_terminal, Command::TypePassword);
+                        item(ui, t("pane-seleccionar-todo"), "", has_terminal, Command::SelectAll);
                         ui.separator();
-                        item(ui, "Buscar en la salida", "Ctrl+Shift+F", has_terminal, Command::Search);
-                        item(ui, "Guardar selección como snippet", "", has_selection, Command::SaveSnippet);
+                        item(ui, t("settings-buscar-en-la-salida"), "Ctrl+Shift+F", has_terminal, Command::Search);
+                        item(ui, t("pane-guardar-seleccion-como-snippet"), "", has_selection, Command::SaveSnippet);
                         ui.separator();
-                        item(ui, "Contraseñas guardadas", "", true, Command::Passwords);
+                        item(ui, t("native-menu-contrasenas-guardadas"), "", true, Command::Passwords);
                     });
-                    ui.menu_button("Ver", |ui| {
+                    ui.menu_button(t("native-menu-ver"), |ui| {
                         ui.set_min_width(300.0);
-                        item(ui, "Barra lateral", "Ctrl+Shift+B", true, Command::ToggleSidebar);
-                        item(ui, "Pantalla completa", "F11", true, Command::Fullscreen);
+                        item(ui, t("native-menu-barra-lateral"), "Ctrl+Shift+B", true, Command::ToggleSidebar);
+                        item(ui, t("settings-pantalla-completa"), "F11", true, Command::Fullscreen);
                         ui.separator();
-                        item(ui, "Dividir a la derecha", "Ctrl+Shift+D", has_terminal, Command::SplitRight);
-                        item(ui, "Dividir hacia abajo", "Ctrl+Shift+E", has_terminal, Command::SplitDown);
-                        item(ui, "Ampliar o restaurar el panel", "Ctrl+Shift+Z", has_terminal, Command::TogglePaneZoom);
-                        item(ui, "Igualar paneles", "", has_terminal, Command::EqualizePanes);
+                        item(ui, t("pane-dividir-a-la-derecha"), "Ctrl+Shift+D", has_terminal, Command::SplitRight);
+                        item(ui, t("pane-dividir-hacia-abajo"), "Ctrl+Shift+E", has_terminal, Command::SplitDown);
+                        item(ui, t("settings-ampliar-o-restaurar-el-panel"), "Ctrl+Shift+Z", has_terminal, Command::TogglePaneZoom);
+                        item(ui, t("native-menu-igualar-paneles"), "", has_terminal, Command::EqualizePanes);
                         ui.separator();
-                        item(ui, "Aumentar la letra", "Ctrl+=", true, Command::ZoomIn);
-                        item(ui, "Reducir la letra", "Ctrl+−", true, Command::ZoomOut);
-                        item(ui, "Restablecer la letra", "Ctrl+0", true, Command::ZoomReset);
+                        item(ui, t("native-menu-aumentar-la-letra"), "Ctrl+=", true, Command::ZoomIn);
+                        item(ui, t("native-menu-reducir-la-letra"), "Ctrl+−", true, Command::ZoomOut);
+                        item(ui, t("native-menu-restablecer-la-letra"), "Ctrl+0", true, Command::ZoomReset);
                         ui.separator();
-                        item(ui, "Tema oscuro", "", true, Command::ThemeDark);
-                        item(ui, "Tema claro", "", true, Command::ThemeLight);
-                        item(ui, "Tema del sistema", "", true, Command::ThemeSystem);
+                        item(ui, t("native-menu-tema-oscuro"), "", true, Command::ThemeDark);
+                        item(ui, t("native-menu-tema-claro"), "", true, Command::ThemeLight);
+                        item(ui, t("native-menu-tema-del-sistema"), "", true, Command::ThemeSystem);
                     });
-                    ui.menu_button("Ir", |ui| {
+                    ui.menu_button(t("native-menu-ir"), |ui| {
                         ui.set_min_width(300.0);
-                        item(ui, "Paleta de comandos", "Ctrl+Shift+P", true, Command::Palette);
+                        item(ui, t("settings-paleta-de-comandos"), "Ctrl+Shift+P", true, Command::Palette);
                         ui.separator();
-                        item(ui, "Pestaña siguiente", "Ctrl+Tab", several, Command::NextTab);
-                        item(ui, "Pestaña anterior", "Ctrl+Shift+Tab", several, Command::PrevTab);
-                        item(ui, "Explorador de archivos de esta conexión", "", on_connection, Command::Files);
-                        item(ui, "Contenedores", "", true, Command::Containers);
+                        item(ui, t("native-menu-pestana-siguiente"), "Ctrl+Tab", several, Command::NextTab);
+                        item(ui, t("native-menu-pestana-anterior"), "Ctrl+Shift+Tab", several, Command::PrevTab);
+                        item(ui, t("native-menu-explorador-de-archivos-de-esta"), "", on_connection, Command::Files);
+                        item(ui, t("conn-edit-contenedores"), "", true, Command::Containers);
                         ui.separator();
                         ui.add_enabled_ui(!recents.is_empty(), |ui| {
-                            ui.menu_button("Conexiones recientes", |ui| {
+                            ui.menu_button(t("native-menu-conexiones-recientes"), |ui| {
                                 for connection in &recents {
                                     let label = format!("{}   {}", connection.name, connection.target());
                                     if ui.button(label).clicked() {
@@ -260,10 +261,10 @@ impl App {
                             });
                         });
                     });
-                    ui.menu_button("Ayuda", |ui| {
+                    ui.menu_button(t("native-menu-ayuda"), |ui| {
                         ui.set_min_width(260.0);
-                        item(ui, "Atajos de teclado", "", true, Command::Shortcuts);
-                        item(ui, "Acerca de omni-term", "", true, Command::About);
+                        item(ui, t("settings-atajos-de-teclado"), "", true, Command::Shortcuts);
+                        item(ui, t("dialogs-acerca-de-omni-term"), "", true, Command::About);
                     });
                 };
                 if !custom {
@@ -303,7 +304,7 @@ impl App {
                         theme::subtext(),
                     );
                     let gear_slot = Rect::from_center_size(Pos2::new(bar.max.x - controls - 18.0, bar.center().y), Vec2::splat(1.0));
-                    if crate::ui::kit::IconButton::new(icons::GEAR).size(theme::size::ICON).show_at(ui, gear_slot, "titlebar-settings").on_hover_text(shortcuts::label("Ajustes (Ctrl+,)")).clicked() {
+                    if crate::ui::kit::IconButton::new(icons::GEAR).size(theme::size::ICON).show_at(ui, gear_slot, "titlebar-settings").on_hover_text(shortcuts::label(t("tabs-ajustes-ctrl"))).clicked() {
                         open_settings = true;
                     }
                     let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));

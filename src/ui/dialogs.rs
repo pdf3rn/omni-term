@@ -1,5 +1,6 @@
 //! Diálogos modales: edición de conexión, contraseñas, clave maestra y confianza de host.
 
+use crate::i18n::t;
 use eframe::egui::{self, CollapsingHeader, Color32, FontId, Id, Modal, RichText, ScrollArea, TextEdit};
 use zeroize::Zeroizing;
 
@@ -77,37 +78,37 @@ pub fn show(
     match dialog {
         Dialog::ConfirmClose(confirm) => {
             let title = match confirm.action {
-                CloseAction::Window => "Cerrar omni-term",
-                CloseAction::Tab(_) => "Cerrar la pestaña",
-                CloseAction::Pane { .. } => "Cerrar el panel",
-                _ => "Cerrar pestañas",
+                CloseAction::Window => t("dialogs-cerrar-omni-term"),
+                CloseAction::Tab(_) => t("dialogs-cerrar-la-pestana"),
+                CloseAction::Pane { .. } => t("dialogs-cerrar-el-panel"),
+                _ => t("dialogs-cerrar-pestanas"),
             };
-            let spec = Spec::new(title).width(420.0).accept("Cerrar").danger();
+            let spec = Spec::new(title).width(420.0).accept(t("pane-cerrar")).danger();
             let action = shell(ctx, spec, |ui| {
                 let many = confirm.lines.len() > 1;
-                let what = if matches!(confirm.action, CloseAction::Pane { .. }) { "Este panel" } else { "Esta pestaña" };
-                ui.label(if many { format!("{} pestañas tienen algo en ejecución:", confirm.lines.len()) } else { format!("{what} tiene algo en ejecución:") });
+                let what = if matches!(confirm.action, CloseAction::Pane { .. }) { t("dialogs-este-panel") } else { t("dialogs-esta-pestana") };
+                ui.label(if many { crate::tf!("dialogs-busy-many", "n" => confirm.lines.len()) } else { crate::tf!("dialogs-busy-one", "what" => what) });
                 for line in confirm.lines.iter().take(6) {
                     ui.label(RichText::new(line).color(theme::subtext()));
                 }
                 if confirm.lines.len() > 6 {
-                    ui.label(RichText::new(format!("… y {} más", confirm.lines.len() - 6)).color(theme::subtext()));
+                    ui.label(RichText::new(crate::tf!("dialogs-and-more", "n" => confirm.lines.len() - 6)).color(theme::subtext()));
                 }
-                ui.label("Se perderá lo que esté en curso.");
+                ui.label(t("dialogs-se-perdera-lo-que-este"));
                 ui.add_space(theme::space::XS);
-                crate::ui::kit::switch_labeled(ui, &mut confirm.dont_ask, "No volver a preguntar");
+                crate::ui::kit::switch_labeled(ui, &mut confirm.dont_ask, t("dialogs-no-volver-a-preguntar"));
                 false
             });
             plain(action, Outcome::Delete)
         }
         Dialog::ConfirmPaste(confirm) => {
-            let spec = Spec::new("Pegar varias líneas").width(520.0).accept("Pegar").icon(DialogIcon::Warning);
+            let spec = Spec::new(t("dialogs-pegar-varias-lineas")).width(520.0).accept(t("pane-pegar")).icon(DialogIcon::Warning);
             let action = shell(ctx, spec, |ui| {
                 let lines = confirm.text.lines().count();
                 ui.label(if lines > 1 {
-                    format!("El texto tiene {lines} líneas: el shell puede ejecutar cada una al pegarlo.")
+                    crate::tf!("dialogs-paste-lines", "n" => lines)
                 } else {
-                    "El texto termina en un salto de línea: el shell puede ejecutarlo al pegarlo.".to_string()
+                    t("dialogs-el-texto-termina-en-un").to_string()
                 });
                 ui.add_space(theme::space::XS);
                 egui::Frame::new().fill(theme::surface()).corner_radius(theme::radius::SMALL).inner_margin(theme::space::S).show(ui, |ui| {
@@ -118,51 +119,51 @@ pub fn show(
                     });
                 });
                 ui.add_space(theme::space::XS);
-                crate::ui::kit::switch_labeled(ui, &mut confirm.dont_ask, "No volver a preguntar");
+                crate::ui::kit::switch_labeled(ui, &mut confirm.dont_ask, t("dialogs-no-volver-a-preguntar"));
                 false
             });
             plain(action, Outcome::Submit)
         }
         Dialog::TelnetWarning(warning) => {
-            let spec = Spec::new("Conexión sin cifrar").width(440.0).accept("Conectar").icon(DialogIcon::Warning).click_only();
+            let spec = Spec::new(t("dialogs-conexion-sin-cifrar")).width(440.0).accept(t("dialogs-conectar")).icon(DialogIcon::Warning).click_only();
             let action = shell(ctx, spec, |ui| {
-                ui.label(format!("«{}» usa {}: todo lo que envíes, contraseñas incluidas, viaja en texto claro y cualquiera en la red puede leerlo.", warning.connection.name, warning.label));
-                ui.label(RichText::new("Úsalo solo en redes de confianza o con equipos que no admiten SSH.").color(theme::subtext()));
+                ui.label(crate::tf!("dialogs-cleartext", "name" => warning.connection.name.to_string(), "protocol" => warning.label.to_string()));
+                ui.label(RichText::new(t("dialogs-usalo-solo-en-redes-de")).color(theme::subtext()));
                 ui.add_space(theme::space::XS);
-                crate::ui::kit::switch_labeled(ui, &mut warning.dont_ask, "No volver a avisar para esta conexión");
+                crate::ui::kit::switch_labeled(ui, &mut warning.dont_ask, t("dialogs-no-volver-a-avisar-para"));
                 false
             });
             plain(action, Outcome::Submit)
         }
         Dialog::About => {
-            let action = shell(ctx, Spec::new("Acerca de omni-term").width(420.0).cancel("Cerrar"), |ui| {
+            let action = shell(ctx, Spec::new(t("dialogs-acerca-de-omni-term")).width(420.0).cancel(t("pane-cerrar")), |ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = theme::space::L;
                     ui.add(egui::Image::new(&app_logo(ui.ctx())).fit_to_exact_size(egui::Vec2::splat(64.0)));
                     ui.vertical(|ui| {
                         ui.label(RichText::new(format!("omni-term {}", env!("CARGO_PKG_VERSION"))).font(FontId::new(theme::size::HEADING, crate::ui::strong_family())));
-                        ui.label(RichText::new("Terminal con SSH, SFTP, túneles y snippets, hecho con Rust y egui.").color(theme::subtext()));
+                        ui.label(RichText::new(t("dialogs-terminal-con-ssh-sftp-tuneles")).color(theme::subtext()));
                     });
                 });
                 ui.add_space(theme::space::M);
-                ui.label(RichText::new("Fuentes").small().color(theme::subtext()));
-                ui.label("JetBrains Mono y Noto Sans, bajo la licencia SIL Open Font License.");
-                ui.label(RichText::new("Iconos").small().color(theme::subtext()));
-                ui.label("Phosphor Icons, bajo la licencia MIT.");
+                ui.label(RichText::new(t("dialogs-fuentes")).small().color(theme::subtext()));
+                ui.label(t("dialogs-jetbrains-mono-y-noto-sans"));
+                ui.label(RichText::new(t("dialogs-iconos")).small().color(theme::subtext()));
+                ui.label(t("dialogs-phosphor-icons-bajo-la-licencia"));
                 false
             });
             plain(action, Outcome::None)
         }
         Dialog::Edit(form) => {
-            let title = if form.id.is_some() { "Editar conexión" } else { "Nueva conexión" };
-            let mut spec = Spec::new(title).width(780.0).side(KIND_LIST_WIDTH).accept("Guardar").ctrl_enter();
+            let title = if form.id.is_some() { t("dialogs-editar-conexion") } else { t("dialogs-nueva-conexion") };
+            let mut spec = Spec::new(title).width(780.0).side(KIND_LIST_WIDTH).accept(t("dialogs-guardar")).ctrl_enter();
             if form.ssh_like() {
-                spec = spec.extra("Probar conexión");
+                spec = spec.extra(t("dialogs-probar-conexion"));
             }
             let status = match (&form.errors.general, &form.test) {
                 (Some(error), _) => Some((error.clone(), theme::red())),
                 (None, Some(test)) => Some(match &*test.lock().unwrap() {
-                    TestState::Running => ("Probando la conexión…".to_string(), theme::subtext()),
+                    TestState::Running => (t("dialogs-probando-la-conexion").to_string(), theme::subtext()),
                     TestState::Ok(message) => (message.clone(), theme::identity(3)),
                     TestState::Failed(message) => (message.clone(), theme::red()),
                 }),
@@ -179,24 +180,24 @@ pub fn show(
             }
         }
         Dialog::Snippet(form) => {
-            let title = if form.id.is_some() { "Editar snippet" } else { "Nuevo snippet" };
-            let action = shell(ctx, Spec::new(title).accept("Guardar").ctrl_enter(), |ui| snippet_body(ui, form));
+            let title = if form.id.is_some() { t("dialogs-editar-snippet") } else { t("dialogs-nuevo-snippet") };
+            let action = shell(ctx, Spec::new(title).accept(t("dialogs-guardar")).ctrl_enter(), |ui| snippet_body(ui, form));
             plain(action, Outcome::Save)
         }
         Dialog::Password(form) => {
-            let title = if form.id.is_some() { "Editar contraseña" } else { "Nueva contraseña" };
-            let action = shell(ctx, Spec::new(title).width(440.0).accept("Guardar"), |ui| password_body(ui, form));
+            let title = if form.id.is_some() { t("dialogs-editar-contrasena") } else { t("dialogs-nueva-contrasena") };
+            let action = shell(ctx, Spec::new(title).width(440.0).accept(t("dialogs-guardar")), |ui| password_body(ui, form));
             plain(action, Outcome::Save)
         }
         Dialog::ConfirmTypePassword(confirm) => {
             // Solo con clic: un Enter de más (el de la contraseña que se iba a escribir) no debe aceptarlo.
-            let spec = Spec::new("¿Escribir la contraseña?").width(460.0).accept("Escribir").icon(DialogIcon::Warning).click_only();
+            let spec = Spec::new(t("dialogs-escribir-la-contrasena")).width(460.0).accept(t("explorer-escribir")).icon(DialogIcon::Warning).click_only();
             let action = shell(ctx, spec, |ui| {
-                ui.label(format!("El terminal no parece pedir una contraseña. ¿Escribir {} igualmente?", confirm.label));
+                ui.label(crate::tf!("dialogs-type-anyway", "what" => confirm.label.to_string()));
                 let line = confirm.line.trim();
                 if !line.is_empty() {
                     ui.add_space(theme::space::XS);
-                    ui.label(RichText::new("Línea actual").small().color(theme::subtext()));
+                    ui.label(RichText::new(t("dialogs-linea-actual")).small().color(theme::subtext()));
                     egui::Frame::new().fill(theme::surface()).corner_radius(theme::radius::SMALL).inner_margin(theme::space::S).show(ui, |ui| {
                         ui.set_width(ui.available_width());
                         let shown: String = line.chars().rev().take(120).collect::<Vec<_>>().into_iter().rev().collect();
@@ -208,53 +209,51 @@ pub fn show(
             plain(action, Outcome::Submit)
         }
         Dialog::SnippetVars(prompt) => {
-            let accept = if prompt.run { "Insertar y ejecutar" } else { "Insertar" };
+            let accept = if prompt.run { t("dialogs-insertar-y-ejecutar") } else { t("dialogs-insertar") };
             let action = shell(ctx, Spec::new(prompt.title.clone()).accept(accept), |ui| vars_body(ui, prompt));
             plain(action, Outcome::Submit)
         }
         Dialog::ConfirmContainer(confirm) => {
             use crate::containers::docker::Action;
             let (title, accept, effect) = match confirm.action {
-                Action::Restart => ("Reiniciar el contenedor", "Reiniciar", "se reiniciará y perderá las conexiones abiertas"),
-                _ => ("Detener el contenedor", "Detener", "dejará de responder"),
+                Action::Restart => (t("dialogs-reiniciar-el-contenedor"), t("view-reiniciar"), "dialogs-container-restart-effect"),
+                _ => (t("dialogs-detener-el-contenedor"), t("view-detener"), "dialogs-container-stop-effect"),
             };
             let spec = Spec::new(title).width(400.0).accept(accept).icon(DialogIcon::Warning);
             let action = shell(ctx, spec, |ui| {
-                ui.label(format!("«{}» ({}) {effect}.", confirm.container.name, confirm.container.image));
+                ui.label(crate::tf!(effect, "name" => confirm.container.name.to_string(), "image" => confirm.container.image.to_string()));
                 false
             });
             plain(action, Outcome::Submit)
         }
         Dialog::RestoreSession(prompt) => {
-            let spec = Spec::new("Restaurar la sesión anterior").width(420.0).accept("Restaurar").icon(DialogIcon::Info);
+            let spec = Spec::new(t("dialogs-restaurar-la-sesion-anterior")).width(420.0).accept(t("dialogs-restaurar")).icon(DialogIcon::Info);
             let action = shell(ctx, spec, |ui| {
-                let tabs = if prompt.tabs == 1 { "1 pestaña".to_string() } else { format!("{} pestañas", prompt.tabs) };
-                ui.label(format!("La sesión anterior tenía {tabs} abiertas. ¿Quieres volver a abrirlas?"));
+                ui.label(crate::tf!("dialogs-restore-body", "tabs" => prompt.tabs));
                 if prompt.remote > 0 {
-                    let remote = if prompt.remote == 1 { "Se reconectará 1 sesión remota.".to_string() } else { format!("Se reconectarán {} sesiones remotas.", prompt.remote) };
+                    let remote = crate::tf!("dialogs-restore-remote", "n" => prompt.remote);
                     ui.label(RichText::new(remote).color(theme::subtext()));
                 }
                 ui.add_space(theme::space::XS);
-                crate::ui::kit::switch_labeled(ui, &mut prompt.remember, "Recordar mi elección");
+                crate::ui::kit::switch_labeled(ui, &mut prompt.remember, t("dialogs-recordar-mi-eleccion"));
                 false
             });
             plain(action, Outcome::Submit)
         }
         Dialog::SecretsMode(prompt) => {
-            let target = if prompt.to_master { "Las contraseñas se cifrarán con una clave maestra." } else { "Las contraseñas se guardarán en el llavero del sistema." };
-            let mut spec = Spec::new("Cambiar el almacén de credenciales").width(440.0).icon(DialogIcon::Info);
+            let target = if prompt.to_master { t("dialogs-las-contrasenas-se-cifraran-con") } else { t("dialogs-las-contrasenas-se-guardaran-en") };
+            let mut spec = Spec::new(t("dialogs-cambiar-el-almacen-de-credenciales")).width(440.0).icon(DialogIcon::Info);
             if prompt.count > 0 {
-                spec = spec.accept("Migrar").extra("Cambiar sin migrar");
+                spec = spec.accept(t("dialogs-migrar")).extra(t("dialogs-cambiar-sin-migrar"));
             } else {
-                spec = spec.accept("Cambiar");
+                spec = spec.accept(t("dialogs-cambiar"));
             }
             let count = prompt.count;
             let action = shell(ctx, spec, |ui| {
                 ui.label(target);
                 if count > 0 {
-                    let saved = if count == 1 { "1 contraseña guardada".to_string() } else { format!("{count} contraseñas guardadas") };
-                    ui.label(RichText::new(format!("Hay {saved} en el almacén actual. Si no las migras, omni-term te las volverá a pedir.")).color(theme::subtext()));
-                    ui.label(RichText::new("La migración se hace al reiniciar y borra las copias antiguas solo si todo salió bien.").small().color(theme::subtext()));
+                    ui.label(RichText::new(crate::tf!("dialogs-saved-passwords", "n" => count)).color(theme::subtext()));
+                    ui.label(RichText::new(t("dialogs-la-migracion-se-hace-al")).small().color(theme::subtext()));
                 }
                 false
             });
@@ -266,41 +265,41 @@ pub fn show(
             }
         }
         Dialog::Restart => {
-            let spec = Spec::new("Reiniciar para aplicar").width(400.0).accept("Reiniciar ahora").cancel("Más tarde").icon(DialogIcon::Info);
+            let spec = Spec::new(t("dialogs-reiniciar-para-aplicar")).width(400.0).accept(t("dialogs-reiniciar-ahora")).cancel(t("dialogs-mas-tarde")).icon(DialogIcon::Info);
             let action = shell(ctx, spec, |ui| {
-                ui.label("El cambio de almacén de credenciales se aplica al reiniciar omni-term. Las pestañas abiertas se restauran.");
+                ui.label(t("dialogs-el-cambio-de-almacen-de"));
                 false
             });
             plain(action, Outcome::Submit)
         }
         Dialog::ConfirmReset(_) => {
-            let spec = Spec::new("Borrar secretos").width(380.0).accept("Borrar todo").danger();
+            let spec = Spec::new(t("dialogs-borrar-secretos")).width(380.0).accept(t("dialogs-borrar-todo")).danger();
             let action = shell(ctx, spec, |ui| {
-                ui.label("Se borrarán todas las contraseñas guardadas con la clave maestra y la clave misma. No se puede deshacer.");
+                ui.label(t("dialogs-se-borraran-todas-las-contrasenas"));
                 false
             });
             plain(action, Outcome::Delete)
         }
         Dialog::Secret(prompt) => {
             let (title, label) = match prompt.kind {
-                SecretKind::Password => ("Contraseña", "Contraseña"),
-                SecretKind::Passphrase => ("Llave protegida", "Passphrase"),
+                SecretKind::Password => (t("dialogs-contrasena"), t("dialogs-contrasena")),
+                SecretKind::Passphrase => (t("dialogs-llave-protegida"), t("dialogs-passphrase")),
             };
-            let context = format!("{label} para {}@{} ({})", prompt.asking.user, prompt.asking.host, prompt.asking.name);
-            let spec = Spec::new(title).width(380.0).context(context).accept("Conectar");
+            let context = crate::tf!("dialogs-secret-context", "what" => label, "user" => prompt.asking.user.to_string(), "host" => prompt.asking.host.to_string(), "name" => prompt.asking.name.to_string());
+            let spec = Spec::new(title).width(380.0).context(context).accept(t("dialogs-conectar"));
             let action = shell(ctx, spec, |ui| secret_body(ui, prompt));
             plain(action, Outcome::Submit)
         }
         Dialog::Unlock(prompt) => {
-            let title = if prompt.creating { "Crear clave maestra" } else { "Desbloquear secretos" };
+            let title = if prompt.creating { t("dialogs-crear-clave-maestra") } else { t("dialogs-desbloquear-secretos") };
             let valid = !prompt.creating
                 || (prompt.input.chars().count() >= MIN_MASTER_KEY && prompt.input == prompt.confirm);
             let mut spec = Spec::new(title)
                 .width(440.0)
-                .accept(if prompt.creating { "Crear" } else { "Desbloquear" })
+                .accept(if prompt.creating { t("explorer-crear") } else { t("dialogs-desbloquear") })
                 .accept_enabled(valid);
             if !prompt.creating {
-                spec = spec.extra("Olvidé la clave…");
+                spec = spec.extra(t("dialogs-olvide-la-clave"));
             }
             match shell(ctx, spec, |ui| unlock_body(ui, prompt)) {
                 Action::Accept => Outcome::Submit,
@@ -310,8 +309,8 @@ pub fn show(
             }
         }
         Dialog::Prompt(request, answers) => {
-            let title = if request.title.trim().is_empty() { "Verificación en dos pasos" } else { request.title.trim() };
-            let mut spec = Spec::new(title).width(380.0).accept("Continuar");
+            let title = if request.title.trim().is_empty() { t("dialogs-verificacion-en-dos-pasos") } else { request.title.trim() };
+            let mut spec = Spec::new(title).width(380.0).accept(t("dialogs-continuar"));
             if !request.instructions.trim().is_empty() {
                 spec = spec.context(request.instructions.trim());
             }
@@ -319,7 +318,7 @@ pub fn show(
             plain(action, Outcome::Submit)
         }
         Dialog::HostKey(request) => {
-            let spec = Spec::new("Servidor desconocido").icon(DialogIcon::Info).accept("Confiar y conectar").click_only();
+            let spec = Spec::new(t("dialogs-servidor-desconocido")).icon(DialogIcon::Info).accept(t("dialogs-confiar-y-conectar")).click_only();
             match shell(ctx, spec, |ui| host_key_body(ui, request)) {
                 Action::Accept => Outcome::Trust(true),
                 Action::Cancel => Outcome::Trust(false),
@@ -327,7 +326,7 @@ pub fn show(
             }
         }
         Dialog::HostKeyChanged(change) => {
-            let spec = Spec::new("La huella del servidor ha cambiado").icon(DialogIcon::Error).cancel("Cerrar").extra("Copiar comando").extra("Olvidar y volver a conectar");
+            let spec = Spec::new(t("dialogs-la-huella-del-servidor-ha")).icon(DialogIcon::Error).cancel(t("pane-cerrar")).extra(t("dialogs-copiar-comando")).extra(t("dialogs-olvidar-y-volver-a-conectar"));
             match shell(ctx, spec, |ui| host_key_changed_body(ui, change)) {
                 Action::Cancel => Outcome::Cancel,
                 Action::Extra(0) => {

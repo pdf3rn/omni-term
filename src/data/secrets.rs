@@ -28,7 +28,7 @@ pub enum SecretError {
 impl fmt::Display for SecretError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            SecretError::Locked => write!(f, "el almacén de secretos está bloqueado"),
+            SecretError::Locked => write!(f, "{}", crate::i18n::t("err-secrets-locked")),
             SecretError::WrongPassword => write!(f, "clave maestra incorrecta"),
             SecretError::Other(error) => write!(f, "{error:#}"),
         }

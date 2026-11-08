@@ -3,6 +3,7 @@
 //! Solo lo necesario para un administrador pequeño: listar contenedores (también los apagados),
 //! iniciar, detener, reiniciar y abrir un shell (`exec` con tty).
 
+use crate::i18n::t;
 use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -112,9 +113,7 @@ pub async fn detect_remote(link: &Arc<SshLink>) -> anyhow::Result<Vec<Endpoint>>
     let (usable, denied) = parse_probe(&output);
     if usable.is_empty() && !denied.is_empty() {
         bail!(
-            "Tu usuario no tiene permiso sobre {} en {}. Añádelo al grupo «docker»:\n  sudo usermod -aG docker $USER\nY vuelve a conectar.",
-            denied.join(", "),
-            link.name()
+            crate::tf!("err-docker-user-denied", "engines" => denied.join(", "), "name" => link.name().to_string())
         );
     }
     Ok(usable.iter().map(|socket| Endpoint::fixed(socket, Via::Ssh(link.clone()))).collect())
@@ -234,8 +233,8 @@ impl Action {
 
 /// Interpreta la respuesta de `/containers/json`.
 pub fn parse_containers(body: &[u8]) -> anyhow::Result<Vec<Container>> {
-    let value: Value = serde_json::from_slice(body).context("respuesta inválida del motor")?;
-    let list = value.as_array().context("el motor no devolvió una lista")?;
+    let value: Value = serde_json::from_slice(body).context(t("err-docker-invalid-reply"))?;
+    let list = value.as_array().context(t("err-docker-no-list"))?;
     let text = |v: &Value, key: &str| v.get(key).and_then(Value::as_str).unwrap_or("").to_string();
     Ok(list
         .iter()
@@ -299,7 +298,7 @@ async fn connect_socket(path: &std::path::Path) -> io::Result<Stream> {
 
 #[cfg(not(any(unix, windows)))]
 async fn connect_socket(_path: &std::path::Path) -> io::Result<Stream> {
-    Err(io::Error::new(io::ErrorKind::Unsupported, "plataforma sin sockets Unix ni tuberías con nombre"))
+    Err(io::Error::new(io::ErrorKind::Unsupported, t("err-docker-platform")))
 }
 
 /// Mensaje con la causa y qué hacer cuando no se puede abrir el socket.
@@ -307,13 +306,13 @@ fn connect_error(endpoint: &Endpoint, error: &io::Error) -> anyhow::Error {
     let path = endpoint.socket.display();
     match error.kind() {
         io::ErrorKind::PermissionDenied if cfg!(windows) => anyhow!(
-            "Permiso denegado en {path}. Con Docker Desktop hay que estar en el grupo local «docker-users» y volver a iniciar sesión."
+            crate::tf!("err-docker-denied-windows", "path" => path.to_string())
         ),
         io::ErrorKind::PermissionDenied => anyhow!(
-            "Permiso denegado en {path}. En Linux hay que estar en el grupo «docker»:\n  sudo usermod -aG docker $USER\nY volver a iniciar sesión."
+            crate::tf!("err-docker-denied-linux", "path" => path.to_string())
         ),
-        io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused => anyhow!("{} no está en marcha ({path}).", endpoint.engine.name()),
-        _ => anyhow!("No se pudo hablar con {} en {path}: {error}", endpoint.engine.name()),
+        io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused => anyhow!(crate::tf!("err-docker-not-running", "engine" => endpoint.engine.name().to_string(), "path" => path.to_string())),
+        _ => anyhow!(crate::tf!("err-docker-talk", "engine" => endpoint.engine.name().to_string(), "path" => path.to_string(), "error" => error.to_string())),
     }
 }
 
@@ -350,7 +349,7 @@ impl Client {
         match tokio::time::timeout(TIMEOUT, connect_socket(&self.endpoint.socket)).await {
             Ok(Ok(stream)) => Ok(stream),
             Ok(Err(error)) => Err(connect_error(&self.endpoint, &error)),
-            Err(_) => bail!("Tiempo de espera agotado al conectar con {}", self.endpoint.engine.name()),
+            Err(_) => bail!(crate::tf!("err-docker-timeout", "engine" => self.endpoint.engine.name().to_string())),
         }
     }
 
@@ -362,11 +361,10 @@ impl Client {
         match opened {
             Ok(Ok(channel)) => Ok(Box::new(channel.into_stream())),
             Ok(Err(russh::Error::ChannelOpenFailure(russh::ChannelOpenFailure::AdministrativelyProhibited))) => bail!(
-                "{} no permite reenviar sockets por SSH. Activa «AllowStreamLocalForwarding yes» en su sshd_config.",
-                link.name()
+                crate::tf!("err-docker-forwarding", "name" => link.name().to_string())
             ),
-            Ok(Err(error)) => bail!("No se pudo llegar a {socket} en {}: {error}. ¿Está {} en marcha?", link.name(), self.endpoint.engine.name()),
-            Err(_) => bail!("Tiempo de espera agotado al conectar con {} en {}", self.endpoint.engine.name(), link.name()),
+            Ok(Err(error)) => bail!(crate::tf!("err-docker-unreachable", "socket" => socket.to_string(), "name" => link.name().to_string(), "error" => error.to_string(), "engine" => self.endpoint.engine.name().to_string())),
+            Err(_) => bail!(crate::tf!("err-docker-timeout-on", "engine" => self.endpoint.engine.name().to_string(), "name" => link.name().to_string())),
         }
     }
 
@@ -375,10 +373,10 @@ impl Client {
         let mut stream = self.dial().await?;
         stream.write_all(&request_bytes(method, path, body, false)).await?;
         let mut raw = Vec::new();
-        tokio::time::timeout(limit, stream.read_to_end(&mut raw)).await.map_err(|_| anyhow!("El motor no respondió a tiempo"))??;
-        let split = raw.windows(4).position(|w| w == b"\r\n\r\n").context("respuesta HTTP incompleta del motor")?;
+        tokio::time::timeout(limit, stream.read_to_end(&mut raw)).await.map_err(|_| anyhow!(t("err-docker-slow")))??;
+        let split = raw.windows(4).position(|w| w == b"\r\n\r\n").context(t("err-docker-http-incomplete"))?;
         let head = String::from_utf8_lossy(&raw[..split]).into_owned();
-        let status: u16 = head.lines().next().and_then(|l| l.split_whitespace().nth(1)).and_then(|s| s.parse().ok()).context("línea de estado inválida")?;
+        let status: u16 = head.lines().next().and_then(|l| l.split_whitespace().nth(1)).and_then(|s| s.parse().ok()).context(t("err-docker-status-line"))?;
         let body = &raw[split + 4..];
         let body = if head.to_ascii_lowercase().contains("transfer-encoding: chunked") { dechunk(body) } else { body.to_vec() };
         Ok((status, body))
@@ -386,7 +384,7 @@ impl Client {
 
     fn failure(status: u16, body: &[u8]) -> anyhow::Error {
         let message = serde_json::from_slice::<Value>(body).ok().and_then(|v| v.get("message").and_then(Value::as_str).map(str::to_string));
-        anyhow!("{}", message.unwrap_or_else(|| format!("el motor respondió {status}")))
+        anyhow!("{}", message.unwrap_or_else(|| crate::tf!("err-docker-status", "status" => status as i64)))
     }
 
     pub async fn list(&self) -> anyhow::Result<Vec<Container>> {
@@ -417,7 +415,7 @@ impl Client {
         if status != 201 {
             return Err(Self::failure(status, &body));
         }
-        let exec_id = serde_json::from_slice::<Value>(&body)?.get("Id").and_then(Value::as_str).context("el motor no devolvió el id del exec")?.to_string();
+        let exec_id = serde_json::from_slice::<Value>(&body)?.get("Id").and_then(Value::as_str).context(t("err-docker-exec-id"))?.to_string();
 
         let mut stream = self.dial().await?;
         stream.write_all(&request_bytes("POST", &format!("/exec/{exec_id}/start"), Some(&json!({"Detach": false, "Tty": true})), true)).await?;
@@ -426,7 +424,7 @@ impl Client {
         let mut byte = [0u8; 1];
         while !head.ends_with(b"\r\n\r\n") {
             if stream.read(&mut byte).await? == 0 {
-                bail!("el motor cerró la conexión al abrir el shell");
+                bail!(t("err-docker-shell-closed"));
             }
             head.push(byte[0]);
             if head.len() > 8192 {
@@ -435,7 +433,7 @@ impl Client {
         }
         let first = String::from_utf8_lossy(&head).lines().next().unwrap_or("").to_string();
         if !first.contains(" 101 ") && !first.contains(" 200 ") {
-            bail!("no se pudo abrir el shell: {first}");
+            bail!(crate::tf!("err-docker-shell-failed", "error" => first.to_string()));
         }
         Ok((exec_id, stream))
     }
@@ -484,7 +482,7 @@ pub fn spawn(handle: &tokio::runtime::Handle, endpoint: Endpoint, id: String, na
 }
 
 async fn run_shell(client: Client, id: String, name: String, size: (usize, usize), mut feed: Feed, mut rx: tokio::sync::mpsc::UnboundedReceiver<Message>) {
-    feed.feed(format!("Abriendo un shell en {name}\u{2026}\r\n").as_bytes());
+    feed.feed(format!("{}\r\n", crate::tf!("err-docker-opening-shell", "name" => name.to_string())).as_bytes());
     let (exec_id, stream) = match client.exec(&id, size).await {
         Ok(opened) => opened,
         Err(error) => {
@@ -501,7 +499,7 @@ async fn run_shell(client: Client, id: String, name: String, size: (usize, usize
                 // Fin del flujo: el shell terminó, salvo que lo que se cayó fuera la sesión SSH.
                 Ok(0) => {
                     if client.link_dropped().await {
-                        feed.feed(red("Se perdió la conexión SSH").as_bytes());
+                        feed.feed(red(t("err-ssh-connection-lost")).as_bytes());
                         feed.disconnect();
                     } else {
                         feed.close();
@@ -510,7 +508,7 @@ async fn run_shell(client: Client, id: String, name: String, size: (usize, usize
                 }
                 Ok(n) => feed.feed(&buffer[..n]),
                 Err(error) => {
-                    feed.feed(red(&format!("Conexión perdida: {error}")).as_bytes());
+                    feed.feed(red(&crate::tf!("err-connection-lost", "error" => error.to_string())).as_bytes());
                     feed.disconnect();
                     return;
                 }

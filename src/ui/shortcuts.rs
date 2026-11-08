@@ -50,7 +50,12 @@ pub fn pane_zoom() -> (Modifiers, Key) {
 
 /// Texto de un atajo tal como se muestra en este sistema.
 pub fn label(text: &str) -> String {
-    label_for(text, MAC)
+    localize(&label_for(text, MAC))
+}
+
+/// Los nombres de tecla que están escritos en español se muestran en el idioma de la interfaz.
+fn localize(text: &str) -> String {
+    text.replace("flechas", crate::i18n::t("keys-arrows")).replace("Supr", crate::i18n::t("keys-delete")).replace("Retroceso", crate::i18n::t("keys-backspace"))
 }
 
 /// Traduce un atajo escrito para Linux y Windows a su forma en macOS (si `mac`).

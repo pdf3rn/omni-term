@@ -4,6 +4,7 @@
 mod connect;
 mod containers;
 mod data;
+mod i18n;
 mod files;
 mod terminal;
 #[cfg(test)]

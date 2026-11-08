@@ -1,3 +1,4 @@
+use crate::i18n::t;
 use alacritty_terminal::grid::{Dimensions, Scroll};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -535,33 +536,33 @@ impl Pane {
             ui.add(button).clicked()
         };
         if let Some(url) = self.menu_link.clone() {
-            if entry(ui, "Abrir enlace", "") {
+            if entry(ui, t("pane-abrir-enlace"), "") {
                 if is_openable(&url) {
                     let _ = open::that_detached(&url);
                 }
                 ui.close();
             }
-            if entry(ui, "Copiar enlace", "") {
+            if entry(ui, t("pane-copiar-enlace"), "") {
                 ui.ctx().copy_text(url);
                 ui.close();
             }
             ui.separator();
         }
         if let Some(text) = &selection {
-            if entry(ui, "Copiar", "Ctrl+Shift+C") {
+            if entry(ui, t("pane-copiar"), "Ctrl+Shift+C") {
                 ui.ctx().copy_text(text.clone());
                 ui.close();
             }
         }
-        if entry(ui, "Pegar", "Ctrl+Shift+V") {
+        if entry(ui, t("pane-pegar"), "Ctrl+Shift+V") {
             self.paste_clipboard();
             ui.close();
         }
-        if entry(ui, "Escribir contraseña…", "Ctrl+Alt+P") {
+        if entry(ui, t("pane-escribir-contrasena"), "Ctrl+Alt+P") {
             self.request = Some(PaneRequest::TypePassword);
             ui.close();
         }
-        if entry(ui, "Seleccionar todo", "") {
+        if entry(ui, t("pane-seleccionar-todo"), "") {
             self.select_all();
             ui.close();
         }
@@ -569,28 +570,28 @@ impl Pane {
             let first_line = text.lines().next().unwrap_or("").trim();
             let shown: String = first_line.chars().take(24).collect();
             let ellipsis = if first_line.chars().count() > 24 { "…" } else { "" };
-            if entry(ui, &format!("Buscar «{shown}{ellipsis}»"), "") {
+            if entry(ui, &crate::tf!("pane-search-for", "text" => format!("{shown}{ellipsis}")), "") {
                 self.open_search(first_line.to_string());
                 ui.close();
             }
-            if entry(ui, "Guardar selección como snippet", "") {
+            if entry(ui, t("pane-guardar-seleccion-como-snippet"), "") {
                 self.snippet_request = Some(text.clone());
                 ui.close();
             }
         }
         ui.separator();
-        if entry(ui, "Dividir a la derecha", "Ctrl+Shift+D") {
+        if entry(ui, t("pane-dividir-a-la-derecha"), "Ctrl+Shift+D") {
             self.request = Some(PaneRequest::SplitRight);
             ui.close();
         }
-        if entry(ui, "Dividir hacia abajo", "Ctrl+Shift+E") {
+        if entry(ui, t("pane-dividir-hacia-abajo"), "Ctrl+Shift+E") {
             self.request = Some(PaneRequest::SplitDown);
             ui.close();
         }
         // Ctrl+L limpia la pantalla en un shell; una aplicación a pantalla completa podría tomarlo de otra forma.
         if !alt_screen {
             ui.separator();
-            if entry(ui, "Limpiar pantalla", "") {
+            if entry(ui, t("pane-limpiar-pantalla"), "") {
                 self.session.write(b"\x0c");
                 ui.close();
             }
@@ -699,7 +700,7 @@ impl Pane {
             .show(ui.ctx(), |ui| {
                 egui::Frame::popup(ui.style()).inner_margin(egui::Margin::symmetric(10, 8)).show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        let field = ui.add(egui::TextEdit::singleline(&mut state.query).hint_text("Buscar").desired_width(190.0));
+                        let field = ui.add(egui::TextEdit::singleline(&mut state.query).hint_text(t("view-buscar")).desired_width(190.0));
                         if state.focus {
                             field.request_focus();
                             state.focus = false;
@@ -707,19 +708,19 @@ impl Pane {
                         let count = if state.query.is_empty() {
                             String::new()
                         } else if state.matches.is_empty() {
-                            "Sin resultados".to_string()
+                            t("pane-sin-resultados").to_string()
                         } else {
                             format!("{} de {}", state.current + 1, state.matches.len())
                         };
                         ui.label(egui::RichText::new(count).small().color(theme::subtext()));
                         let small = |ui: &mut egui::Ui, text: &str| crate::ui::kit::button_with(ui, egui::Button::new(egui::RichText::new(text).small()), crate::ui::kit::Variant::Ghost);
-                        if small(ui, "Anterior").clicked() {
+                        if small(ui, t("pane-anterior")).clicked() {
                             step = Some(false);
                         }
-                        if small(ui, "Siguiente").clicked() {
+                        if small(ui, t("pane-siguiente")).clicked() {
                             step = Some(true);
                         }
-                        if small(ui, "Cerrar").clicked() {
+                        if small(ui, t("pane-cerrar")).clicked() {
                             close = true;
                         }
                         if field.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {

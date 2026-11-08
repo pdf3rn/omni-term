@@ -1,5 +1,6 @@
 //! Pantalla de inicio cuando no hay pestañas.
 
+use crate::i18n::t;
 use super::*;
 
 impl App {
@@ -15,20 +16,20 @@ impl App {
         )));
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(&mut outer, |child| {
         child.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
-        child.label(RichText::new("No hay pestañas abiertas").font(FontId::new(theme::size::TITLE, strong_family())));
-        child.label(RichText::new("Abre un terminal o conéctate a un servidor guardado.").color(theme::subtext()));
+        child.label(RichText::new(t("empty-no-hay-pestanas-abiertas")).font(FontId::new(theme::size::TITLE, strong_family())));
+        child.label(RichText::new(t("empty-abre-un-terminal-o-conectate")).color(theme::subtext()));
         child.add_space(theme::space::XS);
         child.horizontal(|ui| {
             ui.spacing_mut().button_padding = Vec2::new(10.0, 4.0);
             ui.spacing_mut().item_spacing.x = 6.0;
             // Outline: el acento marca la acción principal en el borde y el texto, sin relleno.
-            if crate::ui::kit::button_rich(ui, RichText::new("Nuevo terminal local").size(theme::size::LABEL), crate::ui::kit::Variant::PrimaryOutline).clicked() {
+            if crate::ui::kit::button_rich(ui, RichText::new(t("empty-nuevo-terminal-local")).size(theme::size::LABEL), crate::ui::kit::Variant::PrimaryOutline).clicked() {
                 action = Some(EmptyAction::Local);
             }
-            if crate::ui::kit::button_rich(ui, RichText::new("Nueva conexión").size(theme::size::LABEL), crate::ui::kit::Variant::Secondary).clicked() {
+            if crate::ui::kit::button_rich(ui, RichText::new(t("dialogs-nueva-conexion")).size(theme::size::LABEL), crate::ui::kit::Variant::Secondary).clicked() {
                 action = Some(EmptyAction::NewConnection);
             }
-            if crate::ui::kit::button_rich(ui, RichText::new("Contenedores").size(theme::size::LABEL), crate::ui::kit::Variant::Secondary).clicked() {
+            if crate::ui::kit::button_rich(ui, RichText::new(t("conn-edit-contenedores")).size(theme::size::LABEL), crate::ui::kit::Variant::Secondary).clicked() {
                 action = Some(EmptyAction::Containers);
             }
         });
@@ -36,12 +37,12 @@ impl App {
         child.add_space(theme::space::L);
         let recents: Vec<Connection> = self.recent_connections().into_iter().take(4).collect();
         if recents.is_empty() {
-            child.label(RichText::new("Aún no hay conexiones guardadas.").color(theme::subtext()));
-            if crate::ui::kit::button_rich(child, RichText::new("Importar de ~/.ssh/config").size(theme::size::LABEL), crate::ui::kit::Variant::Secondary).clicked() {
+            child.label(RichText::new(t("empty-aun-no-hay-conexiones-guardadas")).color(theme::subtext()));
+            if crate::ui::kit::button_rich(child, RichText::new(t("empty-importar-de-ssh-config")).size(theme::size::LABEL), crate::ui::kit::Variant::Secondary).clicked() {
                 action = Some(EmptyAction::Import);
             }
         } else {
-            crate::ui::kit::section_title(child, "Recientes");
+            crate::ui::kit::section_title(child, t("empty-recientes"));
             crate::ui::kit::card_frame().inner_margin(Margin::symmetric(6, 4)).show(child, |ui| {
                 ui.spacing_mut().item_spacing.y = 0.0;
                 ui.set_width(ui.available_width());
@@ -54,7 +55,7 @@ impl App {
                         crate::ui::kit::RowContent { leading: crate::ui::kit::Leading::Glyph(crate::ui::kit::connection_glyph(connection)), title: &connection.name, subtitle: &subtitle, right_limit: rect.max.x - 10.0 },
                     );
                     let response = response.hand();
-                    if response.on_hover_text("Conectar").clicked() {
+                    if response.on_hover_text(t("dialogs-conectar")).clicked() {
                         action = Some(EmptyAction::Connect(connection.clone()));
                     }
                 }
@@ -62,13 +63,13 @@ impl App {
         }
 
         child.add_space(theme::space::L);
-        crate::ui::kit::section_title(child, "Atajos");
+        crate::ui::kit::section_title(child, t("empty-atajos"));
         let shortcuts = [
-            ("Ctrl+Shift+P", "Paleta de comandos"),
-            ("Ctrl+Shift+D / E", "Dividir el panel a la derecha / hacia abajo"),
-            ("Alt+flechas", "Ir al panel de al lado"),
-            ("Ctrl+Shift+B", "Mostrar u ocultar la barra lateral"),
-            ("Ctrl+,", "Abrir los ajustes"),
+            ("Ctrl+Shift+P", t("settings-paleta-de-comandos")),
+            ("Ctrl+Shift+D / E", t("empty-dividir-el-panel-a-la")),
+            ("Alt+flechas", t("settings-ir-al-panel-de-al")),
+            ("Ctrl+Shift+B", t("settings-mostrar-u-ocultar-la-barra")),
+            ("Ctrl+,", t("settings-abrir-los-ajustes")),
         ];
         // Rejilla: la columna de teclas mide lo que la combinación más larga, sin un hueco fijo.
         egui::Grid::new("empty-shortcuts").num_columns(2).spacing(Vec2::new(theme::space::XL, theme::space::S)).show(child, |ui| {
@@ -86,7 +87,7 @@ impl App {
                 ui.end_row();
             }
         });
-        if child.add(Button::new(RichText::new("Ver todos los atajos").color(theme::accent())).frame(false)).clicked() {
+        if child.add(Button::new(RichText::new(t("empty-ver-todos-los-atajos")).color(theme::accent())).frame(false)).clicked() {
             action = Some(EmptyAction::Shortcuts);
         }
         });

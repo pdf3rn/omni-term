@@ -3,6 +3,7 @@
 //! El servidor `adb` ya gestiona USB, la autorización del móvil y los dispositivos inalámbricos;
 //! aquí solo se le piden dispositivos, un `shell` (terminal) y el protocolo `sync` (archivos).
 
+use crate::i18n::t;
 use std::io;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -100,7 +101,7 @@ async fn read_u32(stream: &mut TcpStream) -> io::Result<u32> {
 async fn read_hex_string(stream: &mut TcpStream) -> anyhow::Result<String> {
     let mut length = [0u8; 4];
     stream.read_exact(&mut length).await?;
-    let length = usize::from_str_radix(std::str::from_utf8(&length)?, 16).context("longitud inválida del servidor adb")?;
+    let length = usize::from_str_radix(std::str::from_utf8(&length)?, 16).context(t("err-adb-length"))?;
     let mut data = vec![0u8; length];
     stream.read_exact(&mut data).await?;
     Ok(String::from_utf8_lossy(&data).into_owned())
@@ -114,7 +115,7 @@ async fn request(stream: &mut TcpStream, payload: &str) -> anyhow::Result<()> {
     match &status {
         b"OKAY" => Ok(()),
         b"FAIL" => bail!("{}", read_hex_string(stream).await?),
-        other => bail!("respuesta inesperada del servidor adb: {:?}", String::from_utf8_lossy(other)),
+        other => bail!(crate::tf!("err-adb-unexpected", "reply" => format!("{:?}", String::from_utf8_lossy(other)))),
     }
 }
 

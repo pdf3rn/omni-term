@@ -35,6 +35,7 @@ impl App {
 
     /// Cambia entre tema claro y oscuro según el ajuste (o el del sistema) y reinstala los estilos.
     pub(super) fn sync_theme(&mut self, ctx: &egui::Context) {
+        crate::i18n::set(self.settings.language.unwrap_or_else(crate::i18n::system));
         let light = match self.settings.theme {
             ThemeChoice::Light => true,
             ThemeChoice::Dark => false,
@@ -78,7 +79,7 @@ pub(super) fn install_fonts(ctx: &egui::Context, family: Option<&str>) -> Option
     let system = family.and_then(|name| match crate::ui::fonts::load_family(name) {
         Ok(faces) if faces.iter().all(|f| ab_glyph::FontRef::try_from_slice_and_index(&f.data, f.index).is_ok()) => Some(faces),
         Ok(_) => {
-            problem = Some(format!("La fuente «{name}» no se puede usar en el terminal"));
+            problem = Some(crate::tf!("appearance-font-unusable", "name" => name.to_string()));
             None
         }
         Err(error) => {

@@ -1,6 +1,7 @@
 //! Capa común de «sistema de archivos remoto»: el explorador y las transferencias no saben
 //! si hablan SFTP, FTP o SMB.
 
+use crate::i18n::t;
 use std::future::Future;
 use std::io;
 use std::pin::Pin;
@@ -40,7 +41,7 @@ pub trait RemoteFs: Send + Sync {
     }
 
     async fn set_permissions(&self, _path: &str, _mode: u32) -> anyhow::Result<()> {
-        anyhow::bail!("este protocolo no admite cambiar permisos")
+        anyhow::bail!(t("err-no-chmod"))
     }
 
     /// ¿Se perdió la conexión?

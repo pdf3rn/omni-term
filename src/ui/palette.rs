@@ -1,6 +1,7 @@
 //! Paleta de comandos: un buscador único para conexiones, snippets, pestañas y acciones.
 //! En modo contraseñas es el selector del gestor de contraseñas (Ctrl+Alt+P).
 
+use crate::i18n::t;
 use eframe::egui::{self, Align2, CornerRadius, Frame, Id, Key, Margin, Modifiers, RichText, ScrollArea, Sense, TextEdit, Vec2};
 
 use crate::ui::cursor::HandExt;
@@ -46,37 +47,37 @@ pub enum Command {
 }
 
 pub const COMMANDS: [(Command, &str); 31] = [
-    (Command::NewTab, "Nueva pestaña de terminal local"),
-    (Command::NewConnection, "Nueva conexión"),
-    (Command::ImportConfig, "Importar conexiones de ~/.ssh/config"),
-    (Command::Settings, "Abrir ajustes"),
-    (Command::SplitRight, "Dividir el panel a la derecha"),
-    (Command::SplitDown, "Dividir el panel hacia abajo"),
-    (Command::TogglePaneZoom, "Ampliar o restaurar el panel"),
-    (Command::EqualizePanes, "Igualar paneles"),
-    (Command::CloseTab, "Cerrar la pestaña actual"),
-    (Command::ToggleSidebar, "Mostrar u ocultar la barra lateral"),
-    (Command::ThemeDark, "Tema oscuro"),
-    (Command::ThemeLight, "Tema claro"),
-    (Command::ThemeSystem, "Tema del sistema"),
-    (Command::Copy, "Copiar la selección"),
-    (Command::Paste, "Pegar"),
-    (Command::SelectAll, "Seleccionar todo el terminal"),
-    (Command::Search, "Buscar en la salida"),
-    (Command::SaveSnippet, "Guardar la selección como snippet"),
-    (Command::ZoomIn, "Aumentar la letra"),
-    (Command::ZoomOut, "Reducir la letra"),
-    (Command::ZoomReset, "Restablecer la letra"),
-    (Command::NextTab, "Pestaña siguiente"),
-    (Command::PrevTab, "Pestaña anterior"),
-    (Command::Files, "Explorador de archivos de la conexión actual"),
-    (Command::Shortcuts, "Atajos de teclado"),
-    (Command::About, "Acerca de omni-term"),
-    (Command::Fullscreen, "Pantalla completa"),
-    (Command::KnownHosts, "Hosts conocidos"),
-    (Command::Containers, "Administrador de contenedores"),
-    (Command::TypePassword, "Escribir una contraseña guardada en el terminal"),
-    (Command::Passwords, "Gestionar contraseñas"),
+    (Command::NewTab, "palette-nueva-pestana-de-terminal-local"),
+    (Command::NewConnection, "dialogs-nueva-conexion"),
+    (Command::ImportConfig, "palette-importar-conexiones-de-ssh-config"),
+    (Command::Settings, "palette-abrir-ajustes"),
+    (Command::SplitRight, "palette-dividir-el-panel-a-la"),
+    (Command::SplitDown, "palette-dividir-el-panel-hacia-abajo"),
+    (Command::TogglePaneZoom, "settings-ampliar-o-restaurar-el-panel"),
+    (Command::EqualizePanes, "native-menu-igualar-paneles"),
+    (Command::CloseTab, "palette-cerrar-la-pestana-actual"),
+    (Command::ToggleSidebar, "settings-mostrar-u-ocultar-la-barra"),
+    (Command::ThemeDark, "native-menu-tema-oscuro"),
+    (Command::ThemeLight, "native-menu-tema-claro"),
+    (Command::ThemeSystem, "native-menu-tema-del-sistema"),
+    (Command::Copy, "palette-copiar-la-seleccion"),
+    (Command::Paste, "pane-pegar"),
+    (Command::SelectAll, "palette-seleccionar-todo-el-terminal"),
+    (Command::Search, "settings-buscar-en-la-salida"),
+    (Command::SaveSnippet, "palette-guardar-la-seleccion-como-snippet"),
+    (Command::ZoomIn, "native-menu-aumentar-la-letra"),
+    (Command::ZoomOut, "native-menu-reducir-la-letra"),
+    (Command::ZoomReset, "native-menu-restablecer-la-letra"),
+    (Command::NextTab, "native-menu-pestana-siguiente"),
+    (Command::PrevTab, "native-menu-pestana-anterior"),
+    (Command::Files, "palette-explorador-de-archivos-de-la"),
+    (Command::Shortcuts, "settings-atajos-de-teclado"),
+    (Command::About, "dialogs-acerca-de-omni-term"),
+    (Command::Fullscreen, "settings-pantalla-completa"),
+    (Command::KnownHosts, "settings-hosts-conocidos"),
+    (Command::Containers, "palette-administrador-de-contenedores"),
+    (Command::TypePassword, "palette-escribir-una-contrasena-guardada-e"),
+    (Command::Passwords, "palette-gestionar-contrasenas"),
 ];
 
 /// De dónde sale la contraseña que se escribe en el terminal.
@@ -189,7 +190,7 @@ impl Palette {
             ui.set_width(540.0);
             let field = ui.add(
                 TextEdit::singleline(&mut self.query)
-                    .hint_text(if passwords { "Buscar contraseñas" } else { "Buscar conexiones, snippets, pestañas y acciones" })
+                    .hint_text(if passwords { t("palette-buscar-contrasenas") } else { t("palette-buscar-conexiones-snippets-pestana") })
                     .desired_width(f32::INFINITY),
             );
             field.request_focus();
@@ -198,7 +199,7 @@ impl Palette {
             }
             ui.add_space(theme::space::M);
             if matches.is_empty() {
-                ui.label(RichText::new("Nada coincide con la búsqueda.").color(theme::subtext()));
+                ui.label(RichText::new(t("palette-nada-coincide-con-la-busqueda")).color(theme::subtext()));
             }
             let list_height = if passwords { 300.0 } else { 340.0 };
             ScrollArea::vertical().max_height(list_height).auto_shrink([false, true]).show(ui, |ui| {
@@ -252,10 +253,10 @@ impl Palette {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = theme::space::XS;
                     crate::ui::kit::keycap(ui, "Enter");
-                    ui.label(RichText::new("escribir y enviar").small().color(theme::subtext()));
+                    ui.label(RichText::new(t("palette-escribir-y-enviar")).small().color(theme::subtext()));
                     ui.add_space(theme::space::M);
                     crate::ui::kit::keycap(ui, "Alt+Enter");
-                    ui.label(RichText::new("solo escribir").small().color(theme::subtext()));
+                    ui.label(RichText::new(t("palette-solo-escribir")).small().color(theme::subtext()));
                 });
             }
         });

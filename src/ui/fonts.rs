@@ -50,7 +50,7 @@ pub fn load_family(name: &str) -> Result<[Face; 4], String> {
         let id = db.query(&Query { families: &families, weight, stretch: Stretch::Normal, style })?;
         db.with_face_data(id, |data, index| Face { data: data.to_vec(), index })
     };
-    let regular = find(Weight::NORMAL, Style::Normal).ok_or_else(|| format!("No se encontró la fuente «{name}»"))?;
+    let regular = find(Weight::NORMAL, Style::Normal).ok_or_else(|| crate::tf!("fonts-not-found", "name" => name.to_string()))?;
     let bold = find(Weight::BOLD, Style::Normal).unwrap_or_else(|| Face { data: regular.data.clone(), index: regular.index });
     let italic = find(Weight::NORMAL, Style::Italic).or_else(|| find(Weight::NORMAL, Style::Oblique)).unwrap_or_else(|| Face { data: regular.data.clone(), index: regular.index });
     let bold_italic = find(Weight::BOLD, Style::Italic)

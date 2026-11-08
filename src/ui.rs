@@ -28,6 +28,7 @@ mod window;
 mod native_menu;
 
 pub use self::appearance::strong_family;
+use crate::i18n::t;
 use self::appearance::{install_fonts, install_visuals};
 use self::empty::EmptyAction;
 use self::sidebar::{group_environment, PINNED_LABEL};
@@ -189,7 +190,7 @@ impl App {
         let store = match Store::default_path().and_then(|path| Store::open(&path)) {
             Ok(store) => store,
             Err(error) => {
-                startup_notice = Some(format!("Sin base de datos persistente: {error:#}"));
+                startup_notice = Some(crate::tf!("startup-no-database", "error" => format!("{error:#}")));
                 Store::open_in_memory()?
             }
         };
@@ -217,6 +218,7 @@ impl App {
         };
         let settings = Settings::load(&store.lock().unwrap());
         let font_error = install_fonts(&cc.egui_ctx, settings.font_family.as_deref());
+        crate::i18n::set(settings.language.unwrap_or_else(crate::i18n::system));
         theme::set_accent(settings.accent.index());
         theme::set_bold_bright(settings.bold_bright);
         theme::set_term_theme(settings.ansi.index());
@@ -368,11 +370,11 @@ fn relative_time(then: u64, now: u64) -> String {
     }
     let seconds = now - then;
     match seconds {
-        0..=59 => "ahora".to_string(),
-        60..=3599 => format!("hace {} min", seconds / 60),
-        3600..=86_399 => format!("hace {} h", seconds / 3600),
-        86_400..=172_799 => "ayer".to_string(),
-        _ => format!("hace {} d", seconds / 86_400),
+        0..=59 => t("time-now").to_string(),
+        60..=3599 => crate::tf!("time-minutes", "n" => seconds / 60),
+        3600..=86_399 => crate::tf!("time-hours", "n" => seconds / 3600),
+        86_400..=172_799 => t("time-yesterday").to_string(),
+        _ => crate::tf!("time-days", "n" => seconds / 86_400),
     }
 }
 
