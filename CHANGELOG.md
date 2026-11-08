@@ -3,6 +3,24 @@
 Todos los cambios notables de omni-term. A partir de la 0.1.0 este archivo lo actualiza release-plz a partir de los commits convencionales.
 El formato sigue [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y el proyecto usa [versionado semántico](https://semver.org/lang/es/).
 
+## [0.1.14](https://github.com/pdf3rn/omni-term/compare/v0.1.13...v0.1.14) - 2026-11-08
+
+### Added
+
+- *(menu)* compact file menu and add separators between groups
+- *(welcome)* add terminal theme picker and clarify secrets step
+- *(welcome)* add first-run onboarding guide
+- *(import)* pick which ~/.ssh/config hosts to import
+- *(i18n)* add fluent catalogs and interface translation lookups
+- *(terminal)* apply theme surface only when the theme sets one
+- *(sidebar)* remove compact mode and redesign row layout
+- *(sidebar)* consolidate focus stroke and improve layout
+- *(terminal)* smooth scroll with fractional line accumulation
+- *(terminal)* add twelve terminal color themes
+- *(sidebar)* always group connections and add fold-all control
+- *(ui)* add keyboard-friendly select component and dialog focus fixes
+- *(ui)* add roving focus for option groups and a focus ring
+
 ## [0.1.13](https://github.com/pdf3rn/omni-term/compare/v0.1.12...v0.1.13) - 2026-11-04
 
 ### Added
