@@ -237,7 +237,7 @@ pub fn show(
         }
         Dialog::Import(prompt) => {
             let spec = Spec::new(t("import-title")).width(520.0).accept(crate::tf!("import-accept", "n" => prompt.selected())).accept_enabled(prompt.selected() > 0);
-            let action = shell(ctx, spec, |ui| import::import_body(ui, prompt));
+            let action = shell(ctx, spec, |ui| import::import_body(ui, prompt, true));
             plain(action, Outcome::Submit)
         }
         Dialog::ConfirmContainer(confirm) => {

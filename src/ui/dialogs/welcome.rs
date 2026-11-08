@@ -19,6 +19,7 @@ pub struct WelcomePrompt {
     /// Elegidos en la guía; se aplican al momento, así que el idioma y el tema cambian mientras se lee.
     pub language: Option<Lang>,
     pub theme: ThemeChoice,
+    pub ansi: AnsiChoice,
     pub master: bool,
     pub keyring_available: bool,
     pub active_master: bool,
@@ -38,6 +39,7 @@ impl WelcomePrompt {
             step: 0,
             language: settings.language,
             theme: settings.theme,
+            ansi: settings.ansi,
             master: active_master || !keyring_available,
             keyring_available,
             active_master,
@@ -54,6 +56,8 @@ impl WelcomePrompt {
     }
 }
 
+const MIN_BODY_HEIGHT: f32 = 112.0;
+
 pub(super) fn welcome_spec(prompt: &WelcomePrompt) -> Spec {
     let accept = if !prompt.is_last() {
         t("welcome-next").to_string()
@@ -65,7 +69,7 @@ pub(super) fn welcome_spec(prompt: &WelcomePrompt) -> Spec {
     };
     let mut spec = Spec::new(t("welcome-title"))
         .width(520.0)
-        .context(crate::tf!("welcome-step", "n" => prompt.step + 1, "total" => prompt.steps.len()))
+        .status(crate::tf!("welcome-step", "n" => prompt.step + 1, "total" => prompt.steps.len()), theme::subtext())
         .accept(accept)
         .cancel(t("welcome-skip"));
     if prompt.step > 0 {
@@ -75,6 +79,8 @@ pub(super) fn welcome_spec(prompt: &WelcomePrompt) -> Spec {
 }
 
 pub(super) fn welcome_body(ui: &mut egui::Ui, prompt: &mut WelcomePrompt) -> bool {
+    // Los pasos cortos miden lo mismo para que el diálogo no salte al avanzar.
+    ui.set_min_height(MIN_BODY_HEIGHT);
     match prompt.current() {
         WelcomeStep::Language => {
             heading(ui, t("welcome-language"), t("welcome-language-hint"));
@@ -87,10 +93,23 @@ pub(super) fn welcome_body(ui: &mut egui::Ui, prompt: &mut WelcomePrompt) -> boo
         }
         WelcomeStep::Appearance => {
             heading(ui, t("welcome-appearance"), t("welcome-appearance-hint"));
+            ui.label(t("welcome-window-theme"));
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut prompt.theme, ThemeChoice::Dark, t("settings-oscuro"));
                 ui.selectable_value(&mut prompt.theme, ThemeChoice::Light, t("settings-claro"));
                 ui.selectable_value(&mut prompt.theme, ThemeChoice::System, t("settings-sistema"));
+            });
+            ui.add_space(theme::space::M);
+            ui.label(t("settings-tema-del-terminal"));
+            let themes = &crate::data::term_theme::THEMES;
+            let current = prompt.ansi.index() as usize;
+            crate::ui::kit::select(ui, "welcome-terminal-theme", 250.0, themes[current].name, |options| {
+                for (index, theme) in themes.iter().enumerate() {
+                    let preview = |painter: &egui::Painter, rect: egui::Rect| super::settings::paint_theme_preview(painter, rect, index as u8);
+                    if options.option_decorated(index == current, theme.name, preview) {
+                        prompt.ansi = AnsiChoice::new(index as u8);
+                    }
+                }
             });
         }
         WelcomeStep::Secrets => {
@@ -101,6 +120,7 @@ pub(super) fn welcome_body(ui: &mut egui::Ui, prompt: &mut WelcomePrompt) -> boo
                 });
                 ui.selectable_value(&mut prompt.master, true, t("settings-clave-maestra"));
             });
+            ui.label(RichText::new(if prompt.master { t("welcome-secrets-master") } else { t("welcome-secrets-keyring") }).small().color(theme::subtext()));
             let note = if !prompt.keyring_available {
                 t("settings-este-sistema-no-tiene-llavero")
             } else if prompt.master != prompt.active_master {
@@ -113,9 +133,10 @@ pub(super) fn welcome_body(ui: &mut egui::Ui, prompt: &mut WelcomePrompt) -> boo
             }
         }
         WelcomeStep::Import => {
-            heading(ui, t("welcome-import"), t("welcome-import-hint"));
+            let found = prompt.import.as_ref().map_or(0, |i| i.rows.len());
+            heading(ui, t("welcome-import"), &crate::tf!("welcome-import-hint", "n" => found));
             if let Some(import) = prompt.import.as_mut() {
-                import::import_body(ui, import);
+                import::import_body(ui, import, false);
             }
         }
     }

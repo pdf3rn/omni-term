@@ -10,10 +10,11 @@ impl App {
 
         // El idioma y el tema de la guía se aplican según se eligen.
         if let Dialog::Welcome(prompt) = &dialog {
-            if prompt.language != self.settings.language || prompt.theme != self.settings.theme {
+            if prompt.language != self.settings.language || prompt.theme != self.settings.theme || prompt.ansi != self.settings.ansi {
                 self.settings.language = prompt.language;
                 self.settings.theme = prompt.theme;
-                let _ = self.settings.save(&self.store.lock().unwrap());
+                self.settings.ansi = prompt.ansi;
+                self.apply_settings();
             }
         }
 

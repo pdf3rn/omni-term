@@ -317,7 +317,7 @@ pub(super) fn name_of(master: bool) -> &'static str {
 }
 
 /// Vista previa de un tema en su fila: un recuadro con su fondo y texto, y los seis colores principales.
-fn paint_theme_preview(painter: &egui::Painter, rect: egui::Rect, index: u8) {
+pub(super) fn paint_theme_preview(painter: &egui::Painter, rect: egui::Rect, index: u8) {
     let (bg, fg, colors) = theme::term_theme_preview(index);
     let chip = egui::Rect::from_center_size(egui::pos2(rect.max.x - 8.0 - 6.0 * 11.0 - 14.0, rect.center().y), egui::vec2(26.0, 16.0));
     painter.rect_filled(chip, egui::CornerRadius::same(theme::radius::SMALL), bg);

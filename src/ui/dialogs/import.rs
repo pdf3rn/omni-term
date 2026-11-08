@@ -36,9 +36,12 @@ impl ImportPrompt {
     }
 }
 
-pub(super) fn import_body(ui: &mut egui::Ui, prompt: &mut ImportPrompt) -> bool {
+/// `count` muestra «N hosts encontrados»; la guía ya lo dice en su texto.
+pub(super) fn import_body(ui: &mut egui::Ui, prompt: &mut ImportPrompt, count: bool) -> bool {
     ui.horizontal(|ui| {
-        ui.label(RichText::new(crate::tf!("import-found", "n" => prompt.rows.len())).color(theme::subtext()));
+        if count {
+            ui.label(RichText::new(crate::tf!("import-found", "n" => prompt.rows.len())).color(theme::subtext()));
+        }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let all = prompt.selected() == prompt.rows.len();
             if ui.add(egui::Button::new(RichText::new(if all { t("import-none-selected") } else { t("import-select-all") }).color(theme::accent())).frame(false)).hand().clicked() {
