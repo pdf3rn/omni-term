@@ -147,10 +147,33 @@ pub enum Action {
     Extra(usize),
 }
 
+/// Alto máximo de la línea de estado de un diálogo; un error más largo se desplaza.
+const STATUS_MAX_HEIGHT: f32 = 64.0;
+
 /// Marco común: título, contexto, cuerpo y pie con los botones a la derecha.
 /// `Esc` cancela. Enter (o Ctrl+Enter, según `Spec`) pulsa el botón principal: el de aceptar o, si no
 /// hay, el de cerrar. Con un botón enfocado con Tab, Enter pulsa ese botón. El cuerpo devuelve `true`
 /// cuando se pulsó Enter en uno de sus campos de una línea.
+/// Parte las palabras más largas que `max` caracteres, que de otro modo no se cortan y ensanchan el diálogo.
+fn break_long_words(text: &str, max: usize) -> String {
+    let max = max.max(8);
+    let mut out = String::with_capacity(text.len() + text.len() / max);
+    let mut run = 0;
+    for c in text.chars() {
+        if c.is_whitespace() {
+            run = 0;
+        } else {
+            if run == max {
+                out.push('\n');
+                run = 0;
+            }
+            run += 1;
+        }
+        out.push(c);
+    }
+    out
+}
+
 pub fn shell(ctx: &egui::Context, spec: Spec, body: impl FnOnce(&mut egui::Ui) -> bool) -> Action {
     let mut action = Action::None;
     // Esc cierra primero una lista abierta (un desplegable, un menú): el diálogo solo se cancela si no había ninguna.
@@ -231,7 +254,14 @@ pub fn shell(ctx: &egui::Context, spec: Spec, body: impl FnOnce(&mut egui::Ui) -
             ui.horizontal(|ui| {
                 ui.add_space(side);
                 egui::Frame::NONE.inner_margin(egui::Margin { left: 18, right: 18, top: 0, bottom: 10 }).show(ui, |ui| {
-                    ui.label(RichText::new(text.as_str()).small().color(*color));
+                    // Un error largo no debe agrandar el diálogo: ancho fijo, corte donde haga falta y altura máxima con barra.
+                    let width = (spec.width - side - 36.0).max(120.0);
+                    ui.set_width(width);
+                    egui::ScrollArea::vertical().max_height(STATUS_MAX_HEIGHT).auto_shrink([false, true]).show(ui, |ui| {
+                        ui.set_max_width(width - 12.0);
+                        let wrapped = break_long_words(text, ((width - 12.0) / (theme::size::SMALL * 0.62)) as usize);
+                        ui.add(egui::Label::new(RichText::new(wrapped).small().color(*color)).wrap());
+                    });
                 });
             });
         }
