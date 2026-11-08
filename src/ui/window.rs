@@ -263,6 +263,7 @@ impl App {
                     });
                     ui.menu_button(t("native-menu-ayuda"), |ui| {
                         ui.set_min_width(260.0);
+                        item(ui, t("welcome-menu"), "", true, Command::Welcome);
                         item(ui, t("settings-atajos-de-teclado"), "", true, Command::Shortcuts);
                         item(ui, t("dialogs-acerca-de-omni-term"), "", true, Command::About);
                     });

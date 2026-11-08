@@ -104,6 +104,12 @@ impl App {
             // Mismo motivo que abajo: nada de diálogos en los primeros fotogramas.
         } else if let Some(from) = self.pending_migration.take() {
             self.begin_migration(from);
+        } else if self.welcome_pending && self.window_boot.elapsed() < RESTORE_PROMPT_DELAY {
+            // Un diálogo en los primeros fotogramas deja a la ventana sin recibir eventos; se vuelve a mirar al terminar la espera.
+            self.ctx.request_repaint_after(RESTORE_PROMPT_DELAY);
+        } else if self.welcome_pending {
+            self.welcome_pending = false;
+            self.open_welcome();
         } else if self.restore_prompt && self.window_boot.elapsed() < RESTORE_PROMPT_DELAY {
             // Un diálogo en los primeros fotogramas deja a la ventana sin recibir eventos.
         } else if self.restore_prompt {

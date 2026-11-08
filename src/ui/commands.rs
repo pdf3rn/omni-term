@@ -55,6 +55,7 @@ impl App {
             Command::Passwords => self.open_settings(dialogs::SettingsTab::Passwords),
             Command::Shortcuts => self.open_settings(dialogs::SettingsTab::Atajos),
             Command::About => self.dialog = Some(Dialog::About),
+            Command::Welcome => self.open_welcome(),
             Command::Palette => self.palette = Some(Palette::default()),
             Command::Fullscreen => {
                 let on = self.ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));

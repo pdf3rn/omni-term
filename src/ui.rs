@@ -163,6 +163,8 @@ pub struct App {
     open_queue: VecDeque<SavedTab>,
     /// Hay que preguntar si se restaura la sesión anterior antes de abrir nada.
     restore_prompt: bool,
+    /// Instalación nueva: la guía de inicio se abre en cuanto la ventana está lista.
+    welcome_pending: bool,
     /// Migración de secretos entre almacenes que se hace en este arranque.
     pending_migration: Option<MigrateFrom>,
     /// Clave maestra usada como origen o destino de una migración cuando el almacén activo es el llavero.
@@ -196,6 +198,7 @@ impl App {
         };
         let (layout, active) = store.load_layout().unwrap_or_default();
         let connections = store.list_connections().unwrap_or_default();
+        let connections_at_start = connections.len();
         let forwards = store.all_forwards().unwrap_or_default();
         let snippets = store.list_snippets().unwrap_or_default();
         let passwords = store.list_passwords().unwrap_or_default();
@@ -256,6 +259,16 @@ impl App {
 
         let mut open_queue: VecDeque<SavedTab> = layout.into();
         let has_session = open_queue.iter().any(|s| !matches!(s.kind, TabKind::Local));
+        let welcome_pending = {
+            let store = store.lock().unwrap();
+            let done = matches!(store.meta("onboarding_done"), Ok(Some(_)));
+            // Una base con conexiones o ajustes guardados es de quien ya usaba la app: no se le da la bienvenida.
+            let first_run = dialogs::is_first_run(done, connections_at_start, matches!(store.meta("setting.theme"), Ok(Some(_))));
+            if !done && !first_run {
+                let _ = store.set_meta("onboarding_done", b"1");
+            }
+            first_run
+        };
         let restore_prompt = has_session && settings.on_start == StartupChoice::Ask && std::env::var_os(RESTARTED_ENV).is_none();
         if has_session && settings.on_start == StartupChoice::Fresh {
             open_queue.clear();
@@ -317,6 +330,7 @@ impl App {
             save_queue: VecDeque::new(),
             open_queue,
             restore_prompt,
+            welcome_pending,
             pending_migration,
             migration_master: None,
             keyring_probe,

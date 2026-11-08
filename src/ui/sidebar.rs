@@ -263,7 +263,7 @@ impl App {
 
                     if connections_view {
                         if self.connections.is_empty() {
-                            new_connection |= crate::ui::kit::empty_hint(ui, t("sidebar-aun-no-hay-conexiones"), t("sidebar-crea-una"));
+                            new_connection |= crate::ui::kit::empty_hint(ui, t("sidebar-aun-no-hay-conexiones"), t("sidebar-crea-una"), "Ctrl+Shift+N");
                         } else if groups.is_empty() {
                             ui.label(RichText::new(t("sidebar-ninguna-conexion-coincide-con-la")).color(theme::subtext()));
                         }
@@ -486,7 +486,7 @@ impl App {
                         let query = self.sidebar_query.clone();
                         let visible: Vec<&Snippet> = self.snippets.iter().filter(|s| s.matches(&query)).collect();
                         if self.snippets.is_empty() {
-                            new_snippet |= crate::ui::kit::empty_hint(ui, t("sidebar-aun-no-hay-snippets"), t("sidebar-crea-uno"));
+                            new_snippet |= crate::ui::kit::empty_hint(ui, t("sidebar-aun-no-hay-snippets"), t("sidebar-crea-uno"), "");
                         } else if visible.is_empty() {
                             ui.label(RichText::new(t("sidebar-ningun-snippet-coincide-con-la")).color(theme::subtext()));
                         }

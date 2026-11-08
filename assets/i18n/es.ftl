@@ -825,3 +825,22 @@ import-exists = Ya existe
 import-accept = Importar { $n }
 import-none = No hay hosts que importar en ~/.ssh/config
 import-result = { $imported } importadas, { $skipped } omitidas
+
+## welcome
+welcome-menu = Guía de inicio
+welcome-title = Te damos la bienvenida a omni-term
+welcome-step = Paso { $n } de { $total }
+welcome-next = Siguiente
+welcome-back = Atrás
+welcome-skip = Omitir
+welcome-finish = Terminar
+welcome-finish-import = Importar { $n } y terminar
+welcome-language = Idioma
+welcome-language-hint = Puedes cambiarlo cuando quieras en Ajustes.
+welcome-appearance = Apariencia
+welcome-appearance-hint = Elige el tema de la ventana. El color del terminal se ajusta después en Ajustes.
+welcome-secrets = Contraseñas
+welcome-secrets-hint = Dónde se guardan las contraseñas y las passphrases de tus conexiones.
+welcome-secrets-restart = Se aplica al reiniciar omni-term.
+welcome-import = Importar tus servidores
+welcome-import-hint = Estos hosts están en tu ~/.ssh/config. Marca los que quieras tener en omni-term.

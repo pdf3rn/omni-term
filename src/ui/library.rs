@@ -183,6 +183,31 @@ impl App {
         self.dialog = Some(Dialog::Import(dialogs::ImportPrompt::new(hosts, &self.connections)));
     }
 
+    /// Abre la guía de inicio. El paso de importación solo aparece si `~/.ssh/config` tiene hosts.
+    pub(super) fn open_welcome(&mut self) {
+        let keyring_available = *self.keyring_probe.get_or_insert_with(KeyringStore::probe);
+        let active_master = self.secrets.master().is_some();
+        let path = std::env::home_dir().unwrap_or_default().join(".ssh").join("config");
+        let user = std::env::var("USER").unwrap_or_default();
+        let hosts = std::fs::read_to_string(path).map(|text| crate::connect::sshconfig::parse(&text, &user)).unwrap_or_default();
+        self.dialog = Some(Dialog::Welcome(dialogs::WelcomePrompt::new(&self.settings, keyring_available, active_master, hosts, &self.connections)));
+    }
+
+    /// Cierra la guía: queda marcada como vista; con «Terminar» se aplican también los pasos que piden reinicio o importan.
+    pub(super) fn finish_welcome(&mut self, prompt: dialogs::WelcomePrompt, completed: bool) {
+        let _ = self.store.lock().unwrap().set_meta("onboarding_done", b"1");
+        if !completed {
+            return;
+        }
+        if let Some(import) = prompt.import.filter(|i| i.selected() > 0) {
+            self.apply_import(import);
+        }
+        let active_master = self.secrets.master().is_some();
+        if prompt.master != active_master && self.stored_secret_count() == 0 && self.dialog.is_none() {
+            self.apply_secrets_mode(prompt.master, false);
+        }
+    }
+
     /// Guarda los hosts marcados y resuelve sus saltos por nombre.
     pub(super) fn apply_import(&mut self, prompt: dialogs::ImportPrompt) {
         let total = prompt.rows.len();

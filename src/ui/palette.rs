@@ -44,9 +44,10 @@ pub enum Command {
     Containers,
     TypePassword,
     Passwords,
+    Welcome,
 }
 
-pub const COMMANDS: [(Command, &str); 31] = [
+pub const COMMANDS: [(Command, &str); 32] = [
     (Command::NewTab, "palette-nueva-pestana-de-terminal-local"),
     (Command::NewConnection, "dialogs-nueva-conexion"),
     (Command::ImportConfig, "palette-importar-conexiones-de-ssh-config"),
@@ -72,6 +73,7 @@ pub const COMMANDS: [(Command, &str); 31] = [
     (Command::PrevTab, "native-menu-pestana-anterior"),
     (Command::Files, "palette-explorador-de-archivos-de-la"),
     (Command::Shortcuts, "settings-atajos-de-teclado"),
+    (Command::Welcome, "welcome-menu"),
     (Command::About, "dialogs-acerca-de-omni-term"),
     (Command::Fullscreen, "settings-pantalla-completa"),
     (Command::KnownHosts, "settings-hosts-conocidos"),

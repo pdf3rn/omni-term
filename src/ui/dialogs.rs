@@ -17,6 +17,7 @@ mod import;
 mod prompts;
 mod settings;
 mod shell;
+mod welcome;
 
 // Los diálogos se usan siempre como `dialogs::X`: este módulo es su fachada.
 pub use self::conn_form::*;
@@ -24,6 +25,7 @@ pub use self::import::*;
 pub use self::prompts::*;
 pub use self::settings::*;
 pub use self::shell::*;
+pub use self::welcome::*;
 use self::conn_edit::{edit_body, KIND_LIST_WIDTH};
 
 impl Dialog {
@@ -55,6 +57,7 @@ pub enum Dialog {
     Restart,
     ConfirmContainer(ContainerConfirm),
     Import(ImportPrompt),
+    Welcome(WelcomePrompt),
 }
 
 pub enum Outcome {
@@ -215,6 +218,22 @@ pub fn show(
             let accept = if prompt.run { t("dialogs-insertar-y-ejecutar") } else { t("dialogs-insertar") };
             let action = shell(ctx, Spec::new(prompt.title.clone()).accept(accept), |ui| vars_body(ui, prompt));
             plain(action, Outcome::Submit)
+        }
+        Dialog::Welcome(prompt) => {
+            let action = shell(ctx, welcome::welcome_spec(prompt), |ui| welcome::welcome_body(ui, prompt));
+            match action {
+                Action::Accept if prompt.is_last() => Outcome::Submit,
+                Action::Accept => {
+                    prompt.step += 1;
+                    Outcome::None
+                }
+                Action::Extra(_) => {
+                    prompt.step = prompt.step.saturating_sub(1);
+                    Outcome::None
+                }
+                Action::Cancel => Outcome::Cancel,
+                Action::None => Outcome::None,
+            }
         }
         Dialog::Import(prompt) => {
             let spec = Spec::new(t("import-title")).width(520.0).accept(crate::tf!("import-accept", "n" => prompt.selected())).accept_enabled(prompt.selected() > 0);

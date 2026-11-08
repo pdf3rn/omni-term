@@ -8,7 +8,18 @@ impl App {
         let Some(mut dialog) = self.dialog.take() else { return };
         let outcome = dialogs::show(ctx, &mut dialog, &self.connections);
 
+        // El idioma y el tema de la guía se aplican según se eligen.
+        if let Dialog::Welcome(prompt) = &dialog {
+            if prompt.language != self.settings.language || prompt.theme != self.settings.theme {
+                self.settings.language = prompt.language;
+                self.settings.theme = prompt.theme;
+                let _ = self.settings.save(&self.store.lock().unwrap());
+            }
+        }
+
         match (outcome, dialog) {
+            (Outcome::Submit, Dialog::Welcome(prompt)) => self.finish_welcome(prompt, true),
+            (Outcome::Cancel, Dialog::Welcome(prompt)) => self.finish_welcome(prompt, false),
             (Outcome::None, dialog) => self.dialog = Some(dialog),
             (Outcome::Submit, Dialog::Error(ErrorInfo { retry: Some(Retry::Open(connection, slot, purpose)), .. })) => {
                 self.continue_open(connection, slot, purpose);
