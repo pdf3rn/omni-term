@@ -812,3 +812,16 @@ err-store-no-id-connection = the connection has no id
 err-store-no-id-snippet = the snippet has no id
 err-store-no-id-password = the password has no id
 startup-no-database = No persistent database: { $error }
+
+## import
+import-title = Import from ~/.ssh/config
+import-found = { $n ->
+    [one] 1 host found
+   *[other] { $n } hosts found
+}
+import-select-all = Select all
+import-none-selected = Select none
+import-exists = Already exists
+import-accept = Import { $n }
+import-none = There are no hosts to import in ~/.ssh/config
+import-result = { $imported } imported, { $skipped } skipped

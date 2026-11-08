@@ -175,17 +175,25 @@ impl App {
             }
         };
         let user = std::env::var("USER").unwrap_or_default();
+        let hosts = crate::connect::sshconfig::parse(&text, &user);
+        if hosts.is_empty() {
+            self.notify(t("import-none"));
+            return;
+        }
+        self.dialog = Some(Dialog::Import(dialogs::ImportPrompt::new(hosts, &self.connections)));
+    }
+
+    /// Guarda los hosts marcados y resuelve sus saltos por nombre.
+    pub(super) fn apply_import(&mut self, prompt: dialogs::ImportPrompt) {
+        let total = prompt.rows.len();
         let mut imported = 0;
         let mut jumps: Vec<(i64, String)> = Vec::new();
         {
             let store = self.store.lock().unwrap();
-            for host in crate::connect::sshconfig::parse(&text, &user) {
-                if self.connections.iter().any(|c| c.name == host.connection.name) {
-                    continue;
-                }
-                if let Ok(id) = store.save_connection(&host.connection) {
+            for row in prompt.rows.into_iter().filter(|r| r.checked) {
+                if let Ok(id) = store.save_connection(&row.host.connection) {
                     imported += 1;
-                    if let Some(alias) = host.jump_alias {
+                    if let Some(alias) = row.host.jump_alias {
                         jumps.push((id, alias));
                     }
                 }
@@ -202,7 +210,8 @@ impl App {
             }
         }
         self.refresh_connections();
-        self.notify(crate::tf!("library-imported", "n" => imported));
+        let skipped = total - imported;
+        self.notify(if skipped == 0 { crate::tf!("library-imported", "n" => imported) } else { crate::tf!("import-result", "imported" => imported, "skipped" => skipped) });
     }
 
     /// Hasta 5 conexiones para el menú del «+»: las últimas usadas y, si faltan, las demás por nombre.

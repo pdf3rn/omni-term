@@ -13,12 +13,14 @@ use crate::ui::theme;
 
 mod conn_edit;
 mod conn_form;
+mod import;
 mod prompts;
 mod settings;
 mod shell;
 
 // Los diálogos se usan siempre como `dialogs::X`: este módulo es su fachada.
 pub use self::conn_form::*;
+pub use self::import::*;
 pub use self::prompts::*;
 pub use self::settings::*;
 pub use self::shell::*;
@@ -52,6 +54,7 @@ pub enum Dialog {
     SecretsMode(SecretsModePrompt),
     Restart,
     ConfirmContainer(ContainerConfirm),
+    Import(ImportPrompt),
 }
 
 pub enum Outcome {
@@ -211,6 +214,11 @@ pub fn show(
         Dialog::SnippetVars(prompt) => {
             let accept = if prompt.run { t("dialogs-insertar-y-ejecutar") } else { t("dialogs-insertar") };
             let action = shell(ctx, Spec::new(prompt.title.clone()).accept(accept), |ui| vars_body(ui, prompt));
+            plain(action, Outcome::Submit)
+        }
+        Dialog::Import(prompt) => {
+            let spec = Spec::new(t("import-title")).width(520.0).accept(crate::tf!("import-accept", "n" => prompt.selected())).accept_enabled(prompt.selected() > 0);
+            let action = shell(ctx, spec, |ui| import::import_body(ui, prompt));
             plain(action, Outcome::Submit)
         }
         Dialog::ConfirmContainer(confirm) => {
