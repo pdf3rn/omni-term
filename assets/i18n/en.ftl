@@ -850,3 +850,4 @@ welcome-import-hint = { $n ->
 welcome-secrets-keyring = Uses your system keyring: nothing to type.
 welcome-secrets-master = Encrypts them with a key you choose, asked for when they are used.
 welcome-window-theme = Window theme
+menu-importar-ssh-config = Import from ~/.ssh/config…

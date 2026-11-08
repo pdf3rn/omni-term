@@ -187,7 +187,13 @@ impl App {
             .frame(Frame::NONE.fill(theme::mantle()).inner_margin(margin))
             .show(ui, |ui| {
                 ui.visuals_mut().widgets.inactive.weak_bg_fill = Color32::TRANSPARENT;
+                let sep = |ui: &mut egui::Ui| {
+                    ui.add_space(theme::space::XS);
+                    ui.separator();
+                    ui.add_space(theme::space::XS);
+                };
                 let mut item = |ui: &mut egui::Ui, label: &str, shortcut: &str, enabled: bool, command: Command| {
+                    compact_menu(ui);
                     let mut button = Button::new(label);
                     if !shortcut.is_empty() {
                         button = button.shortcut_text(shortcuts::label(shortcut));
@@ -202,12 +208,13 @@ impl App {
                         ui.set_min_width(300.0);
                         item(ui, t("native-menu-nueva-pestana-local"), "Ctrl+Shift+T", true, Command::NewTab);
                         item(ui, t("native-menu-nueva-conexion"), "Ctrl+Shift+N", true, Command::NewConnection);
-                        item(ui, t("empty-importar-de-ssh-config"), "", true, Command::ImportConfig);
-                        ui.separator();
+                        item(ui, t("menu-importar-ssh-config"), "", true, Command::ImportConfig);
+                        sep(ui);
                         item(ui, t("native-menu-cerrar-pestana"), "Ctrl+Shift+W", !self.tabs.is_empty(), Command::CloseTab);
+                        sep(ui);
                         item(ui, t("sessions-ajustes"), "Ctrl+,", true, Command::Settings);
                         item(ui, t("settings-hosts-conocidos"), "", true, Command::KnownHosts);
-                        ui.separator();
+                        sep(ui);
                         item(ui, t("native-menu-salir"), "", true, Command::Quit);
                     });
                     ui.menu_button(t("settings-editar"), |ui| {
@@ -216,26 +223,26 @@ impl App {
                         item(ui, t("pane-pegar"), "Ctrl+Shift+V", has_terminal, Command::Paste);
                         item(ui, t("pane-escribir-contrasena"), "Ctrl+Alt+P", has_terminal, Command::TypePassword);
                         item(ui, t("pane-seleccionar-todo"), "", has_terminal, Command::SelectAll);
-                        ui.separator();
+                        sep(ui);
                         item(ui, t("settings-buscar-en-la-salida"), "Ctrl+Shift+F", has_terminal, Command::Search);
                         item(ui, t("pane-guardar-seleccion-como-snippet"), "", has_selection, Command::SaveSnippet);
-                        ui.separator();
+                        sep(ui);
                         item(ui, t("native-menu-contrasenas-guardadas"), "", true, Command::Passwords);
                     });
                     ui.menu_button(t("native-menu-ver"), |ui| {
                         ui.set_min_width(300.0);
                         item(ui, t("native-menu-barra-lateral"), "Ctrl+Shift+B", true, Command::ToggleSidebar);
                         item(ui, t("settings-pantalla-completa"), "F11", true, Command::Fullscreen);
-                        ui.separator();
+                        sep(ui);
                         item(ui, t("pane-dividir-a-la-derecha"), "Ctrl+Shift+D", has_terminal, Command::SplitRight);
                         item(ui, t("pane-dividir-hacia-abajo"), "Ctrl+Shift+E", has_terminal, Command::SplitDown);
                         item(ui, t("settings-ampliar-o-restaurar-el-panel"), "Ctrl+Shift+Z", has_terminal, Command::TogglePaneZoom);
                         item(ui, t("native-menu-igualar-paneles"), "", has_terminal, Command::EqualizePanes);
-                        ui.separator();
+                        sep(ui);
                         item(ui, t("native-menu-aumentar-la-letra"), "Ctrl+=", true, Command::ZoomIn);
                         item(ui, t("native-menu-reducir-la-letra"), "Ctrl+−", true, Command::ZoomOut);
                         item(ui, t("native-menu-restablecer-la-letra"), "Ctrl+0", true, Command::ZoomReset);
-                        ui.separator();
+                        sep(ui);
                         item(ui, t("native-menu-tema-oscuro"), "", true, Command::ThemeDark);
                         item(ui, t("native-menu-tema-claro"), "", true, Command::ThemeLight);
                         item(ui, t("native-menu-tema-del-sistema"), "", true, Command::ThemeSystem);
@@ -243,14 +250,15 @@ impl App {
                     ui.menu_button(t("native-menu-ir"), |ui| {
                         ui.set_min_width(300.0);
                         item(ui, t("settings-paleta-de-comandos"), "Ctrl+Shift+P", true, Command::Palette);
-                        ui.separator();
+                        sep(ui);
                         item(ui, t("native-menu-pestana-siguiente"), "Ctrl+Tab", several, Command::NextTab);
                         item(ui, t("native-menu-pestana-anterior"), "Ctrl+Shift+Tab", several, Command::PrevTab);
                         item(ui, t("native-menu-explorador-de-archivos-de-esta"), "", on_connection, Command::Files);
                         item(ui, t("conn-edit-contenedores"), "", true, Command::Containers);
-                        ui.separator();
+                        sep(ui);
                         ui.add_enabled_ui(!recents.is_empty(), |ui| {
                             ui.menu_button(t("native-menu-conexiones-recientes"), |ui| {
+                                compact_menu(ui);
                                 for connection in &recents {
                                     let label = format!("{}   {}", connection.name, connection.target());
                                     if ui.button(label).clicked() {
@@ -283,7 +291,8 @@ impl App {
                         ui.add_space(theme::space::XS);
                         if !crate::data::settings::NATIVE_CHROME {
                             egui::MenuBar::new().ui(ui, |ui| {
-                                ui.spacing_mut().button_padding.x = theme::space::M;
+                                ui.spacing_mut().button_padding = Vec2::new(theme::space::M, theme::space::XS);
+                                ui.spacing_mut().interact_size.y = 24.0;
                                 ui.spacing_mut().item_spacing.x = 0.0;
                                 ui.style_mut().override_font_id = Some(FontId::new(theme::size::SMALL, FontFamily::Proportional));
                                 ui.visuals_mut().widgets.inactive.fg_stroke.color = theme::subtext();
@@ -408,4 +417,12 @@ mod tests {
         assert_eq!(parse_window_position("100,-20", monitor, size), None);
         assert_eq!(parse_window_position("basura", monitor, size), None);
     }
+}
+
+/// Filas de menú contiguas de 26 px: el resaltado ocupa toda la fila y deja aire a los lados del texto.
+fn compact_menu(ui: &mut egui::Ui) {
+    let spacing = ui.spacing_mut();
+    spacing.button_padding = Vec2::new(theme::space::L, theme::space::XS);
+    spacing.item_spacing.y = 0.0;
+    spacing.interact_size.y = 26.0;
 }

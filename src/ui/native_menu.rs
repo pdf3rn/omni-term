@@ -64,9 +64,10 @@ const APP: &[Row] = &[
 const FILE: &[Row] = &[
     Item("native-menu-nueva-pestana-local", Command::NewTab, Always),
     Item("native-menu-nueva-conexion", Command::NewConnection, Always),
-    Item("empty-importar-de-ssh-config", Command::ImportConfig, Always),
+    Item("menu-importar-ssh-config", Command::ImportConfig, Always),
     Separator,
     Item("native-menu-cerrar-pestana", Command::CloseTab, Tabs),
+    Separator,
     Item("settings-hosts-conocidos", Command::KnownHosts, Always),
 ];
 
