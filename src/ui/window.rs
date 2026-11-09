@@ -178,6 +178,12 @@ impl App {
         let on_connection = matches!(tab.map(|t| t.kind), Some(TabKind::Connection(_)));
         let several = self.tabs.len() > 1;
         let recents = self.recent_connections();
+        let update_label = match &self.update {
+            Some(release) => crate::tf!("update-menu-available", "version" => release.version.clone()),
+            None => t("update-check-command").to_string(),
+        };
+        let update_ready = self.update.is_some();
+        let mut open_update = false;
         let mut chosen: Option<Command> = None;
         let mut connect: Option<Connection> = None;
         let (panel_height, margin) = if custom { (bar_height, Margin { left: 10, right: 0, top: 0, bottom: 0 }) } else { (30.0, Margin::symmetric(8, 3)) };
@@ -272,6 +278,7 @@ impl App {
                     ui.menu_button(t("native-menu-ayuda"), |ui| {
                         ui.set_min_width(260.0);
                         item(ui, t("welcome-menu"), "", true, Command::Welcome);
+                        item(ui, &update_label, "", true, Command::CheckUpdates);
                         item(ui, t("settings-atajos-de-teclado"), "", true, Command::Shortcuts);
                         item(ui, t("dialogs-acerca-de-omni-term"), "", true, Command::About);
                     });
@@ -305,7 +312,18 @@ impl App {
                         }
                     });
                     let controls = if crate::data::settings::NATIVE_CHROME { 0.0 } else { 3.0 * WINDOW_BUTTON_WIDTH };
-                    let title_area = Rect::from_min_max(Pos2::new(bar.min.x + 300.0, bar.min.y), Pos2::new(bar.max.x - controls - 36.0, bar.max.y));
+                    let mut title_right = bar.max.x - controls - 36.0;
+                    if update_ready {
+                        // Aviso de versión nueva junto al engranaje; el título se recorta para no pisarlo.
+                        let text = RichText::new(t("update-available-short")).size(theme::size::SMALL).color(theme::accent());
+                        let width = ui.painter().layout_no_wrap(t("update-available-short").to_string(), FontId::new(theme::size::SMALL, FontFamily::Proportional), theme::accent()).size().x + 2.0 * ui.spacing().button_padding.x;
+                        let rect = Rect::from_min_max(Pos2::new(title_right - width, bar.center().y - 12.0), Pos2::new(title_right, bar.center().y + 12.0));
+                        if ui.put(rect, Button::new(text).wrap_mode(egui::TextWrapMode::Extend)).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                            open_update = true;
+                        }
+                        title_right = rect.min.x - theme::space::S;
+                    }
+                    let title_area = Rect::from_min_max(Pos2::new(bar.min.x + 300.0, bar.min.y), Pos2::new(title_right, bar.max.y));
                     ui.painter().with_clip_rect(title_area).text(
                         Pos2::new(bar.center().x, bar.center().y),
                         egui::Align2::CENTER_CENTER,
@@ -339,6 +357,9 @@ impl App {
             });
         if open_settings {
             chosen = Some(Command::Settings);
+        }
+        if open_update {
+            chosen = Some(Command::CheckUpdates);
         }
         (chosen, connect)
     }

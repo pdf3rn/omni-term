@@ -23,6 +23,7 @@ mod sidebar;
 mod startup;
 mod tabs;
 mod toasts;
+mod updates;
 mod window;
 #[cfg(target_os = "macos")]
 mod native_menu;
@@ -182,6 +183,10 @@ pub struct App {
     pane_drag: Option<pane_drag::PaneDrag>,
     /// Dónde se puede soltar un panel en este fotograma: paneles visibles y pestañas.
     drop_targets: pane_drag::DropTargets,
+    /// Versión nueva encontrada que el usuario no ha omitido.
+    update: Option<crate::update::Release>,
+    /// Comprobación en curso; `true` si la pidió el usuario.
+    update_check: Option<(Receiver<Result<crate::update::Release, String>>, bool)>,
 }
 
 impl App {
@@ -342,6 +347,8 @@ impl App {
             pane_drag: None,
             drop_targets: pane_drag::DropTargets::default(),
             next_toast: 0,
+            update: None,
+            update_check: None,
         };
         app.loaded_font = app.settings.font_family.clone();
         if let Some(problem) = font_error {
@@ -352,6 +359,7 @@ impl App {
         if let Some(notice) = startup_notice {
             app.notify(notice);
         }
+        app.maybe_check_updates();
         Ok(app)
     }
 
@@ -483,6 +491,7 @@ impl eframe::App for App {
                 }
             }
         }
+        self.poll_update_check();
         self.handle_dialog(&ctx);
         self.toasts_ui(&ctx);
         self.persist_layout();

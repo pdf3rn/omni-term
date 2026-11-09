@@ -280,16 +280,19 @@ pub(super) fn settings_content(ui: &mut egui::Ui, tab: SettingsTab, settings: &m
 
     crate::ui::kit::card(ui, t("settings-avisos"), |ui| {
         let mut notify = settings.notify_after > 0;
-        crate::ui::kit::setting_row(ui, t("settings-avisar-al-terminar-la-actividad"), Some(t("settings-de-una-pestana-que-no")), notify, |ui| {
+        crate::ui::kit::setting_row(ui, t("settings-avisar-al-terminar-la-actividad"), Some(t("settings-de-una-pestana-que-no")), true, |ui| {
             if crate::ui::kit::toggle(ui, &mut notify).changed() {
                 settings.notify_after = if notify { 15 } else { 0 };
             }
         });
         if notify {
-            crate::ui::kit::setting_row(ui, t("settings-solo-si-duro-al-menos"), None, false, |ui| {
+            crate::ui::kit::setting_row(ui, t("settings-solo-si-duro-al-menos"), None, true, |ui| {
                 ui.add(egui::DragValue::new(&mut settings.notify_after).range(1..=3600).suffix(" s"));
             });
         }
+        crate::ui::kit::setting_row(ui, t("settings-check-updates"), Some(t("settings-check-updates-hint")), false, |ui| {
+            crate::ui::kit::toggle(ui, &mut settings.check_updates);
+        });
     });
 
     crate::ui::kit::card(ui, t("settings-secretos"), |ui| {

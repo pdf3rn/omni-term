@@ -199,6 +199,11 @@ impl App {
         if !completed {
             return;
         }
+        if prompt.check_updates != self.settings.check_updates {
+            self.settings.check_updates = prompt.check_updates;
+            let _ = self.settings.save(&self.store.lock().unwrap());
+            self.maybe_check_updates();
+        }
         if let Some(import) = prompt.import.filter(|i| i.selected() > 0) {
             self.apply_import(import);
         }

@@ -24,6 +24,7 @@ All code lives under `src/`, grouped by domain. Each folder has a sibling file (
 | `containers/` | Docker and Podman manager: the engine client and its view. |
 | `data/` | Storage: the SQLite `store`, `secrets` and `settings`. |
 | `i18n.rs` | Interface languages: the Fluent catalogs in `assets/i18n/` embedded in the binary, and the `t` / `tf!` lookups. |
+| `update.rs` | New versions: asks GitHub Releases for the latest stable release and compares it with the running one. The app side (daily check, notice, dialog) is `ui/updates.rs`. |
 | `ui/` | The window and everything drawn. `ui.rs` holds the `App` state and the frame loop; its methods live in topic modules (`sessions`, `connecting`, `secrets_flow`, `library`, `commands`, `closing`, `startup`, `dialog_flow`, `toasts`), and the screens in `sidebar`, `tabs` (strip and tab state), `central` (the active tab's area), `empty`, `window` (title bar) and `appearance`. Also `dialogs/` (shell, connection form, settings, prompts), `palette`, `theme`, `icons`, `fonts` and the reusable `kit`. |
 
 ## UI style

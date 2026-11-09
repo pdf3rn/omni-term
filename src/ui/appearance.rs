@@ -31,6 +31,7 @@ impl App {
                 panes.for_each(&mut |_, pane| pane.session.set_options(options));
             }
         }
+        self.maybe_check_updates();
     }
 
     /// Cambia entre tema claro y oscuro según el ajuste (o el del sistema) y reinstala los estilos.

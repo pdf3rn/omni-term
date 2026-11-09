@@ -10,6 +10,7 @@ mod terminal;
 #[cfg(test)]
 mod testutil;
 mod ui;
+mod update;
 
 use eframe::egui;
 

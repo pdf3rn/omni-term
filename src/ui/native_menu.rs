@@ -112,7 +112,11 @@ const GO: &[Row] = &[
     Row::Recents,
 ];
 
-const HELP: &[Row] = &[Item("welcome-menu", Command::Welcome, Always), Item("settings-atajos-de-teclado", Command::Shortcuts, Always)];
+const HELP: &[Row] = &[
+    Item("welcome-menu", Command::Welcome, Always),
+    Item("update-check-command", Command::CheckUpdates, Always),
+    Item("settings-atajos-de-teclado", Command::Shortcuts, Always),
+];
 
 /// Menú nativo de la aplicación. Vive en el hilo principal, junto a la ventana.
 pub struct NativeMenu {

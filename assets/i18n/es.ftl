@@ -851,3 +851,27 @@ welcome-secrets-keyring = Usa el llavero de tu sistema: no hay que escribir nada
 welcome-secrets-master = Las cifra con una clave que eliges tú y se te pide al usarlas.
 welcome-window-theme = Tema de la ventana
 menu-importar-ssh-config = Importar de ~/.ssh/config…
+
+## updates
+update-check-command = Buscar actualizaciones
+update-menu-available = Actualizar a { $version }…
+update-available-short = Actualización disponible
+update-title = Actualización disponible
+update-body = omni-term { $version } ya está disponible. Tienes la { $current }.
+update-notes = Novedades
+update-download = Abrir en GitHub
+update-later = Más tarde
+update-skip = Omitir esta versión
+update-checking = Buscando actualizaciones…
+update-up-to-date = Tienes la última versión ({ $version }).
+update-failed = No se pudo buscar actualizaciones: { $error }
+update-open-failed = No se pudo abrir el navegador: { $error }
+update-err-none = todavía no hay versiones publicadas
+update-err-limit = GitHub limitó las consultas; prueba dentro de un rato
+update-err-status = GitHub respondió con el código { $code }
+update-err-network = sin conexión con GitHub ({ $error })
+update-err-format = respuesta de GitHub no reconocida
+welcome-updates = Actualizaciones
+welcome-updates-hint = omni-term puede preguntar a GitHub una vez al día si hay versión nueva. Solo se hace esa consulta: sin cuenta ni telemetría.
+settings-check-updates = Buscar actualizaciones automáticamente
+settings-check-updates-hint = Una consulta a GitHub al día, como mucho

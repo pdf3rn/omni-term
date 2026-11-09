@@ -58,6 +58,7 @@ pub enum Dialog {
     ConfirmContainer(ContainerConfirm),
     Import(ImportPrompt),
     Welcome(WelcomePrompt),
+    Update(crate::update::Release),
 }
 
 pub enum Outcome {
@@ -231,6 +232,30 @@ pub fn show(
                     prompt.step = prompt.step.saturating_sub(1);
                     Outcome::None
                 }
+                Action::Cancel => Outcome::Cancel,
+                Action::None => Outcome::None,
+            }
+        }
+        Dialog::Update(release) => {
+            let spec = Spec::new(t("update-title")).width(480.0).icon(DialogIcon::Info).accept(t("update-download")).cancel(t("update-later")).extra(t("update-skip"));
+            let action = shell(ctx, spec, |ui| {
+                ui.label(crate::tf!("update-body", "version" => release.version.clone(), "current" => crate::update::current()));
+                let notes = crate::update::plain_notes(&release.notes);
+                if !notes.is_empty() {
+                    ui.add_space(theme::space::XS);
+                    ui.label(RichText::new(t("update-notes")).small().color(theme::subtext()));
+                    egui::Frame::new().fill(theme::surface()).corner_radius(theme::radius::SMALL).inner_margin(theme::space::S).show(ui, |ui| {
+                        ScrollArea::vertical().max_height(220.0).show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            ui.label(notes);
+                        });
+                    });
+                }
+                false
+            });
+            match action {
+                Action::Accept => Outcome::Submit,
+                Action::Extra(_) => Outcome::Alternate,
                 Action::Cancel => Outcome::Cancel,
                 Action::None => Outcome::None,
             }

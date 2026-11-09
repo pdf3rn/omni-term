@@ -45,9 +45,10 @@ pub enum Command {
     TypePassword,
     Passwords,
     Welcome,
+    CheckUpdates,
 }
 
-pub const COMMANDS: [(Command, &str); 32] = [
+pub const COMMANDS: [(Command, &str); 33] = [
     (Command::NewTab, "palette-nueva-pestana-de-terminal-local"),
     (Command::NewConnection, "dialogs-nueva-conexion"),
     (Command::ImportConfig, "palette-importar-conexiones-de-ssh-config"),
@@ -74,6 +75,7 @@ pub const COMMANDS: [(Command, &str); 32] = [
     (Command::Files, "palette-explorador-de-archivos-de-la"),
     (Command::Shortcuts, "settings-atajos-de-teclado"),
     (Command::Welcome, "welcome-menu"),
+    (Command::CheckUpdates, "update-check-command"),
     (Command::About, "dialogs-acerca-de-omni-term"),
     (Command::Fullscreen, "settings-pantalla-completa"),
     (Command::KnownHosts, "settings-hosts-conocidos"),

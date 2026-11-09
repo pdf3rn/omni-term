@@ -119,6 +119,8 @@ pub struct Settings {
     pub bold_bright: bool,
     /// Líneas de historial de las sesiones nuevas.
     pub scrollback: usize,
+    /// Consultar GitHub una vez al día por si hay versión nueva. Apagado hasta que el usuario lo elige.
+    pub check_updates: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -170,6 +172,7 @@ impl Default for Settings {
             blink: false,
             bold_bright: false,
             scrollback: 10_000,
+            check_updates: false,
         }
     }
 }
@@ -218,6 +221,7 @@ impl Settings {
             scrollback: text(store, "setting.scrollback")
                 .and_then(|t| t.parse::<usize>().ok())
                 .map_or(defaults.scrollback, |n| n.clamp(MIN_SCROLLBACK, MAX_SCROLLBACK)),
+            check_updates: text(store, "setting.check_updates").map_or(defaults.check_updates, |t| t == "1"),
         }
     }
 
@@ -251,6 +255,7 @@ impl Settings {
         store.set_meta("setting.blink", if self.blink { b"1" } else { b"0" })?;
         store.set_meta("setting.bold_bright", if self.bold_bright { b"1" } else { b"0" })?;
         store.set_meta("setting.scrollback", self.scrollback.to_string().as_bytes())?;
+        store.set_meta("setting.check_updates", if self.check_updates { b"1" } else { b"0" })?;
         Ok(())
     }
 }
@@ -288,6 +293,7 @@ mod tests {
             blink: true,
             bold_bright: true,
             scrollback: 50_000,
+            check_updates: true,
         };
         settings.save(&store).unwrap();
         assert_eq!(Settings::load(&store), settings);

@@ -1,4 +1,4 @@
-//! Guía de inicio: idioma, apariencia, almacén de credenciales e importación de hosts.
+//! Guía de inicio: idioma, apariencia, almacén de credenciales, actualizaciones e importación de hosts.
 
 use eframe::egui::{self, RichText};
 
@@ -10,6 +10,7 @@ pub enum WelcomeStep {
     Language,
     Appearance,
     Secrets,
+    Updates,
     Import,
 }
 
@@ -21,6 +22,8 @@ pub struct WelcomePrompt {
     pub theme: ThemeChoice,
     pub ansi: AnsiChoice,
     pub master: bool,
+    /// Se guarda al terminar la guía; si se omite, la comprobación sigue apagada.
+    pub check_updates: bool,
     pub keyring_available: bool,
     pub active_master: bool,
     pub import: Option<ImportPrompt>,
@@ -29,7 +32,7 @@ pub struct WelcomePrompt {
 impl WelcomePrompt {
     /// El paso de importación solo está si hay hosts que ofrecer.
     pub fn new(settings: &Settings, keyring_available: bool, active_master: bool, hosts: Vec<crate::connect::sshconfig::ImportedHost>, known: &[Connection]) -> Self {
-        let mut steps = vec![WelcomeStep::Language, WelcomeStep::Appearance, WelcomeStep::Secrets];
+        let mut steps = vec![WelcomeStep::Language, WelcomeStep::Appearance, WelcomeStep::Secrets, WelcomeStep::Updates];
         let import = (!hosts.is_empty()).then(|| ImportPrompt::new(hosts, known));
         if import.is_some() {
             steps.push(WelcomeStep::Import);
@@ -41,6 +44,7 @@ impl WelcomePrompt {
             theme: settings.theme,
             ansi: settings.ansi,
             master: active_master || !keyring_available,
+            check_updates: true,
             keyring_available,
             active_master,
             import,
@@ -132,6 +136,10 @@ pub(super) fn welcome_body(ui: &mut egui::Ui, prompt: &mut WelcomePrompt) -> boo
                 ui.label(RichText::new(note).small().color(theme::subtext()));
             }
         }
+        WelcomeStep::Updates => {
+            heading(ui, t("welcome-updates"), t("welcome-updates-hint"));
+            crate::ui::kit::switch_labeled(ui, &mut prompt.check_updates, t("settings-check-updates"));
+        }
         WelcomeStep::Import => {
             let found = prompt.import.as_ref().map_or(0, |i| i.rows.len());
             heading(ui, t("welcome-import"), &crate::tf!("welcome-import-hint", "n" => found));
@@ -170,7 +178,7 @@ mod tests {
     fn the_import_step_appears_only_with_hosts() {
         let settings = Settings::default();
         let without = WelcomePrompt::new(&settings, true, false, Vec::new(), &[]);
-        assert_eq!(without.steps, [WelcomeStep::Language, WelcomeStep::Appearance, WelcomeStep::Secrets]);
+        assert_eq!(without.steps, [WelcomeStep::Language, WelcomeStep::Appearance, WelcomeStep::Secrets, WelcomeStep::Updates]);
         let hosts = crate::connect::sshconfig::parse("Host a\n  HostName 1.1.1.1\n", "me");
         let with = WelcomePrompt::new(&settings, true, false, hosts, &[]);
         assert_eq!(with.steps.last(), Some(&WelcomeStep::Import));
