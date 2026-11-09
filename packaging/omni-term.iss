@@ -59,12 +59,19 @@ Name: "{autodesktop}\omni-term"; Filename: "{app}\omni-term.exe"; Tasks: desktop
 
 [Run]
 Filename: "{app}\omni-term.exe"; Description: "{cm:LaunchProgram,omni-term}"; Flags: nowait postinstall skipifsilent
+; La app se actualiza lanzando este instalador con /SILENT /relaunch=1 y se vuelve a abrir al terminar.
+Filename: "{app}\omni-term.exe"; Flags: nowait; Check: Relaunch
 
 [Registry]
 ; PATH del usuario (o del sistema si se instala para todos).
 Root: HKA; Subkey: "{code:EnvironmentKey}"; ValueType: expandsz; ValueName: "Path"; ValueData: "{olddata};{app}"; Tasks: addtopath; Check: NeedsAddPath(ExpandConstant('{app}'))
 
 [Code]
+function Relaunch: Boolean;
+begin
+  Result := WizardSilent and (ExpandConstant('{param:relaunch|0}') = '1');
+end;
+
 function EnvironmentKey(Param: string): string;
 begin
   if IsAdminInstallMode then

@@ -74,7 +74,7 @@ impl App {
     }
 
     pub(super) fn restart_app(&mut self) {
-        let spawned = std::env::current_exe().and_then(|exe| std::process::Command::new(exe).env(RESTARTED_ENV, "1").spawn());
+        let spawned = crate::update::relaunch_target().and_then(|exe| std::process::Command::new(exe).env(RESTARTED_ENV, "1").spawn());
         match spawned {
             Ok(_) => {
                 self.close_confirmed = true;

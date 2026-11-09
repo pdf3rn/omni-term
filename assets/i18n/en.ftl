@@ -875,3 +875,35 @@ welcome-updates = Updates
 welcome-updates-hint = omni-term can ask GitHub once a day whether there is a new version. That request is all it sends: no account, no telemetry.
 settings-check-updates = Check for updates automatically
 settings-check-updates-hint = At most one request to GitHub a day
+update-install = Update
+update-hide = Hide
+update-cancel-download = Cancel download
+update-downloading-title = Updating omni-term
+update-downloading = Downloading omni-term { $version }…
+update-size = { $done } of { $total } MB
+update-installing = Checking the signature and installing…
+update-failed-title = Could not update
+update-retry = Try again
+update-ready-title = Update ready
+update-ready-body = omni-term { $version } is installed and will be used the next time the app opens.
+update-ready-installer = The installer will run when you restart or close the app.
+update-ready-tabs = { $n ->
+    [one] Restarting closes the open tab and opens it again; SSH connections will need to reconnect.
+   *[other] Restarting closes the { $n } open tabs and opens them again; SSH connections will need to reconnect.
+}
+update-restart-now = Restart now
+update-on-close = When I close the app
+update-restart-failed = Could not restart: { $error }
+update-badge-downloading = Downloading… { $percent } %
+update-badge-installing = Installing…
+update-badge-ready = Restart to update
+update-badge-failed = Update failed
+update-manual-package = It was installed with a package manager: update it there (for example, apt upgrade).
+update-manual-readonly = The app is in a folder that cannot be written to: download the new version from GitHub.
+update-manual-unsupported = There is no package of this version for your system: download it from GitHub.
+update-manual-unsigned = This version is not signed, so it is not installed from here: download it from GitHub.
+update-err-signature = the version's signature is not valid
+update-err-hash = the downloaded file does not match its checksum
+update-err-disk = could not write to disk ({ $error })
+update-err-archive = the downloaded package is not in the expected format
+update-cancelled = download cancelled

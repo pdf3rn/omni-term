@@ -178,11 +178,12 @@ impl App {
         let on_connection = matches!(tab.map(|t| t.kind), Some(TabKind::Connection(_)));
         let several = self.tabs.len() > 1;
         let recents = self.recent_connections();
-        let update_label = match &self.update {
-            Some(release) => crate::tf!("update-menu-available", "version" => release.version.clone()),
-            None => t("update-check-command").to_string(),
+        let update_badge = self.update_badge();
+        let update_label = match (&self.update, &update_badge) {
+            (Some(release), _) if matches!(self.update_state, updates::UpdateState::Idle) => crate::tf!("update-menu-available", "version" => release.version.clone()),
+            (_, Some(badge)) => badge.clone(),
+            _ => t("update-check-command").to_string(),
         };
-        let update_ready = self.update.is_some();
         let mut open_update = false;
         let mut chosen: Option<Command> = None;
         let mut connect: Option<Connection> = None;
@@ -313,10 +314,10 @@ impl App {
                     });
                     let controls = if crate::data::settings::NATIVE_CHROME { 0.0 } else { 3.0 * WINDOW_BUTTON_WIDTH };
                     let mut title_right = bar.max.x - controls - 36.0;
-                    if update_ready {
+                    if let Some(badge) = &update_badge {
                         // Aviso de versión nueva junto al engranaje; el título se recorta para no pisarlo.
-                        let text = RichText::new(t("update-available-short")).size(theme::size::SMALL).color(theme::accent());
-                        let width = ui.painter().layout_no_wrap(t("update-available-short").to_string(), FontId::new(theme::size::SMALL, FontFamily::Proportional), theme::accent()).size().x + 2.0 * ui.spacing().button_padding.x;
+                        let text = RichText::new(badge.as_str()).size(theme::size::SMALL).color(theme::accent());
+                        let width = ui.painter().layout_no_wrap(badge.clone(), FontId::new(theme::size::SMALL, FontFamily::Proportional), theme::accent()).size().x + 2.0 * ui.spacing().button_padding.x;
                         let rect = Rect::from_min_max(Pos2::new(title_right - width, bar.center().y - 12.0), Pos2::new(title_right, bar.center().y + 12.0));
                         if ui.put(rect, Button::new(text).wrap_mode(egui::TextWrapMode::Extend)).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                             open_update = true;

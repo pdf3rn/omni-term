@@ -4,6 +4,9 @@ use std::time::Duration;
 
 use crate::i18n::t;
 
+mod install;
+pub use install::*;
+
 const LATEST_URL: &str = "https://api.github.com/repos/pdf3rn/omni-term/releases/latest";
 /// Tiempo mínimo entre dos comprobaciones automáticas.
 pub const INTERVAL_SECS: i64 = 24 * 60 * 60;
@@ -15,26 +18,47 @@ pub struct Release {
     pub notes: String,
     /// Página de la release, con las descargas.
     pub page: String,
+    pub assets: Vec<Asset>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Asset {
+    pub name: String,
+    pub url: String,
+    pub size: u64,
+}
+
+impl Release {
+    pub fn asset(&self, name: &str) -> Option<&Asset> {
+        self.assets.iter().find(|a| a.name == name)
+    }
 }
 
 pub fn current() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
 
+/// Cliente HTTP de las consultas y descargas; `timeout` cubre la petición entera.
+fn agent(timeout: Duration) -> ureq::Agent {
+    ureq::Agent::config_builder().timeout_global(Some(timeout)).build().into()
+}
+
+fn http_error(error: ureq::Error) -> String {
+    match error {
+        ureq::Error::StatusCode(404) => t("update-err-none").to_string(),
+        ureq::Error::StatusCode(403 | 429) => t("update-err-limit").to_string(),
+        ureq::Error::StatusCode(code) => crate::tf!("update-err-status", "code" => code),
+        other => crate::tf!("update-err-network", "error" => other.to_string()),
+    }
+}
+
+fn get(agent: &ureq::Agent, url: &str, accept: &str) -> Result<ureq::http::Response<ureq::Body>, String> {
+    agent.get(url).header("Accept", accept).header("User-Agent", concat!("omni-term/", env!("CARGO_PKG_VERSION"))).call().map_err(http_error)
+}
+
 /// Bloquea hasta tener respuesta: se llama desde un hilo aparte.
 pub fn fetch_latest() -> Result<Release, String> {
-    let agent: ureq::Agent = ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(20))).build().into();
-    let mut response = agent
-        .get(LATEST_URL)
-        .header("Accept", "application/vnd.github+json")
-        .header("User-Agent", concat!("omni-term/", env!("CARGO_PKG_VERSION")))
-        .call()
-        .map_err(|error| match error {
-            ureq::Error::StatusCode(404) => t("update-err-none").to_string(),
-            ureq::Error::StatusCode(403 | 429) => t("update-err-limit").to_string(),
-            ureq::Error::StatusCode(code) => crate::tf!("update-err-status", "code" => code),
-            other => crate::tf!("update-err-network", "error" => other.to_string()),
-        })?;
+    let mut response = get(&agent(Duration::from_secs(20)), LATEST_URL, "application/vnd.github+json")?;
     let body = response.body_mut().read_to_string().map_err(|error| crate::tf!("update-err-network", "error" => error.to_string()))?;
     parse_latest(&body).ok_or_else(|| t("update-err-format").to_string())
 }
@@ -51,6 +75,16 @@ pub fn parse_latest(json: &str) -> Option<Release> {
         version,
         notes: value["body"].as_str().unwrap_or("").to_string(),
         page: value["html_url"].as_str()?.to_string(),
+        assets: value["assets"]
+            .as_array()
+            .map(|list| {
+                list.iter()
+                    .filter_map(|a| {
+                        Some(Asset { name: a["name"].as_str()?.to_string(), url: a["browser_download_url"].as_str()?.to_string(), size: a["size"].as_u64().unwrap_or(0) })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
     })
 }
 
@@ -110,6 +144,7 @@ mod tests {
         let release = parse_latest(stable).unwrap();
         assert_eq!(release.version, "0.2.0");
         assert_eq!(release.page, "https://github.com/x/y/releases/tag/v0.2.0");
+        assert!(release.assets.is_empty());
         assert!(parse_latest(&stable.replace(r#""prerelease":false"#, r#""prerelease":true"#)).is_none());
         assert!(parse_latest(&stable.replace(r#""draft":false"#, r#""draft":true"#)).is_none());
         assert!(parse_latest(&stable.replace("v0.2.0\"", "nightly\"")).is_none());

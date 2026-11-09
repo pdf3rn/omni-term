@@ -875,3 +875,35 @@ welcome-updates = Actualizaciones
 welcome-updates-hint = omni-term puede preguntar a GitHub una vez al día si hay versión nueva. Solo se hace esa consulta: sin cuenta ni telemetría.
 settings-check-updates = Buscar actualizaciones automáticamente
 settings-check-updates-hint = Una consulta a GitHub al día, como mucho
+update-install = Actualizar
+update-hide = Ocultar
+update-cancel-download = Cancelar descarga
+update-downloading-title = Actualizando omni-term
+update-downloading = Descargando omni-term { $version }…
+update-size = { $done } de { $total } MB
+update-installing = Verificando la firma e instalando…
+update-failed-title = No se pudo actualizar
+update-retry = Reintentar
+update-ready-title = Actualización lista
+update-ready-body = omni-term { $version } está instalado y se usará al volver a abrir la app.
+update-ready-installer = El instalador se ejecutará al reiniciar o al cerrar la app.
+update-ready-tabs = { $n ->
+    [one] Al reiniciar se cerrará la pestaña abierta y se volverá a abrir; las conexiones SSH habrá que reconectarlas.
+   *[other] Al reiniciar se cerrarán las { $n } pestañas abiertas y se volverán a abrir; las conexiones SSH habrá que reconectarlas.
+}
+update-restart-now = Reiniciar ahora
+update-on-close = Al cerrar la app
+update-restart-failed = No se pudo reiniciar: { $error }
+update-badge-downloading = Descargando… { $percent } %
+update-badge-installing = Instalando…
+update-badge-ready = Reiniciar para actualizar
+update-badge-failed = Error al actualizar
+update-manual-package = La instalaste con un gestor de paquetes: actualízala con él (por ejemplo, apt upgrade).
+update-manual-readonly = La app está en una carpeta sin permiso de escritura: descarga la versión nueva desde GitHub.
+update-manual-unsupported = No hay paquete de esta versión para tu sistema: descárgala desde GitHub.
+update-manual-unsigned = Esta versión no está firmada, así que no se instala desde aquí: descárgala desde GitHub.
+update-err-signature = la firma de la versión no es válida
+update-err-hash = el archivo descargado no coincide con su suma
+update-err-disk = no se pudo escribir en el disco ({ $error })
+update-err-archive = el paquete descargado no tiene el formato esperado
+update-cancelled = descarga cancelada

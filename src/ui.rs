@@ -187,6 +187,9 @@ pub struct App {
     update: Option<crate::update::Release>,
     /// Comprobación en curso; `true` si la pidió el usuario.
     update_check: Option<(Receiver<Result<crate::update::Release, String>>, bool)>,
+    update_state: updates::UpdateState,
+    /// Instalador de Windows que se ejecuta al cerrar la app («Al cerrar la app»).
+    installer_on_exit: Option<std::path::PathBuf>,
 }
 
 impl App {
@@ -349,6 +352,8 @@ impl App {
             next_toast: 0,
             update: None,
             update_check: None,
+            update_state: updates::UpdateState::Idle,
+            installer_on_exit: None,
         };
         app.loaded_font = app.settings.font_family.clone();
         if let Some(problem) = font_error {
@@ -359,6 +364,8 @@ impl App {
         if let Some(notice) = startup_notice {
             app.notify(notice);
         }
+        // Esta versión arrancó bien: sobra la copia anterior que dejó una actualización.
+        std::thread::spawn(|| crate::update::cleanup(&crate::update::detect()));
         app.maybe_check_updates();
         Ok(app)
     }
@@ -491,7 +498,7 @@ impl eframe::App for App {
                 }
             }
         }
-        self.poll_update_check();
+        self.poll_updates();
         self.handle_dialog(&ctx);
         self.toasts_ui(&ctx);
         self.persist_layout();

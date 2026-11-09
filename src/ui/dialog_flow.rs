@@ -35,9 +35,8 @@ impl App {
             (Outcome::Cancel, Dialog::RestoreSession(prompt)) => self.answer_restore(false, prompt.remember),
             (Outcome::Submit, Dialog::RestoreSession(prompt)) => self.answer_restore(true, prompt.remember),
             (Outcome::Submit, Dialog::Import(prompt)) => self.apply_import(prompt),
-            (Outcome::Submit, Dialog::Update(release)) => self.download_update(release),
-            (Outcome::Alternate, Dialog::Update(release)) => self.skip_update(release),
-            (Outcome::Cancel, Dialog::Import(_) | Dialog::Update(_) | Dialog::Secret(_) | Dialog::ConfirmContainer(_) | Dialog::Unlock(_) | Dialog::Edit(_) | Dialog::Error(_) | Dialog::HostKeyChanged(_) | Dialog::About | Dialog::ConfirmClose(_) | Dialog::ConfirmPaste(_) | Dialog::TelnetWarning(_) | Dialog::Snippet(_) | Dialog::SnippetVars(_) | Dialog::ConfirmReset(_) | Dialog::Password(_) | Dialog::ConfirmTypePassword(_)) => {}
+            (outcome, Dialog::Update(prompt)) => self.answer_update(outcome, prompt),
+            (Outcome::Cancel, Dialog::Import(_) | Dialog::Secret(_) | Dialog::ConfirmContainer(_) | Dialog::Unlock(_) | Dialog::Edit(_) | Dialog::Error(_) | Dialog::HostKeyChanged(_) | Dialog::About | Dialog::ConfirmClose(_) | Dialog::ConfirmPaste(_) | Dialog::TelnetWarning(_) | Dialog::Snippet(_) | Dialog::SnippetVars(_) | Dialog::ConfirmReset(_) | Dialog::Password(_) | Dialog::ConfirmTypePassword(_)) => {}
             (Outcome::Cancel, dialog) => self.dialog = Some(dialog),
             (Outcome::Submit, Dialog::Prompt(request, answers)) => {
                 let _ = request.reply.send(Some(answers));

@@ -19,6 +19,7 @@ fn main() -> eframe::Result {
         println!("omni-term {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
+    update::remember_startup_exe();
     ui::fonts::preload();
     let debug_keys = std::env::args().any(|a| a == "--keys");
     let size = saved_window_size().unwrap_or([960.0, 600.0]);

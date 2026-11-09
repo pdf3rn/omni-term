@@ -17,6 +17,7 @@ mod import;
 mod prompts;
 mod settings;
 mod shell;
+mod update;
 mod welcome;
 
 // Los diálogos se usan siempre como `dialogs::X`: este módulo es su fachada.
@@ -25,6 +26,7 @@ pub use self::import::*;
 pub use self::prompts::*;
 pub use self::settings::*;
 pub use self::shell::*;
+pub use self::update::*;
 pub use self::welcome::*;
 use self::conn_edit::{edit_body, KIND_LIST_WIDTH};
 
@@ -58,7 +60,7 @@ pub enum Dialog {
     ConfirmContainer(ContainerConfirm),
     Import(ImportPrompt),
     Welcome(WelcomePrompt),
-    Update(crate::update::Release),
+    Update(UpdatePrompt),
 }
 
 pub enum Outcome {
@@ -236,23 +238,8 @@ pub fn show(
                 Action::None => Outcome::None,
             }
         }
-        Dialog::Update(release) => {
-            let spec = Spec::new(t("update-title")).width(480.0).icon(DialogIcon::Info).accept(t("update-download")).cancel(t("update-later")).extra(t("update-skip"));
-            let action = shell(ctx, spec, |ui| {
-                ui.label(crate::tf!("update-body", "version" => release.version.clone(), "current" => crate::update::current()));
-                let notes = crate::update::plain_notes(&release.notes);
-                if !notes.is_empty() {
-                    ui.add_space(theme::space::XS);
-                    ui.label(RichText::new(t("update-notes")).small().color(theme::subtext()));
-                    egui::Frame::new().fill(theme::surface()).corner_radius(theme::radius::SMALL).inner_margin(theme::space::S).show(ui, |ui| {
-                        ScrollArea::vertical().max_height(220.0).show(ui, |ui| {
-                            ui.set_width(ui.available_width());
-                            ui.label(notes);
-                        });
-                    });
-                }
-                false
-            });
+        Dialog::Update(prompt) => {
+            let action = shell(ctx, update::update_spec(prompt), |ui| update::update_body(ui, prompt));
             match action {
                 Action::Accept => Outcome::Submit,
                 Action::Extra(_) => Outcome::Alternate,
