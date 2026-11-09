@@ -3,6 +3,18 @@
 Todos los cambios notables de omni-term. A partir de la 0.1.0 este archivo lo actualiza release-plz a partir de los commits convencionales.
 El formato sigue [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y el proyecto usa [versionado semántico](https://semver.org/lang/es/).
 
+## [0.1.15](https://github.com/pdf3rn/omni-term/compare/v0.1.14...v0.1.15) - 2026-11-09
+
+### Added
+
+- *(updates)* download and install new versions with minisign check
+- *(updates)* sign releases with minisign and ship app tarball
+- *(updates)* check github releases for new versions
+
+### Fixed
+
+- *(dialogs)* wrap long status messages in scrollable area
+
 ## [0.1.14](https://github.com/pdf3rn/omni-term/compare/v0.1.13...v0.1.14) - 2026-11-08
 
 ### Added
