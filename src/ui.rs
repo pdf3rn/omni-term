@@ -21,6 +21,7 @@ mod secrets_flow;
 mod sessions;
 mod sidebar;
 mod startup;
+mod tab_drag;
 mod tabs;
 mod toasts;
 mod updates;
@@ -181,6 +182,8 @@ pub struct App {
     next_toast: u64,
     /// Panel que se está arrastrando por su asa, si alguno.
     pane_drag: Option<pane_drag::PaneDrag>,
+    /// Pestaña que se está arrastrando por la tira, si alguna.
+    tab_drag: Option<tab_drag::TabDrag>,
     /// Dónde se puede soltar un panel en este fotograma: paneles visibles y pestañas.
     drop_targets: pane_drag::DropTargets,
     /// Versión nueva encontrada que el usuario no ha omitido.
@@ -348,6 +351,7 @@ impl App {
             saved_layout: (Vec::new(), 0),
             toasts: Vec::new(),
             pane_drag: None,
+            tab_drag: None,
             drop_targets: pane_drag::DropTargets::default(),
             next_toast: 0,
             update: None,
@@ -475,6 +479,7 @@ impl eframe::App for App {
 
         self.tab_strip(ui);
         self.drive_pane_drag(&ctx);
+        self.drive_tab_drag(&ctx);
 
         self.central_area(ui, &ctx);
 

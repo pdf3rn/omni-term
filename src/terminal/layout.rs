@@ -146,6 +146,43 @@ impl<T> Tree<T> {
         true
     }
 
+    /// Coloca un árbol entero al lado `side` de la hoja `target`, repartiendo su sitio por la mitad y
+    /// conservando la disposición de `sub`. `relabel` da el id definitivo de cada hoja de `sub`.
+    /// Devuelve `false`, sin cambios, si `target` no existe.
+    pub fn graft(&mut self, target: u64, side: Side, sub: Tree<T>, relabel: &mut dyn FnMut(u64, &mut T) -> u64) -> bool {
+        if !self.contains(target) {
+            return false;
+        }
+        let dir = match side {
+            Side::Left | Side::Right => Dir::Horizontal,
+            Side::Up | Side::Down => Dir::Vertical,
+        };
+        let before = matches!(side, Side::Left | Side::Up);
+        fn relabeled<T>(node: Node<T>, relabel: &mut dyn FnMut(u64, &mut T) -> u64) -> Node<T> {
+            match node {
+                Node::Leaf { id, mut item } => Node::Leaf { id: relabel(id, &mut item), item },
+                Node::Split { dir, ratio, a, b } => Node::Split { dir, ratio, a: Box::new(relabeled(*a, relabel)), b: Box::new(relabeled(*b, relabel)) },
+            }
+        }
+        fn go<T>(node: Node<T>, target: u64, dir: Dir, before: bool, sub: &mut Option<Node<T>>) -> Node<T> {
+            match node {
+                Node::Leaf { id, item } if id == target => {
+                    let old = Box::new(Node::Leaf { id, item });
+                    let new = Box::new(sub.take().expect("el árbol injertado se usa una sola vez"));
+                    let (a, b) = if before { (new, old) } else { (old, new) };
+                    Node::Split { dir, ratio: 0.5, a, b }
+                }
+                leaf @ Node::Leaf { .. } => leaf,
+                Node::Split { dir: d, ratio, a, b } => Node::Split { dir: d, ratio, a: Box::new(go(*a, target, dir, before, sub)), b: Box::new(go(*b, target, dir, before, sub)) },
+            }
+        }
+        let Some(sub_root) = sub.root else { return false };
+        let sub_root = relabeled(sub_root, relabel);
+        let root = self.root.take().expect("el árbol nunca queda vacío");
+        self.root = Some(go(root, target, dir, before, &mut Some(sub_root)));
+        true
+    }
+
     /// Quita la hoja `target`; su hermana ocupa su lugar. Devuelve la hoja que hereda el foco (la
     /// primera de la hermana), o `None`, sin cambios, si es la única hoja o no existe: el árbol no
     /// puede quedar vacío.
@@ -386,6 +423,29 @@ mod tests {
         assert_eq!(tree.get(3), Some(&"c"));
         assert!(!tree.split(99, Dir::Horizontal, 4, "x"));
         assert_eq!(tree.len(), 3);
+    }
+
+    #[test]
+    fn grafting_keeps_the_layout_of_the_grafted_tree() {
+        let mut tree = Tree::new(1, "a");
+        tree.split(1, Dir::Horizontal, 2, "b");
+        let mut other = Tree::new(1, "x");
+        other.split(1, Dir::Vertical, 2, "y");
+        let mut next = 10;
+        let mut relabel = |_: u64, _: &mut &str| {
+            next += 1;
+            next
+        };
+        assert!(tree.graft(2, Side::Down, other, &mut relabel));
+        assert_eq!(tree.ids(), vec![1, 2, 11, 12]);
+        assert_eq!(tree.get(12), Some(&"y"));
+        // «x» e «y» siguen uno sobre otro, dentro de la mitad de abajo del panel 2.
+        let (leaves, _) = tree.layout(area(), 0.0);
+        let rect = |id: u64| leaves.iter().find(|(i, _)| *i == id).unwrap().1;
+        assert!(rect(11).min.y > rect(2).min.y);
+        assert!(rect(12).min.y > rect(11).min.y);
+        assert!(!tree.graft(99, Side::Left, Tree::new(1, "z"), &mut relabel));
+        assert_eq!(tree.len(), 4);
     }
 
     #[test]

@@ -203,7 +203,7 @@ pub(super) fn tab(
     TabOutcome {
         clicked: response.clicked() && !close_clicked,
         closed: close_clicked,
-        dragged: response.dragged() && !close_clicked,
+        drag_started: response.drag_started() && !close_clicked,
         rename: can_rename && response.double_clicked() && !close_clicked,
         rect,
     }
@@ -222,7 +222,7 @@ pub(super) enum TabAction {
 pub(super) struct TabOutcome {
     pub(super) clicked: bool,
     pub(super) closed: bool,
-    pub(super) dragged: bool,
+    pub(super) drag_started: bool,
     pub(super) rename: bool,
     pub(super) rect: Rect,
 }
@@ -396,7 +396,7 @@ impl App {
         let mut plus_selected = self.plus_selected;
         let mut plus_choice: Option<PlusChoice> = None;
         let mut open_plus_menu = std::mem::take(&mut self.open_plus_menu);
-        let mut dragging: Option<usize> = None;
+        let mut drag_start: Option<(u64, Pos2)> = None;
         let bar = Panel::top("tabs")
             .exact_size(TAB_BAR_HEIGHT)
             .show_separator_line(false)
@@ -448,7 +448,8 @@ impl App {
                         }
                         let can_duplicate = !matches!(self.tabs[i].kind, TabKind::Explorer(_) | TabKind::Settings | TabKind::Containers);
                         let can_rename = self.tabs[i].kind != TabKind::Settings;
-                        let outcome = tab(ui, title, i == self.active, i, *identity, *attention, *insecure, self.tabs.len(), can_duplicate, can_rename, tab_cap, &mut tab_menu);
+                        // El id del widget sigue a la pestaña, no a su posición: así el arrastre no se confunde al reordenar.
+                        let outcome = ui.push_id(self.tabs[i].id, |ui| tab(ui, title, i == self.active, i, *identity, *attention, *insecure, self.tabs.len(), can_duplicate, can_rename, tab_cap, &mut tab_menu)).inner;
                         tab_rects.push(outcome.rect);
                         if i == self.active && self.tabs.get(i).is_some_and(|t| t.id != self.tab_strip_seen) {
                             ui.scroll_to_rect(outcome.rect.expand2(Vec2::new(24.0, 0.0)), None);
@@ -460,8 +461,8 @@ impl App {
                         if outcome.closed {
                             close = Some(i);
                         }
-                        if outcome.dragged {
-                            dragging = Some(i);
+                        if outcome.drag_started {
+                            drag_start = self.tabs.get(i).map(|t| t.id).zip(ctx.input(|input| input.pointer.press_origin()));
                         }
                         if outcome.rename {
                             tab_menu = Some((i, TabAction::Rename));
@@ -589,14 +590,8 @@ impl App {
                 tab.custom = if name.is_empty() { None } else { Some(name) };
             }
         }
-        if let Some(from) = dragging {
-            let pointer = ctx.input(|i| i.pointer.interact_pos());
-            let target = pointer.and_then(|p| tab_rects.iter().position(|r| r.x_range().contains(p.x)));
-            if let Some(target) = target.filter(|t| *t != from && *t < self.tabs.len() && from < self.tabs.len()) {
-                let moved = self.tabs.remove(from);
-                self.tabs.insert(target, moved);
-                self.active = target;
-            }
+        if let Some((tab, origin)) = drag_start {
+            self.start_tab_drag(tab, origin);
         }
         if let Some((i, action)) = tab_menu {
             match action {
