@@ -19,7 +19,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-latest, target: linux-x86_64 }
+          # El binario de Linux enlaza con la glibc del runner: una antigua lo deja correr en más distribuciones.
+          - { os: ubuntu-22.04, target: linux-x86_64 }
           - { os: windows-latest, target: windows-x86_64 }
           - { os: macos-15, target: macos-arm64 }
           - { os: macos-15-intel, target: macos-x86_64 }
