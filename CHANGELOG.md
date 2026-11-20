@@ -3,6 +3,12 @@
 Todos los cambios notables de omni-term. A partir de la 0.1.0 este archivo lo actualiza release-plz a partir de los commits convencionales.
 El formato sigue [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y el proyecto usa [versionado semántico](https://semver.org/lang/es/).
 
+## [0.1.17](https://github.com/pdf3rn/omni-term/compare/v0.1.16...v0.1.17) - 2026-11-20
+
+### Other
+
+- *(release)* build linux binary on ubuntu-22.04
+
 ## [0.1.16](https://github.com/pdf3rn/omni-term/compare/v0.1.15...v0.1.16) - 2026-11-20
 
 ### Added
