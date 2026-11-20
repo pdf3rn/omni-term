@@ -3,6 +3,16 @@
 Todos los cambios notables de omni-term. A partir de la 0.1.0 este archivo lo actualiza release-plz a partir de los commits convencionales.
 El formato sigue [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y el proyecto usa [versionado semántico](https://semver.org/lang/es/).
 
+## [0.1.16](https://github.com/pdf3rn/omni-term/compare/v0.1.15...v0.1.16) - 2026-11-20
+
+### Added
+
+- *(tabs)* drag tabs to reorder or merge them into another
+
+### Other
+
+- *(deps)* bump the cargo-minor-and-patch group across 1 directory with 5 updates ([#40](https://github.com/pdf3rn/omni-term/pull/40))
+
 ## [0.1.15](https://github.com/pdf3rn/omni-term/compare/v0.1.14...v0.1.15) - 2026-11-09
 
 ### Added

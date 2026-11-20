@@ -4498,7 +4498,7 @@ dependencies = [
 
 [[package]]
 name = "omni-term"
-version = "0.1.15"
+version = "0.1.16"
 dependencies = [
  "ab_glyph",
  "alacritty_terminal",
